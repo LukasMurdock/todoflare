@@ -1,0 +1,11 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "todoflare",
+	"account_id": "440e7b1dda326614729fce463b0d6c33",
+	"compatibility_date": "2025-01-01",
+	"main": "./src/index.tsx",
+	"assets": {
+		"not_found_handling": "single-page-application",
+		"run_worker_first": ["/api/*"]
+	}
+}
