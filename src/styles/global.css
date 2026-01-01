@@ -88,3 +88,11 @@
 		@apply bg-background text-foreground;
 	}
 }
+
+/* URL styling when Cmd/Ctrl is pressed */
+.cmd-pressed .url-text {
+	text-decoration: underline;
+	text-decoration-color: var(--primary);
+	text-underline-offset: 2px;
+	cursor: pointer;
+}

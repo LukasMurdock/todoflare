@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useEffect, useRef } from "react";
 import {
 	useKeyboardShortcut,
 	getModifierSymbol,
@@ -12,6 +13,7 @@ import {
 	DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { useWelcomeRefsOptional } from "@/contexts/welcome-refs-context";
 
 interface ShortcutItem {
 	keys: React.ReactNode[];
@@ -80,6 +82,13 @@ function ShortcutSectionComponent({ title, shortcuts }: ShortcutSection) {
 export function KeyboardShortcuts() {
 	const [open, setOpen] = React.useState(false);
 	const mod = getModifierSymbol();
+	const { registerRef } = useWelcomeRefsOptional();
+	const buttonRef = useRef<HTMLButtonElement>(null);
+
+	// Register ref for welcome screen annotation
+	useEffect(() => {
+		registerRef("shortcuts-button", buttonRef.current);
+	}, [registerRef]);
 
 	useKeyboardShortcut({
 		key: "/",
@@ -130,6 +139,7 @@ export function KeyboardShortcuts() {
 		<>
 			{/* Floating button */}
 			<button
+				ref={buttonRef}
 				onClick={() => setOpen(true)}
 				className={cn(
 					"fixed bottom-4 left-4 z-50",

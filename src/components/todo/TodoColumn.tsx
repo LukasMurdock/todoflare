@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import type { Value } from "platejs";
+import type { Value, TText, NodeEntry, Range } from "platejs";
 import { Plate, usePlateEditor, createPlatePlugin } from "platejs/react";
 import { KEYS } from "platejs";
 import {
@@ -194,6 +194,63 @@ const ListShortcutsPlugin = createPlatePlugin({
 	},
 });
 
+// URL regex pattern - matches URLs including bare domains
+const URL_REGEX = /(?:https?:\/\/[^\s<>]+|www\.[^\s<>]+|[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(?:\/[^\s<>]*)?)/g;
+
+// Find URL at a specific offset in text
+function findUrlAtOffset(text: string, offset: number): string | null {
+	let match;
+	URL_REGEX.lastIndex = 0;
+	while ((match = URL_REGEX.exec(text)) !== null) {
+		const start = match.index;
+		const end = start + match[0].length;
+		if (offset >= start && offset <= end) {
+			return match[0];
+		}
+	}
+	return null;
+}
+
+// Normalize URL to ensure it has a protocol
+function normalizeUrl(url: string): string {
+	if (url.startsWith("http://") || url.startsWith("https://")) {
+		return url;
+	}
+	if (url.startsWith("www.")) {
+		return `https://${url}`;
+	}
+	return `https://${url}`;
+}
+
+// Find all URL ranges in a text node for decoration
+function findUrlRanges(node: TText, path: number[]): Range[] {
+	const text = node.text;
+	const ranges: Range[] = [];
+
+	let match;
+	URL_REGEX.lastIndex = 0;
+	while ((match = URL_REGEX.exec(text)) !== null) {
+		ranges.push({
+			anchor: { path, offset: match.index },
+			focus: { path, offset: match.index + match[0].length },
+			url: match[0],
+		} as Range & { url: string });
+	}
+
+	return ranges;
+}
+
+// URL decoration plugin - adds url property to decorated ranges
+const UrlDecorationPlugin = createPlatePlugin({
+	key: "urlDecoration",
+	decorate: ({ entry }) => {
+		const [node, path] = entry as NodeEntry<TText>;
+		// Check if node is a text node (has a 'text' property)
+		if (typeof (node as TText).text !== "string") return [];
+		return findUrlRanges(node as TText, path);
+	},
+});
+
 const autoformatRules: AutoformatRule[] = [
 	// Headings
 	{
@@ -258,7 +315,62 @@ const autoformatRules: AutoformatRule[] = [
 	},
 ];
 
+// Global state for Cmd key - shared across all editors
+let cmdKeyPressed = false;
+const cmdKeyListeners = new Set<() => void>();
+
+function subscribeToCmdKey(listener: () => void) {
+	cmdKeyListeners.add(listener);
+	return () => {
+		cmdKeyListeners.delete(listener);
+	};
+}
+
+function notifyCmdKeyListeners() {
+	cmdKeyListeners.forEach((listener) => listener());
+}
+
+// Initialize global key listeners once
+if (typeof window !== "undefined") {
+	const handleKeyDown = (e: KeyboardEvent) => {
+		if ((e.metaKey || e.ctrlKey) && !cmdKeyPressed) {
+			cmdKeyPressed = true;
+			notifyCmdKeyListeners();
+		}
+	};
+
+	const handleKeyUp = (e: KeyboardEvent) => {
+		if (!e.metaKey && !e.ctrlKey && cmdKeyPressed) {
+			cmdKeyPressed = false;
+			notifyCmdKeyListeners();
+		}
+	};
+
+	const handleBlur = () => {
+		if (cmdKeyPressed) {
+			cmdKeyPressed = false;
+			notifyCmdKeyListeners();
+		}
+	};
+
+	window.addEventListener("keydown", handleKeyDown);
+	window.addEventListener("keyup", handleKeyUp);
+	window.addEventListener("blur", handleBlur);
+}
+
+function useCmdKeyPressed() {
+	const [pressed, setPressed] = React.useState(cmdKeyPressed);
+
+	React.useEffect(() => {
+		return subscribeToCmdKey(() => setPressed(cmdKeyPressed));
+	}, []);
+
+	return pressed;
+}
+
 function TodoEditor({ column, onUpdate }: TodoEditorProps) {
+	const cmdPressed = useCmdKeyPressed();
+
 	const editor = usePlateEditor({
 		id: column.id,
 		plugins: [
@@ -294,6 +406,7 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 				},
 			}),
 			ListShortcutsPlugin,
+			UrlDecorationPlugin,
 		],
 		value: column.value,
 	});
@@ -305,12 +418,62 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 		[column.id, onUpdate]
 	);
 
+	// Handle Cmd+Click on URLs
+	const handleClick = React.useCallback(
+		(e: React.MouseEvent) => {
+			if (!e.metaKey && !e.ctrlKey) return;
+
+			// Get the clicked element
+			const target = e.target as HTMLElement;
+			if (!target.closest("[data-slate-node='text']")) return;
+
+			// Get selection from click position
+			const selection = window.getSelection();
+			if (!selection || selection.rangeCount === 0) return;
+
+			const range = selection.getRangeAt(0);
+			const textNode = range.startContainer;
+			if (textNode.nodeType !== Node.TEXT_NODE) return;
+
+			const text = textNode.textContent || "";
+			const offset = range.startOffset;
+
+			const url = findUrlAtOffset(text, offset);
+			if (url) {
+				e.preventDefault();
+				e.stopPropagation();
+				window.open(normalizeUrl(url), "_blank", "noopener,noreferrer");
+			}
+		},
+		[]
+	);
+
+	// Custom leaf renderer for URL decorations
+	const renderLeaf = React.useCallback(
+		(props: { attributes: React.HTMLAttributes<HTMLSpanElement>; children: React.ReactNode; leaf: TText & { url?: string } }) => {
+			const { attributes, children, leaf } = props;
+			if (leaf.url) {
+				return (
+					<span {...attributes} className="url-text" data-url={leaf.url}>
+						{children}
+					</span>
+				);
+			}
+			return <span {...attributes}>{children}</span>;
+		},
+		[]
+	);
+
 	return (
 		<Plate editor={editor} onChange={handleChange}>
-			<EditorContainer className="h-full">
+			<EditorContainer
+				className={cn("h-full", cmdPressed && "cmd-pressed")}
+				onClick={handleClick}
+			>
 				<Editor
 					variant="column"
 					placeholder="Start typing..."
+					renderLeaf={renderLeaf}
 				/>
 			</EditorContainer>
 		</Plate>

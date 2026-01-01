@@ -1,10 +1,12 @@
 "use client";
 
 import * as React from "react";
+import { useEffect, useRef } from "react";
 import type { Value } from "platejs";
 import type { Column } from "@/types/column";
 import { TodoColumn } from "./TodoColumn";
 import { cn } from "@/lib/utils";
+import { useWelcomeRefsOptional } from "@/contexts/welcome-refs-context";
 
 interface ColumnLayoutProps {
 	columns: Column[];
@@ -20,22 +22,36 @@ export function ColumnLayout({
 	onRemove,
 }: ColumnLayoutProps) {
 	const canRemove = columns.length > 1;
+	const { registerRef } = useWelcomeRefsOptional();
+	const addButtonRef = useRef<HTMLButtonElement>(null);
+	const firstColumnRef = useRef<HTMLDivElement>(null);
+
+	// Register refs for welcome screen annotations
+	useEffect(() => {
+		registerRef("add-column-button", addButtonRef.current);
+		registerRef("first-column", firstColumnRef.current);
+	}, [registerRef]);
 
 	return (
 		<div className="flex h-full overflow-x-auto scrollbar-hide">
-			{columns.map((column) => (
-				<TodoColumn
+			{columns.map((column, index) => (
+				<div
 					key={column.id}
-					column={column}
-					onUpdate={onUpdate}
-					onRemove={onRemove}
-					canRemove={canRemove}
-				/>
+					ref={index === 0 ? firstColumnRef : undefined}
+				>
+					<TodoColumn
+						column={column}
+						onUpdate={onUpdate}
+						onRemove={onRemove}
+						canRemove={canRemove}
+					/>
+				</div>
 			))}
 
 			{/* Add column button */}
 			<div className="flex h-full w-16 flex-shrink-0 items-start justify-center pt-2">
 				<button
+					ref={addButtonRef}
 					onClick={onAdd}
 					className={cn(
 						"flex h-8 w-8 items-center justify-center rounded-md",
