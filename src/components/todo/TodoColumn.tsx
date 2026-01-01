@@ -194,8 +194,8 @@ const ListShortcutsPlugin = createPlatePlugin({
 	},
 });
 
-// URL regex pattern - matches URLs including bare domains
-const URL_REGEX = /(?:https?:\/\/[^\s<>]+|www\.[^\s<>]+|[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(?:\/[^\s<>]*)?)/g;
+// URL regex pattern - matches URLs including bare domains and subdomains
+const URL_REGEX = /(?:https?:\/\/[^\s<>]+|www\.[^\s<>]+|(?:[a-zA-Z0-9][-a-zA-Z0-9]*\.)+[a-zA-Z]{2,}(?:\/[^\s<>]*)?)/g;
 
 // Find URL at a specific offset in text
 function findUrlAtOffset(text: string, offset: number): string | null {
