@@ -71,11 +71,20 @@ export function useColumns() {
 		[]
 	);
 
+	const toggleColumnCollapsed = useCallback((id: string) => {
+		setColumns((prev) =>
+			prev.map((col) =>
+				col.id === id ? { ...col, collapsed: !col.collapsed } : col
+			)
+		);
+	}, []);
+
 	return {
 		columns,
 		addColumn,
 		removeColumn,
 		updateColumnValue,
 		reorderColumns,
+		toggleColumnCollapsed,
 	};
 }

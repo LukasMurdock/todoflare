@@ -13,6 +13,7 @@ interface ColumnLayoutProps {
 	onAdd: () => void;
 	onUpdate: (id: string, value: Value) => void;
 	onRemove: (id: string) => void;
+	onToggleCollapse: (id: string) => void;
 }
 
 export function ColumnLayout({
@@ -20,6 +21,7 @@ export function ColumnLayout({
 	onAdd,
 	onUpdate,
 	onRemove,
+	onToggleCollapse,
 }: ColumnLayoutProps) {
 	const canRemove = columns.length > 1;
 	const { registerRef } = useWelcomeRefsOptional();
@@ -43,6 +45,7 @@ export function ColumnLayout({
 						column={column}
 						onUpdate={onUpdate}
 						onRemove={onRemove}
+						onToggleCollapse={onToggleCollapse}
 						canRemove={canRemove}
 					/>
 				</div>

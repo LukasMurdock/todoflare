@@ -3,6 +3,7 @@ import type { Value } from "platejs";
 export interface Column {
 	id: string;
 	value: Value;
+	collapsed?: boolean;
 }
 
 export const EMPTY_COLUMN_VALUE: Value = [

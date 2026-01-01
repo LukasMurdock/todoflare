@@ -38,6 +38,7 @@ interface TodoColumnProps {
 	column: Column;
 	onUpdate: (id: string, value: Value) => void;
 	onRemove: (id: string) => void;
+	onToggleCollapse: (id: string) => void;
 	canRemove: boolean;
 }
 
@@ -45,6 +46,7 @@ export function TodoColumn({
 	column,
 	onUpdate,
 	onRemove,
+	onToggleCollapse,
 	canRemove,
 }: TodoColumnProps) {
 	const {
@@ -67,6 +69,43 @@ export function TodoColumn({
 		onRemove(column.id);
 	};
 
+	const handleToggleCollapse = () => {
+		onToggleCollapse(column.id);
+	};
+
+	// Collapsed state: narrow column with just drag handle and expand button
+	if (column.collapsed) {
+		return (
+			<div
+				ref={setNodeRef}
+				style={style}
+				className={cn(
+					"flex h-full w-10 flex-shrink-0 flex-col border-r border-border bg-background",
+					isDragging && "opacity-50"
+				)}
+			>
+				<div className="flex flex-col items-center gap-1 border-b border-border bg-muted/30 py-2">
+					{/* Drag handle */}
+					<button
+						className="cursor-grab rounded p-1 hover:bg-muted active:cursor-grabbing"
+						{...attributes}
+						{...listeners}
+					>
+						<GripVerticalIcon className="h-4 w-4 text-muted-foreground" />
+					</button>
+					{/* Expand button */}
+					<button
+						onClick={handleToggleCollapse}
+						className="rounded p-1 hover:bg-muted"
+						title="Expand column"
+					>
+						<ChevronRightIcon className="h-4 w-4 text-muted-foreground" />
+					</button>
+				</div>
+			</div>
+		);
+	}
+
 	return (
 		<div
 			ref={setNodeRef}
@@ -76,16 +115,26 @@ export function TodoColumn({
 				isDragging && "opacity-50"
 			)}
 		>
-			{/* Column header with drag handle and delete */}
+			{/* Column header with drag handle, collapse, and delete */}
 			<div className="flex h-10 flex-shrink-0 items-center justify-between border-b border-border bg-muted/30 px-2">
-				{/* Drag handle */}
-				<button
-					className="cursor-grab rounded p-1 hover:bg-muted active:cursor-grabbing"
-					{...attributes}
-					{...listeners}
-				>
-					<GripVerticalIcon className="h-4 w-4 text-muted-foreground" />
-				</button>
+				<div className="flex items-center gap-1">
+					{/* Drag handle */}
+					<button
+						className="cursor-grab rounded p-1 hover:bg-muted active:cursor-grabbing"
+						{...attributes}
+						{...listeners}
+					>
+						<GripVerticalIcon className="h-4 w-4 text-muted-foreground" />
+					</button>
+					{/* Collapse button */}
+					<button
+						onClick={handleToggleCollapse}
+						className="rounded p-1 hover:bg-muted"
+						title="Collapse column"
+					>
+						<ChevronLeftIcon className="h-4 w-4 text-muted-foreground" />
+					</button>
+				</div>
 
 				{/* Delete button */}
 				{canRemove && (
@@ -516,6 +565,40 @@ function XIcon({ className }: { className?: string }) {
 		>
 			<path d="M18 6 6 18" />
 			<path d="m6 6 12 12" />
+		</svg>
+	);
+}
+
+function ChevronLeftIcon({ className }: { className?: string }) {
+	return (
+		<svg
+			xmlns="http://www.w3.org/2000/svg"
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth="2"
+			strokeLinecap="round"
+			strokeLinejoin="round"
+			className={className}
+		>
+			<path d="m15 18-6-6 6-6" />
+		</svg>
+	);
+}
+
+function ChevronRightIcon({ className }: { className?: string }) {
+	return (
+		<svg
+			xmlns="http://www.w3.org/2000/svg"
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth="2"
+			strokeLinecap="round"
+			strokeLinejoin="round"
+			className={className}
+		>
+			<path d="m9 18 6-6-6-6" />
 		</svg>
 	);
 }

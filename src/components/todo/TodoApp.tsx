@@ -20,7 +20,7 @@ import { useColumns } from "@/hooks/useColumns";
 import { ColumnLayout } from "./ColumnLayout";
 
 export function TodoApp() {
-	const { columns, addColumn, removeColumn, updateColumnValue, reorderColumns } =
+	const { columns, addColumn, removeColumn, updateColumnValue, reorderColumns, toggleColumnCollapsed } =
 		useColumns();
 
 	const sensors = useSensors(
@@ -57,6 +57,7 @@ export function TodoApp() {
 					onAdd={addColumn}
 					onUpdate={updateColumnValue}
 					onRemove={removeColumn}
+					onToggleCollapse={toggleColumnCollapsed}
 				/>
 			</SortableContext>
 		</DndContext>
