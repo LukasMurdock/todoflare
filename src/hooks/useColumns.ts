@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import type { Value } from "platejs";
 import { type Column, createEmptyColumn } from "@/types/column";
+import { useDebouncedEffect } from "./useDebouncedEffect";
 
 const STORAGE_KEY = "todoflare-columns";
 
@@ -30,10 +31,15 @@ function saveColumns(columns: Column[]): void {
 export function useColumns() {
 	const [columns, setColumns] = useState<Column[]>(() => loadColumns());
 
-	// Persist to localStorage whenever columns change
-	useEffect(() => {
-		saveColumns(columns);
-	}, [columns]);
+	// Persist to localStorage with debouncing (500ms)
+	// Skips initial mount, flushes on unmount and beforeunload
+	useDebouncedEffect(
+		() => {
+			saveColumns(columns);
+		},
+		[columns],
+		500
+	);
 
 	const addColumn = useCallback(() => {
 		setColumns((prev) => [...prev, createEmptyColumn()]);
