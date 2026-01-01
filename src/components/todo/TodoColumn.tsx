@@ -6,11 +6,7 @@ import { CSS } from "@dnd-kit/utilities";
 import type { Value, TText, NodeEntry, Range } from "platejs";
 import { Plate, usePlateEditor, createPlatePlugin } from "platejs/react";
 import { KEYS } from "platejs";
-import {
-	H1Plugin,
-	H2Plugin,
-	H3Plugin,
-} from "@platejs/basic-nodes/react";
+import { H1Plugin, H2Plugin, H3Plugin } from "@platejs/basic-nodes/react";
 import { ListPlugin } from "@platejs/list/react";
 import { toggleList, someList, someTodoList } from "@platejs/list";
 import { AutoformatPlugin, type AutoformatRule } from "@platejs/autoformat";
@@ -84,7 +80,7 @@ export function TodoColumn({
 					isDragging && "opacity-50"
 				)}
 			>
-				<div className="flex flex-col items-center gap-1 border-b border-border bg-muted/30 py-2">
+				<div className="flex flex-col w-10 items-center gap-1 border-b border-border bg-muted/30 py-2">
 					{/* Drag handle */}
 					<button
 						className="cursor-grab rounded p-1 hover:bg-muted active:cursor-grabbing"
@@ -116,7 +112,7 @@ export function TodoColumn({
 			)}
 		>
 			{/* Column header with drag handle, collapse, and delete */}
-			<div className="flex h-10 flex-shrink-0 items-center justify-between border-b border-border bg-muted/30 px-2">
+			<div className="flex h-10 flex-shrink-0 items-start justify-between border-b border-border bg-muted/30 px-2 py-2">
 				<div className="flex items-center gap-1">
 					{/* Drag handle */}
 					<button
@@ -155,14 +151,21 @@ export function TodoColumn({
 								</AlertDialogTrigger>
 								<AlertDialogContent>
 									<AlertDialogHeader>
-										<AlertDialogTitle>Delete column?</AlertDialogTitle>
+										<AlertDialogTitle>
+											Delete column?
+										</AlertDialogTitle>
 										<AlertDialogDescription>
-											This column has content. This action cannot be undone.
+											This column has content. This action
+											cannot be undone.
 										</AlertDialogDescription>
 									</AlertDialogHeader>
 									<AlertDialogFooter>
-										<AlertDialogCancel>Cancel</AlertDialogCancel>
-										<AlertDialogAction onClick={handleRemove}>
+										<AlertDialogCancel>
+											Cancel
+										</AlertDialogCancel>
+										<AlertDialogAction
+											onClick={handleRemove}
+										>
 											Delete
 										</AlertDialogAction>
 									</AlertDialogFooter>
@@ -225,14 +228,16 @@ const ListShortcutsPlugin = createPlatePlugin({
 					const nodes = Array.from(
 						editor.api.nodes({
 							match: (n) =>
-								"listStyleType" in n && n.listStyleType === KEYS.listTodo,
+								"listStyleType" in n &&
+								n.listStyleType === KEYS.listTodo,
 							mode: "lowest",
 						})
 					);
 
 					if (nodes.length > 0) {
 						const [node] = nodes[0];
-						const currentChecked = (node as { checked?: boolean }).checked ?? false;
+						const currentChecked =
+							(node as { checked?: boolean }).checked ?? false;
 						editor.tf.setNodes({ checked: !currentChecked });
 					}
 
@@ -244,7 +249,8 @@ const ListShortcutsPlugin = createPlatePlugin({
 });
 
 // URL regex pattern - matches URLs including bare domains and subdomains
-const URL_REGEX = /(?:https?:\/\/[^\s<>]+|www\.[^\s<>]+|(?:[a-zA-Z0-9][-a-zA-Z0-9]*\.)+[a-zA-Z]{2,}(?:\/[^\s<>]*)?)/g;
+const URL_REGEX =
+	/(?:https?:\/\/[^\s<>]+|www\.[^\s<>]+|(?:[a-zA-Z0-9][-a-zA-Z0-9]*\.)+[a-zA-Z]{2,}(?:\/[^\s<>]*)?)/g;
 
 // Find URL at a specific offset in text
 function findUrlAtOffset(text: string, offset: number): string | null {
@@ -324,7 +330,10 @@ const autoformatRules: AutoformatRule[] = [
 		type: "list",
 		format: (editor) => {
 			toggleList(editor, { listStyleType: KEYS.listTodo });
-			editor.tf.setNodes({ checked: false, listStyleType: KEYS.listTodo });
+			editor.tf.setNodes({
+				checked: false,
+				listStyleType: KEYS.listTodo,
+			});
 		},
 	},
 	{
@@ -428,10 +437,7 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 			H3Plugin.withComponent(H3Element),
 			ListPlugin.configure({
 				inject: {
-					targetPlugins: [
-						...KEYS.heading,
-						KEYS.p,
-					],
+					targetPlugins: [...KEYS.heading, KEYS.p],
 				},
 				render: {
 					belowNodes: BlockList,
@@ -439,10 +445,7 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 			}),
 			IndentPlugin.configure({
 				inject: {
-					targetPlugins: [
-						...KEYS.heading,
-						KEYS.p,
-					],
+					targetPlugins: [...KEYS.heading, KEYS.p],
 				},
 				options: {
 					offset: 16,
@@ -468,42 +471,47 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 	);
 
 	// Handle Cmd+Click on URLs
-	const handleClick = React.useCallback(
-		(e: React.MouseEvent) => {
-			if (!e.metaKey && !e.ctrlKey) return;
+	const handleClick = React.useCallback((e: React.MouseEvent) => {
+		if (!e.metaKey && !e.ctrlKey) return;
 
-			// Get the clicked element
-			const target = e.target as HTMLElement;
-			if (!target.closest("[data-slate-node='text']")) return;
+		// Get the clicked element
+		const target = e.target as HTMLElement;
+		if (!target.closest("[data-slate-node='text']")) return;
 
-			// Get selection from click position
-			const selection = window.getSelection();
-			if (!selection || selection.rangeCount === 0) return;
+		// Get selection from click position
+		const selection = window.getSelection();
+		if (!selection || selection.rangeCount === 0) return;
 
-			const range = selection.getRangeAt(0);
-			const textNode = range.startContainer;
-			if (textNode.nodeType !== Node.TEXT_NODE) return;
+		const range = selection.getRangeAt(0);
+		const textNode = range.startContainer;
+		if (textNode.nodeType !== Node.TEXT_NODE) return;
 
-			const text = textNode.textContent || "";
-			const offset = range.startOffset;
+		const text = textNode.textContent || "";
+		const offset = range.startOffset;
 
-			const url = findUrlAtOffset(text, offset);
-			if (url) {
-				e.preventDefault();
-				e.stopPropagation();
-				window.open(normalizeUrl(url), "_blank", "noopener,noreferrer");
-			}
-		},
-		[]
-	);
+		const url = findUrlAtOffset(text, offset);
+		if (url) {
+			e.preventDefault();
+			e.stopPropagation();
+			window.open(normalizeUrl(url), "_blank", "noopener,noreferrer");
+		}
+	}, []);
 
 	// Custom leaf renderer for URL decorations
 	const renderLeaf = React.useCallback(
-		(props: { attributes: React.HTMLAttributes<HTMLSpanElement>; children: React.ReactNode; leaf: TText & { url?: string } }) => {
+		(props: {
+			attributes: React.HTMLAttributes<HTMLSpanElement>;
+			children: React.ReactNode;
+			leaf: TText & { url?: string };
+		}) => {
 			const { attributes, children, leaf } = props;
 			if (leaf.url) {
 				return (
-					<span {...attributes} className="url-text" data-url={leaf.url}>
+					<span
+						{...attributes}
+						className="url-text"
+						data-url={leaf.url}
+					>
 						{children}
 					</span>
 				);
