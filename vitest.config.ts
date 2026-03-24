@@ -7,4 +7,8 @@ export default defineConfig({
 			wrangler: { configPath: "./wrangler.jsonc" },
 		}),
 	],
+	test: {
+		include: ["test/**/*.test.ts"],
+		exclude: ["e2e/**"],
+	},
 });

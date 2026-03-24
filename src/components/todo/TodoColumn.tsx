@@ -11,10 +11,15 @@ import { ListPlugin } from "@platejs/list/react";
 import { toggleList, someList, someTodoList } from "@platejs/list";
 import { AutoformatPlugin, type AutoformatRule } from "@platejs/autoformat";
 import { IndentPlugin } from "@platejs/indent/react";
+import { YjsPlugin } from "@platejs/yjs/react";
 
 import type { Column } from "@/types/column";
-import { isColumnEmpty } from "@/types/column";
+import { EMPTY_COLUMN_VALUE, isColumnEmpty } from "@/types/column";
 import { cn } from "@/lib/utils";
+import { displayAccountId, getAccountColor, truncateAccountId } from "@/lib/account";
+import { useSyncContext } from "@/contexts/sync-context";
+import "@/lib/collaboration/cloudflare-yjs-provider";
+import { RemoteCursorOverlay } from "@/components/ui/remote-cursor-overlay";
 import { Editor, EditorContainer } from "@/components/ui/editor";
 import { H1Element, H2Element, H3Element } from "@/components/ui/heading-node";
 import { BlockList } from "@/components/ui/block-list";
@@ -29,13 +34,18 @@ import {
 	AlertDialogTitle,
 	AlertDialogTrigger,
 } from "@/components/ui/confirm-dialog";
+import { ShareMenu } from "@/components/column/ShareMenu";
+import { PresenceAvatars } from "@/components/column/PresenceAvatars";
+import { useAccount } from "@/hooks/useAccount";
 
-interface TodoColumnProps {
+export interface TodoColumnProps {
 	column: Column;
 	onUpdate: (id: string, value: Value) => void;
 	onRemove: (id: string) => void;
 	onToggleCollapse: (id: string) => void;
 	canRemove: boolean;
+	isOwner?: boolean;
+	sharedBy?: string | null;
 }
 
 export function TodoColumn({
@@ -44,7 +54,11 @@ export function TodoColumn({
 	onRemove,
 	onToggleCollapse,
 	canRemove,
+	isOwner = true,
+	sharedBy = null,
 }: TodoColumnProps) {
+	const { isAuthenticated } = useAccount();
+
 	const {
 		attributes,
 		listeners,
@@ -92,6 +106,8 @@ export function TodoColumn({
 					{/* Expand button */}
 					<button
 						onClick={handleToggleCollapse}
+						type="button"
+						aria-label="Expand column"
 						className="rounded p-1 hover:bg-muted"
 						title="Expand column"
 					>
@@ -111,7 +127,7 @@ export function TodoColumn({
 				isDragging && "opacity-50"
 			)}
 		>
-			{/* Column header with drag handle, collapse, and delete */}
+			{/* Column header with drag handle, collapse, share, presence, and delete */}
 			<div className="flex h-10 flex-shrink-0 items-start justify-between border-b border-border bg-muted/30 px-2 py-2">
 				<div className="flex items-center gap-1">
 					{/* Drag handle */}
@@ -125,55 +141,83 @@ export function TodoColumn({
 					{/* Collapse button */}
 					<button
 						onClick={handleToggleCollapse}
+						type="button"
+						aria-label="Collapse column"
 						className="rounded p-1 hover:bg-muted"
 						title="Collapse column"
 					>
 						<ChevronLeftIcon className="h-4 w-4 text-muted-foreground" />
 					</button>
+					{/* Shared indicator */}
+					{!isOwner && sharedBy && (
+						<span className="text-xs text-muted-foreground px-1">
+							Shared by {truncateAccountId(sharedBy)}
+						</span>
+					)}
 				</div>
 
-				{/* Delete button */}
-				{canRemove && (
-					<>
-						{isEmpty ? (
-							<button
-								onClick={handleRemove}
-								className="rounded p-1 hover:bg-muted"
-							>
-								<XIcon className="h-4 w-4 text-muted-foreground" />
-							</button>
-						) : (
-							<AlertDialog>
-								<AlertDialogTrigger asChild>
-									<button className="rounded p-1 hover:bg-muted">
-										<XIcon className="h-4 w-4 text-muted-foreground" />
-									</button>
-								</AlertDialogTrigger>
-								<AlertDialogContent>
-									<AlertDialogHeader>
-										<AlertDialogTitle>
-											Delete column?
-										</AlertDialogTitle>
-										<AlertDialogDescription>
-											This column has content. This action
-											cannot be undone.
-										</AlertDialogDescription>
-									</AlertDialogHeader>
-									<AlertDialogFooter>
-										<AlertDialogCancel>
-											Cancel
-										</AlertDialogCancel>
-										<AlertDialogAction
-											onClick={handleRemove}
-										>
-											Delete
-										</AlertDialogAction>
-									</AlertDialogFooter>
-								</AlertDialogContent>
-							</AlertDialog>
-						)}
-					</>
-				)}
+				<div className="flex items-center gap-1">
+					{/* Presence avatars */}
+					<PresenceAvatars columnId={column.id} />
+
+					{/* Share button (owner only) */}
+					{isOwner && isAuthenticated && (
+						<ShareMenu
+							columnId={column.id}
+							columnMeta={{
+								id: column.id,
+								ownerId: column.ownerId || "",
+								sharedWith: column.sharedWith || [],
+								publicId: column.publicId ?? null,
+								createdAt: 0,
+							}}
+						/>
+					)}
+
+					{/* Delete/Hide button */}
+					{canRemove && (
+						<>
+							{isEmpty || !isOwner ? (
+								<button
+									onClick={handleRemove}
+									className="rounded p-1 hover:bg-muted"
+									title={isOwner ? "Delete column" : "Hide column"}
+								>
+									<XIcon className="h-4 w-4 text-muted-foreground" />
+								</button>
+							) : (
+								<AlertDialog>
+									<AlertDialogTrigger asChild>
+										<button className="rounded p-1 hover:bg-muted">
+											<XIcon className="h-4 w-4 text-muted-foreground" />
+										</button>
+									</AlertDialogTrigger>
+									<AlertDialogContent>
+										<AlertDialogHeader>
+											<AlertDialogTitle>
+												Delete column?
+											</AlertDialogTitle>
+											<AlertDialogDescription>
+												This column has content. This action
+												cannot be undone.
+											</AlertDialogDescription>
+										</AlertDialogHeader>
+										<AlertDialogFooter>
+											<AlertDialogCancel>
+												Cancel
+											</AlertDialogCancel>
+											<AlertDialogAction
+												onClick={handleRemove}
+											>
+												Delete
+											</AlertDialogAction>
+										</AlertDialogFooter>
+									</AlertDialogContent>
+								</AlertDialog>
+							)}
+						</>
+					)}
+				</div>
 			</div>
 
 			{/* Editor */}
@@ -428,10 +472,28 @@ function useCmdKeyPressed() {
 
 function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 	const cmdPressed = useCmdKeyPressed();
+	const {
+		accountId,
+		account,
+		connectToColumn,
+		disconnectFromColumn,
+		onColumnMessage,
+		sendUpdate,
+		sendAwareness,
+	} = useSyncContext();
 
-	const editor = usePlateEditor({
-		id: column.id,
-		plugins: [
+	const isSyncedMode = !!accountId && !!account;
+
+	// Deterministic connection: make sure at least one column WS is opened
+	// while an editor is mounted. SyncContext ref-counting prevents flapping.
+	React.useEffect(() => {
+		if (!isSyncedMode) return;
+		connectToColumn(column.id);
+		return () => disconnectFromColumn(column.id);
+	}, [isSyncedMode, connectToColumn, disconnectFromColumn, column.id]);
+
+	const plugins = React.useMemo(() => {
+		const base: any[] = [
 			H1Plugin.withComponent(H1Element),
 			H2Plugin.withComponent(H2Element),
 			H3Plugin.withComponent(H3Element),
@@ -459,26 +521,172 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 			}),
 			ListShortcutsPlugin,
 			UrlDecorationPlugin,
-		],
-		value: column.value,
-	});
+		];
+
+		if (isSyncedMode && accountId) {
+			base.push(
+				(YjsPlugin.configure({
+					render: {
+						afterEditable: RemoteCursorOverlay,
+					},
+					options: {
+						providers: [
+							{
+								type: "cloudflare",
+								options: {
+									columnId: column.id,
+									transport: {
+										connectToColumn,
+										disconnectFromColumn,
+										onColumnMessage,
+										sendUpdate,
+										sendAwareness,
+									},
+								},
+							},
+						] as any,
+						cursors: {
+							data: {
+								name: displayAccountId(accountId),
+								color: getAccountColor(accountId),
+							},
+						},
+					},
+				}) as any),
+			);
+		}
+
+		return base;
+	}, [
+		isSyncedMode,
+		accountId,
+		column.id,
+		connectToColumn,
+		disconnectFromColumn,
+		onColumnMessage,
+		sendUpdate,
+		sendAwareness,
+	]);
+
+	const editor = usePlateEditor(
+		isSyncedMode
+			? {
+				id: column.id,
+				plugins,
+				value: [],
+			}
+			: {
+				id: column.id,
+				plugins,
+				value: column.value,
+			},
+		// Ensure the editor is recreated when collaboration plugins change.
+		[isSyncedMode, accountId, plugins],
+	);
+
+	// Initialize Yjs binding after the editor mounts.
+	React.useEffect(() => {
+		if (!isSyncedMode || !editor) return;
+
+		let cancelled = false;
+		let didInit = false;
+		let didDestroy = false;
+		const api = editor.getApi(YjsPlugin);
+
+		const initPromise = (async () => {
+			try {
+				await api.yjs.init({
+					id: column.id,
+					autoConnect: true,
+				});
+				didInit = true;
+
+				if (cancelled) {
+					// If StrictMode unmounted us before init finished, clean up now.
+					try {
+						api.yjs.destroy();
+						didDestroy = true;
+					} catch {
+						// ignore
+					}
+					return;
+				}
+
+				// init(autoConnect: true) handles provider connections.
+			} catch (err) {
+				// dev StrictMode can race connect/disconnect; ignore duplicates.
+				if (String(err).includes("already connected")) return;
+				console.error(err);
+			}
+		})();
+
+		return () => {
+			cancelled = true;
+			void initPromise.finally(() => {
+				if (!didInit) return;
+				if (didDestroy) return;
+				try {
+					api.yjs.destroy();
+				} catch {
+					// ignore
+				}
+			});
+		};
+	}, [isSyncedMode, editor, column.id]);
+
+	// For local-only mode, keep Plate in sync with `column.value`.
+	const isApplyingExternalValueRef = React.useRef(false);
+	const lastLocalValueRef = React.useRef<string | null>(null);
+
+	React.useEffect(() => {
+		if (isSyncedMode) return;
+
+		const setValue = (editor as any)?.tf?.setValue as
+			| ((v: Value) => void)
+			| undefined;
+		if (typeof setValue !== "function") return;
+
+		let serialized: string;
+		try {
+			serialized = JSON.stringify(column.value);
+		} catch {
+			return;
+		}
+
+		if (serialized === lastLocalValueRef.current) return;
+
+		isApplyingExternalValueRef.current = true;
+		try {
+			setValue(column.value);
+			lastLocalValueRef.current = serialized;
+		} finally {
+			isApplyingExternalValueRef.current = false;
+		}
+	}, [editor, column.value, isSyncedMode]);
 
 	const handleChange = React.useCallback(
 		({ value }: { value: Value }) => {
+			if (isSyncedMode) return;
+			if (isApplyingExternalValueRef.current) return;
+
+			try {
+				lastLocalValueRef.current = JSON.stringify(value);
+			} catch {
+				lastLocalValueRef.current = null;
+			}
+
 			onUpdate(column.id, value);
 		},
-		[column.id, onUpdate]
+		[column.id, onUpdate, isSyncedMode],
 	);
 
 	// Handle Cmd+Click on URLs
 	const handleClick = React.useCallback((e: React.MouseEvent) => {
 		if (!e.metaKey && !e.ctrlKey) return;
 
-		// Get the clicked element
 		const target = e.target as HTMLElement;
 		if (!target.closest("[data-slate-node='text']")) return;
 
-		// Get selection from click position
 		const selection = window.getSelection();
 		if (!selection || selection.rangeCount === 0) return;
 
@@ -518,21 +726,30 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 			}
 			return <span {...attributes}>{children}</span>;
 		},
-		[]
+		[],
 	);
 
-	return (
+	const plate = (
+		<EditorContainer
+			className={cn("h-full", cmdPressed && "cmd-pressed")}
+			onClick={handleClick}
+		>
+			<Editor
+				variant="column"
+				role="textbox"
+				aria-multiline="true"
+				aria-label="Todo editor"
+				placeholder="Start typing..."
+				renderLeaf={renderLeaf}
+			/>
+		</EditorContainer>
+	);
+
+	return isSyncedMode ? (
+		<Plate editor={editor}>{plate}</Plate>
+	) : (
 		<Plate editor={editor} onChange={handleChange}>
-			<EditorContainer
-				className={cn("h-full", cmdPressed && "cmd-pressed")}
-				onClick={handleClick}
-			>
-				<Editor
-					variant="column"
-					placeholder="Start typing..."
-					renderLeaf={renderLeaf}
-				/>
-			</EditorContainer>
+			{plate}
 		</Plate>
 	);
 }

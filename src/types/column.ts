@@ -1,9 +1,18 @@
 import type { Value } from "platejs";
 
+/**
+ * Column as stored/displayed on the client
+ * Note: ownerId, sharedWith, publicId are stored in the Durable Object (ColumnMeta)
+ * and fetched separately. This interface is for the client-side column with content.
+ */
 export interface Column {
 	id: string;
 	value: Value;
 	collapsed?: boolean;
+	// Metadata from server (populated after fetch)
+	ownerId?: string;
+	sharedWith?: string[];
+	publicId?: string | null;
 }
 
 export const EMPTY_COLUMN_VALUE: Value = [

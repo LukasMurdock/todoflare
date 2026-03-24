@@ -1,13 +1,16 @@
-import { useCallback, useState } from "react";
+import { useCallback, useState, useMemo, useEffect } from "react";
 import type { Value } from "platejs";
-import { type Column, createEmptyColumn } from "@/types/column";
+import { EMPTY_COLUMN_VALUE, type Column, createEmptyColumn } from "@/types/column";
 import { useDebouncedEffect } from "./useDebouncedEffect";
+import { useSyncContext } from "@/contexts/sync-context";
+import type { ColumnMeta } from "@/types/account";
+import { normalizeAccountId } from "@/lib/account";
 
-const STORAGE_KEY = "todoflare-columns";
+const LOCAL_STORAGE_KEY = "todoflare-columns";
 
-function loadColumns(): Column[] {
+function loadLocalColumns(): Column[] {
 	try {
-		const stored = localStorage.getItem(STORAGE_KEY);
+		const stored = localStorage.getItem(LOCAL_STORAGE_KEY);
 		if (stored) {
 			const parsed = JSON.parse(stored);
 			if (Array.isArray(parsed) && parsed.length > 0) {
@@ -20,70 +23,259 @@ function loadColumns(): Column[] {
 	return [createEmptyColumn()];
 }
 
-function saveColumns(columns: Column[]): void {
+function saveLocalColumns(columns: Column[]): void {
 	try {
-		localStorage.setItem(STORAGE_KEY, JSON.stringify(columns));
+		localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(columns));
 	} catch (e) {
 		console.error("Failed to save columns to localStorage:", e);
 	}
 }
 
-export function useColumns() {
-	const [columns, setColumns] = useState<Column[]>(() => loadColumns());
+export function clearLocalColumns(): void {
+	try {
+		localStorage.removeItem(LOCAL_STORAGE_KEY);
+	} catch (e) {
+		console.error("Failed to clear columns from localStorage:", e);
+	}
+}
 
-	// Persist to localStorage with debouncing (500ms)
-	// Skips initial mount, flushes on unmount and beforeunload
+export function getLocalColumns(): Column[] {
+	return loadLocalColumns();
+}
+
+/**
+ * Hook for managing columns
+ *
+ * Works in two modes:
+ * 1. Local-only: When no account is logged in, uses localStorage
+ * 2. Synced: When logged in, uses the account's column order with sync
+ */
+export function useColumns() {
+	const {
+		accountId,
+		account,
+		sharedColumns,
+		createColumn,
+		deleteColumn,
+		updateColumnOrder,
+		updateHiddenSharedColumns,
+	} = useSyncContext();
+
+	// Local columns (for offline/unauthenticated mode)
+	const [localColumns, setLocalColumns] = useState<Column[]>(() =>
+		loadLocalColumns(),
+	);
+	const [collapsedById, setCollapsedById] = useState<Record<string, boolean>>({});
+
+	// When authenticated, derive columns from account metadata + shared columns
+	const syncedColumnIds = useMemo(() => {
+		if (!account) return [];
+
+		// Start with owned columns in order
+		const ownedIds = account.columnOrder || [];
+
+		// Add shared columns that aren't hidden
+		const hiddenSet = new Set(account.hiddenSharedColumns || []);
+		const sharedIds = sharedColumns
+			.filter((col) => !hiddenSet.has(col.id))
+			.map((col) => col.id);
+
+		return [...ownedIds, ...sharedIds];
+	}, [account, sharedColumns]);
+
+	// Build column metadata map
+	const columnMetaMap = useMemo(() => {
+		const map = new Map<string, ColumnMeta>();
+		for (const col of sharedColumns) {
+			map.set(col.id, col);
+		}
+		return map;
+	}, [sharedColumns]);
+
+	// Persist local columns to localStorage
 	useDebouncedEffect(
 		() => {
-			saveColumns(columns);
+			if (!accountId) {
+				saveLocalColumns(localColumns);
+			}
 		},
-		[columns],
+		[localColumns, accountId],
 		500
 	);
 
-	const addColumn = useCallback(() => {
-		setColumns((prev) => [...prev, createEmptyColumn()]);
-	}, []);
+	// Add column
+	const addColumn = useCallback(async () => {
+		if (accountId) {
+			// Create column on server
+			await createColumn();
+		} else {
+			// Local-only mode
+			setLocalColumns((prev) => [...prev, createEmptyColumn()]);
+		}
+	}, [accountId, createColumn]);
 
-	const removeColumn = useCallback((id: string) => {
-		setColumns((prev) => {
-			// Don't remove if it's the last column
-			if (prev.length <= 1) return prev;
-			return prev.filter((col) => col.id !== id);
-		});
-	}, []);
+	// Remove column
+	const removeColumn = useCallback(
+		async (id: string) => {
+			if (accountId) {
+				// Check if we own this column
+				const meta = columnMetaMap.get(id);
+				const isOwner =
+					!meta ||
+					normalizeAccountId(meta.ownerId) === normalizeAccountId(accountId);
 
-	const updateColumnValue = useCallback((id: string, value: Value) => {
-		setColumns((prev) =>
-			prev.map((col) => (col.id === id ? { ...col, value } : col))
-		);
-	}, []);
-
-	const reorderColumns = useCallback(
-		(activeId: string, overId: string) => {
-			setColumns((prev) => {
-				const oldIndex = prev.findIndex((col) => col.id === activeId);
-				const newIndex = prev.findIndex((col) => col.id === overId);
-
-				if (oldIndex === -1 || newIndex === -1) return prev;
-
-				const newColumns = [...prev];
-				const [removed] = newColumns.splice(oldIndex, 1);
-				newColumns.splice(newIndex, 0, removed);
-
-				return newColumns;
-			});
+				if (isOwner) {
+					// Delete column from server
+					await deleteColumn(id);
+				} else {
+					// Hide shared column
+					const hiddenSharedColumns = [
+						...(account?.hiddenSharedColumns || []),
+						id,
+					];
+					await updateHiddenSharedColumns(hiddenSharedColumns);
+				}
+			} else {
+				// Local-only mode
+				setLocalColumns((prev) => {
+					if (prev.length <= 1) return prev;
+					return prev.filter((col) => col.id !== id);
+				});
+			}
 		},
-		[]
+		[
+			accountId,
+			account,
+			columnMetaMap,
+			deleteColumn,
+			updateHiddenSharedColumns,
+		],
 	);
 
-	const toggleColumnCollapsed = useCallback((id: string) => {
-		setColumns((prev) =>
-			prev.map((col) =>
-				col.id === id ? { ...col, collapsed: !col.collapsed } : col
-			)
-		);
-	}, []);
+	// Update column value (for local-only mode)
+	const updateColumnValue = useCallback(
+		(id: string, value: Value) => {
+			if (!accountId) {
+				setLocalColumns((prev) =>
+					prev.map((col) => (col.id === id ? { ...col, value } : col)),
+				);
+			}
+			// In synced mode, updates go through Yjs collaboration
+		},
+		[accountId],
+	);
+
+	// Reorder columns
+	const reorderColumns = useCallback(
+		async (activeId: string, overId: string) => {
+			if (accountId) {
+				// Synced mode: update column order
+				const oldIndex = syncedColumnIds.indexOf(activeId);
+				const newIndex = syncedColumnIds.indexOf(overId);
+
+				if (oldIndex === -1 || newIndex === -1) return;
+
+				const newOrder = [...syncedColumnIds];
+				const [removed] = newOrder.splice(oldIndex, 1);
+				newOrder.splice(newIndex, 0, removed);
+
+				// Separate owned and shared columns
+				const ownedOrder = newOrder.filter(
+					(id) => !columnMetaMap.has(id),
+				);
+
+				await updateColumnOrder(ownedOrder);
+			} else {
+				// Local-only mode
+				setLocalColumns((prev) => {
+					const oldIndex = prev.findIndex((col) => col.id === activeId);
+					const newIndex = prev.findIndex((col) => col.id === overId);
+
+					if (oldIndex === -1 || newIndex === -1) return prev;
+
+					const newColumns = [...prev];
+					const [removed] = newColumns.splice(oldIndex, 1);
+					newColumns.splice(newIndex, 0, removed);
+
+					return newColumns;
+				});
+			}
+		},
+		[accountId, syncedColumnIds, columnMetaMap, updateColumnOrder],
+	);
+
+	// Toggle column collapsed
+	const toggleColumnCollapsed = useCallback(
+		(id: string) => {
+			if (!accountId) {
+				setLocalColumns((prev) =>
+					prev.map((col) =>
+						col.id === id ? { ...col, collapsed: !col.collapsed } : col,
+					),
+				);
+				return;
+			}
+
+			setCollapsedById((prev) => ({
+				...prev,
+				[id]: !prev[id],
+			}));
+		},
+		[accountId],
+	);
+
+	// Get columns based on mode
+	const columns = useMemo(() => {
+		if (accountId && account) {
+			// Synced mode: return column IDs with metadata
+			return syncedColumnIds.map((id) => {
+				const meta = columnMetaMap.get(id);
+				return {
+					id,
+					value: EMPTY_COLUMN_VALUE,
+					collapsed: collapsedById[id] ?? false,
+					ownerId: meta?.ownerId || accountId,
+					sharedWith: meta?.sharedWith || [],
+					publicId: meta?.publicId || null,
+				} as Column;
+			});
+		}
+		// Local-only mode
+		return localColumns;
+	}, [
+		accountId,
+		account,
+		syncedColumnIds,
+		columnMetaMap,
+		localColumns,
+		collapsedById,
+	]);
+
+	// Check if a column is owned by the current user
+	const isColumnOwner = useCallback(
+		(columnId: string) => {
+			if (!accountId) return true; // Local mode, always owner
+
+			const meta = columnMetaMap.get(columnId);
+			if (!meta) return true; // If no meta, it's owned
+
+			return (
+				normalizeAccountId(meta.ownerId) === normalizeAccountId(accountId)
+			);
+		},
+		[accountId, columnMetaMap],
+	);
+
+	// Get column owner info
+	const getColumnOwner = useCallback(
+		(columnId: string): string | null => {
+			if (!accountId) return null;
+
+			const meta = columnMetaMap.get(columnId);
+			return meta?.ownerId || null;
+		},
+		[accountId, columnMetaMap],
+	);
 
 	return {
 		columns,
@@ -92,5 +284,10 @@ export function useColumns() {
 		updateColumnValue,
 		reorderColumns,
 		toggleColumnCollapsed,
+		isColumnOwner,
+		getColumnOwner,
+		// For migration
+		localColumns,
+		clearLocalColumns,
 	};
 }

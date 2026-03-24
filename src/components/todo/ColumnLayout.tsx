@@ -14,6 +14,8 @@ interface ColumnLayoutProps {
 	onUpdate: (id: string, value: Value) => void;
 	onRemove: (id: string) => void;
 	onToggleCollapse: (id: string) => void;
+	isColumnOwner?: (columnId: string) => boolean;
+	getColumnOwner?: (columnId: string) => string | null;
 }
 
 export function ColumnLayout({
@@ -22,6 +24,8 @@ export function ColumnLayout({
 	onUpdate,
 	onRemove,
 	onToggleCollapse,
+	isColumnOwner,
+	getColumnOwner,
 }: ColumnLayoutProps) {
 	const canRemove = columns.length > 1;
 	const { registerRef } = useWelcomeRefsOptional();
@@ -47,6 +51,8 @@ export function ColumnLayout({
 						onRemove={onRemove}
 						onToggleCollapse={onToggleCollapse}
 						canRemove={canRemove}
+						isOwner={isColumnOwner?.(column.id) ?? true}
+						sharedBy={getColumnOwner?.(column.id) ?? null}
 					/>
 				</div>
 			))}
@@ -56,6 +62,8 @@ export function ColumnLayout({
 				<button
 					ref={addButtonRef}
 					onClick={onAdd}
+					type="button"
+					aria-label="Add column"
 					className={cn(
 						"flex h-8 w-8 items-center justify-center rounded-md",
 						"border border-dashed border-border",
@@ -70,6 +78,7 @@ export function ColumnLayout({
 		</div>
 	);
 }
+
 
 function PlusIcon({ className }: { className?: string }) {
 	return (

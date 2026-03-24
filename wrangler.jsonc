@@ -5,7 +5,40 @@
 	"compatibility_date": "2025-01-01",
 	"main": "./src/index.tsx",
 	"assets": {
+		"directory": "./dist",
 		"not_found_handling": "single-page-application",
-		"run_worker_first": ["/api/*"]
-	}
+		"run_worker_first": ["/api/*", "/p/*"]
+	},
+	"kv_namespaces": [
+		{
+			"binding": "ACCOUNTS",
+			"id": "ACCOUNTS_KV_ID"
+		},
+		{
+			"binding": "RATE_LIMIT",
+			"id": "RATE_LIMIT_KV_ID"
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "COLUMN_ROOM",
+				"class_name": "ColumnRoomSql"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_classes": ["ColumnRoom"]
+		},
+		{
+			"tag": "v2",
+			"new_sqlite_classes": ["ColumnRoomSql"]
+		},
+		{
+			"tag": "v3",
+			"deleted_classes": ["ColumnRoom"]
+		}
+	]
 }

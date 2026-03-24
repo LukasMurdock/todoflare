@@ -14,3 +14,7 @@ dist
 
 # OS
 .DS_Store
+
+# Playwright
+playwright-report
+test-results

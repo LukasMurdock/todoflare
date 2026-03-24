@@ -18,10 +18,19 @@ import {
 
 import { useColumns } from "@/hooks/useColumns";
 import { ColumnLayout } from "./ColumnLayout";
+import { AccountBadge } from "@/components/account/AccountBadge";
 
 export function TodoApp() {
-	const { columns, addColumn, removeColumn, updateColumnValue, reorderColumns, toggleColumnCollapsed } =
-		useColumns();
+	const {
+		columns,
+		addColumn,
+		removeColumn,
+		updateColumnValue,
+		reorderColumns,
+		toggleColumnCollapsed,
+		isColumnOwner,
+		getColumnOwner,
+	} = useColumns();
 
 	const sensors = useSensors(
 		useSensor(PointerSensor, {
@@ -43,23 +52,32 @@ export function TodoApp() {
 	};
 
 	return (
-		<DndContext
-			sensors={sensors}
-			collisionDetection={closestCenter}
-			onDragEnd={handleDragEnd}
-		>
-			<SortableContext
-				items={columns.map((c) => c.id)}
-				strategy={horizontalListSortingStrategy}
+		<div className="relative min-h-screen">
+			{/* Account badge in top-right corner */}
+			<div className="fixed top-2 right-2 z-50">
+				<AccountBadge />
+			</div>
+
+			<DndContext
+				sensors={sensors}
+				collisionDetection={closestCenter}
+				onDragEnd={handleDragEnd}
 			>
-				<ColumnLayout
-					columns={columns}
-					onAdd={addColumn}
-					onUpdate={updateColumnValue}
-					onRemove={removeColumn}
-					onToggleCollapse={toggleColumnCollapsed}
-				/>
-			</SortableContext>
-		</DndContext>
+				<SortableContext
+					items={columns.map((c) => c.id)}
+					strategy={horizontalListSortingStrategy}
+				>
+					<ColumnLayout
+						columns={columns}
+						onAdd={addColumn}
+						onUpdate={updateColumnValue}
+						onRemove={removeColumn}
+						onToggleCollapse={toggleColumnCollapsed}
+						isColumnOwner={isColumnOwner}
+						getColumnOwner={getColumnOwner}
+					/>
+				</SortableContext>
+			</DndContext>
+		</div>
 	);
 }
