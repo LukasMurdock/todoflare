@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { OpenAPIHono } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import type { Account, ColumnMeta } from "./types/account";
 import {
@@ -16,11 +16,12 @@ import {
 	RATE_LIMITS,
 } from "./lib/rate-limit";
 import { ColumnRoomSql } from "./durable-objects/column-room";
+import { registerAgentApi } from "./agent-api";
 
 // Re-export Durable Objects for Cloudflare
 export { ColumnRoomSql };
 
-type Bindings = {
+export type Bindings = {
 	ACCOUNTS: KVNamespace;
 	RATE_LIMIT: KVNamespace;
 	COLUMN_ROOM: DurableObjectNamespace;
@@ -32,11 +33,22 @@ type Bindings = {
 	BACKUP_MAX_COLUMNS?: string;
 };
 
-const app = new Hono<{ Bindings: Bindings }>();
+const app = new OpenAPIHono<{ Bindings: Bindings }>();
 
 const ACCOUNT_SCHEMA_VERSION = 1;
 const COLUMN_META_SCHEMA_VERSION = 1;
 const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+registerAgentApi(app);
+
+app.doc("/openapi.json", {
+	openapi: "3.0.0",
+	info: {
+		title: "Todoflare Agent API",
+		version: "1.0.0",
+		description: "Read-only agent endpoints for column discovery and snapshots.",
+	},
+});
 
 type SchemaParseErrorCode =
 	| "invalid_json"
