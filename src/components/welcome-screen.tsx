@@ -34,14 +34,15 @@ const annotations: AnnotationConfig[] = [
 		label: "Start typing to add todos",
 		arrowTarget: "right",
 		arrowFrom: "right",
-		gap: 30,
+		gap: 44,
+		labelVerticalOffset: -8,
 	},
 	{
 		key: "add-column-button",
 		label: "Add columns",
 		arrowTarget: "bottom",
 		arrowFrom: "bottom",
-		gap: 30,
+		gap: 46,
 	},
 	{
 		key: "shortcuts-button",

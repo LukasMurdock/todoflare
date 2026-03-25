@@ -25,6 +25,22 @@ async function createAccount(request: APIRequestContext, baseURL: string) {
 	return data.account.id;
 }
 
+async function createColumn(
+	request: APIRequestContext,
+	baseURL: string,
+	accountId: string,
+) {
+	const response = await request.post(`${baseURL}/api/column`, {
+		headers: { "Content-Type": "application/json" },
+		data: { accountId },
+	});
+	if (!response.ok()) {
+		throw new Error(
+			`Failed to create column (${response.status()}): ${await response.text()}`,
+		);
+	}
+}
+
 async function bootstrapAuthenticatedPage(page: Page, accountId: string) {
 	await page.addInitScript(
 		({ accountStorageKey, localColumnsKey, welcomeKey, id }) => {
@@ -79,6 +95,53 @@ async function addColumnAndGetId(page: Page) {
 }
 
 test.describe("collaborative editing", () => {
+	test("onboarding first-visit UI renders correctly with screenshots", async ({
+		page,
+		request,
+		baseURL,
+	}, testInfo) => {
+		const appUrl = baseURL ?? "http://127.0.0.1:4173";
+		const accountId = await createAccount(request, appUrl);
+		await createColumn(request, appUrl, accountId);
+
+		await page.addInitScript(
+			({ accountStorageKey, localColumnsKey, welcomeKey, id }) => {
+				window.localStorage.setItem(accountStorageKey, id);
+				window.localStorage.removeItem(welcomeKey);
+				window.localStorage.removeItem(localColumnsKey);
+			},
+			{
+				accountStorageKey: ACCOUNT_STORAGE_KEY,
+				localColumnsKey: LOCAL_COLUMNS_KEY,
+				welcomeKey: WELCOME_KEY,
+				id: accountId,
+			},
+		);
+
+		await page.goto("/");
+		await expect(page.getByText("Todoflare")).toBeVisible();
+		await expect(
+			page.getByText("All your data is saved locally in your browser."),
+		).toBeVisible();
+
+		const onboardingPath = testInfo.outputPath("onboarding-first-visit.png");
+		await page.screenshot({ path: onboardingPath, fullPage: true });
+		await testInfo.attach("onboarding-first-visit", {
+			path: onboardingPath,
+			contentType: "image/png",
+		});
+
+		await page.getByRole("button", { name: "Add column" }).click();
+		await expect(page.getByText("Todoflare")).toHaveCount(0);
+
+		const dismissedPath = testInfo.outputPath("onboarding-dismissed.png");
+		await page.screenshot({ path: dismissedPath, fullPage: true });
+		await testInfo.attach("onboarding-dismissed", {
+			path: dismissedPath,
+			contentType: "image/png",
+		});
+	});
+
 	test("generate account and claim data keeps local offline data", async ({ page }) => {
 		await page.addInitScript(({ localColumnsKey, welcomeKey }) => {
 			const offlineColumns = [
