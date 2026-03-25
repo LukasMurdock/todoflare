@@ -598,8 +598,18 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 
 			const data = (await response.json()) as CreateColumnResponse;
 
-			// Refresh account to get updated column order
-			await fetchAccount(accountId);
+			// Optimistically update local account state so UI feels instant.
+			setAccount((prev) => {
+				if (!prev) return prev;
+				if (prev.columnOrder.includes(data.column.id)) return prev;
+				return {
+					...prev,
+					columnOrder: [...prev.columnOrder, data.column.id],
+				};
+			});
+
+			// Reconcile with server in the background.
+			void fetchAccount(accountId);
 
 			return data.column;
 		} catch (err) {
