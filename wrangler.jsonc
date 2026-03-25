@@ -1,6 +1,6 @@
 {
 	"$schema": "./node_modules/wrangler/config-schema.json",
-	"name": "todoflare",
+	"name": "todoflare-prod",
 	"account_id": "440e7b1dda326614729fce463b0d6c33",
 	"compatibility_date": "2025-01-01",
 	"main": "./src/index.tsx",
@@ -17,11 +17,11 @@
 	"kv_namespaces": [
 		{
 			"binding": "ACCOUNTS",
-			"id": "ACCOUNTS_KV_ID"
+			"id": "cadce14fe3fc42a88073266681de9e54"
 		},
 		{
 			"binding": "RATE_LIMIT",
-			"id": "RATE_LIMIT_KV_ID"
+			"id": "6c0a7a262faf42e78eb35d86ca637ec4"
 		}
 	],
 	"r2_buckets": [
@@ -41,15 +41,7 @@
 	"migrations": [
 		{
 			"tag": "v1",
-			"new_classes": ["ColumnRoom"]
-		},
-		{
-			"tag": "v2",
 			"new_sqlite_classes": ["ColumnRoomSql"]
-		},
-		{
-			"tag": "v3",
-			"deleted_classes": ["ColumnRoom"]
 		}
 	],
 	"triggers": {
