@@ -104,7 +104,7 @@ export function AccountBadge() {
 			<Dialog open={showGarbageCan} onOpenChange={setShowGarbageCan}>
 				<DialogContent>
 					<DialogHeader>
-						<DialogTitle>Garbage Can</DialogTitle>
+						<DialogTitle>Recently Deleted</DialogTitle>
 						<DialogDescription>
 							Recently deleted columns are kept for 30 days.
 						</DialogDescription>
@@ -213,7 +213,7 @@ export function AccountBadge() {
 
 				<DropdownMenuItem onClick={() => setShowGarbageCan(true)}>
 					<Trash2 className="mr-2 h-4 w-4" />
-					Garbage Can ({deletedColumns.length})
+					Recently Deleted ({deletedColumns.length})
 				</DropdownMenuItem>
 
 				<DropdownMenuSeparator />

@@ -39,7 +39,7 @@ export function ColumnLayout({
 	}, [registerRef]);
 
 	return (
-		<div className="flex h-full overflow-x-auto scrollbar-hide">
+		<div className="flex h-full overflow-x-auto pr-28 scrollbar-hide scroll-pr-28">
 			{columns.map((column, index) => (
 				<div
 					key={column.id}
@@ -75,6 +75,8 @@ export function ColumnLayout({
 					<PlusIcon className="h-4 w-4" />
 				</button>
 			</div>
+
+			<div className="h-full w-12 flex-shrink-0" aria-hidden="true" />
 		</div>
 	);
 }
