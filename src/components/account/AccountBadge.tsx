@@ -1,5 +1,5 @@
 import { useRef, useState, type ChangeEvent } from "react";
-import { Copy, LogOut, Check, Download, Upload } from "lucide-react";
+import { Copy, LogOut, Check, Download, Upload, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
 	Tooltip,
@@ -13,6 +13,13 @@ import {
 	DropdownMenuSeparator,
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+	Dialog,
+	DialogContent,
+	DialogHeader,
+	DialogTitle,
+	DialogDescription,
+} from "@/components/ui/dialog";
 import { useAccount } from "@/hooks/useAccount";
 import { truncateAccountId, displayAccountId } from "@/lib/account";
 import { cn } from "@/lib/utils";
@@ -23,10 +30,13 @@ export function AccountBadge() {
 		connectionStatus,
 		logout,
 		isAuthenticated,
+		restoreColumn,
 		exportAccountData,
 		importAccountData,
+		deletedColumns,
 	} = useAccount();
 	const [copied, setCopied] = useState(false);
+	const [showGarbageCan, setShowGarbageCan] = useState(false);
 	const fileInputRef = useRef<HTMLInputElement | null>(null);
 
 	if (!isAuthenticated || !accountId) {
@@ -87,16 +97,67 @@ export function AccountBadge() {
 		}
 	};
 
+	const now = Date.now();
+
 	return (
-		<DropdownMenu>
-			<input
-				ref={fileInputRef}
-				type="file"
-				accept="application/json"
-				onChange={handleImportSelect}
-				className="hidden"
-			/>
-			<Tooltip>
+		<>
+			<Dialog open={showGarbageCan} onOpenChange={setShowGarbageCan}>
+				<DialogContent>
+					<DialogHeader>
+						<DialogTitle>Garbage Can</DialogTitle>
+						<DialogDescription>
+							Recently deleted columns are kept for 30 days.
+						</DialogDescription>
+					</DialogHeader>
+					{deletedColumns.length === 0 ? (
+						<p className="text-sm text-muted-foreground">No recently deleted columns.</p>
+					) : (
+						<div className="space-y-2">
+							{deletedColumns.map((item) => {
+								const expiresAt = item.deletedAt + 30 * 24 * 60 * 60 * 1000;
+								const remainingDays = Math.max(
+									0,
+									Math.ceil((expiresAt - now) / (24 * 60 * 60 * 1000)),
+								);
+
+							const handleRestore = async () => {
+								await restoreColumn(item.columnId);
+							};
+
+							return (
+								<div
+									key={`${item.columnId}-${item.deletedAt}`}
+									className="rounded border p-2"
+								>
+									<p className="font-mono text-xs">{item.columnId}</p>
+									<p className="text-xs text-muted-foreground">
+										Expires in {remainingDays} day{remainingDays === 1 ? "" : "s"}
+									</p>
+									<Button
+										variant="outline"
+										size="sm"
+										onClick={handleRestore}
+										className="mt-2 h-7 px-2"
+									>
+										Restore
+									</Button>
+								</div>
+							);
+							})}
+						</div>
+					)}
+				</DialogContent>
+			</Dialog>
+
+			<DropdownMenu>
+				<input
+					ref={fileInputRef}
+					type="file"
+					accept="application/json"
+					onChange={handleImportSelect}
+					className="hidden"
+				/>
+				<Tooltip>
 				<TooltipTrigger asChild>
 					<DropdownMenuTrigger asChild>
 						<Button
@@ -121,9 +182,9 @@ export function AccountBadge() {
 					<p className="font-mono">{displayAccountId(accountId)}</p>
 					<p className="text-muted-foreground">{statusText}</p>
 				</TooltipContent>
-			</Tooltip>
+				</Tooltip>
 
-			<DropdownMenuContent align="end" className="w-56">
+				<DropdownMenuContent align="end" className="w-56">
 				<div className="px-2 py-1.5">
 					<p className="text-xs text-muted-foreground">Account ID</p>
 					<p className="font-mono text-sm">{displayAccountId(accountId)}</p>
@@ -150,13 +211,19 @@ export function AccountBadge() {
 					Import Data
 				</DropdownMenuItem>
 
+				<DropdownMenuItem onClick={() => setShowGarbageCan(true)}>
+					<Trash2 className="mr-2 h-4 w-4" />
+					Garbage Can ({deletedColumns.length})
+				</DropdownMenuItem>
+
 				<DropdownMenuSeparator />
 
 				<DropdownMenuItem onClick={logout} className="text-destructive">
 					<LogOut className="mr-2 h-4 w-4" />
 					Log Out
 				</DropdownMenuItem>
-			</DropdownMenuContent>
-		</DropdownMenu>
+				</DropdownMenuContent>
+			</DropdownMenu>
+		</>
 	);
 }

@@ -6,8 +6,10 @@ function normalizeAccountId(id: string): string {
 }
 
 async function createAccount(): Promise<string> {
+	const syntheticIp = `10.1.0.${Math.floor(Math.random() * 200) + 10}`;
 	const res = await SELF.fetch("http://example.com/api/account", {
 		method: "POST",
+		headers: { "X-Forwarded-For": syntheticIp },
 	});
 	expect(res.ok).toBe(true);
 	const data = (await res.json()) as { account: { id: string } };
@@ -25,6 +27,22 @@ async function createColumn(accountId: string): Promise<string> {
 	const data = (await res.json()) as { column: { id: string } };
 	expect(typeof data.column?.id).toBe("string");
 	return data.column.id;
+}
+
+async function deleteColumn(accountId: string, columnId: string): Promise<void> {
+	const res = await SELF.fetch(`http://example.com/api/column/${columnId}`, {
+		method: "DELETE",
+		headers: { "X-Account-ID": accountId },
+	});
+	expect(res.ok).toBe(true);
+}
+
+async function restoreColumn(accountId: string, columnId: string): Promise<void> {
+	const res = await SELF.fetch(`http://example.com/api/column/${columnId}/restore`, {
+		method: "POST",
+		headers: { "X-Account-ID": accountId },
+	});
+	expect(res.ok).toBe(true);
 }
 
 function getResponseWebSocket(response: Response): WebSocket {
@@ -100,6 +118,43 @@ describe("Worker routes", () => {
 		const data = (await metaRes.json()) as { column: { id: string; ownerId: string } };
 		expect(data.column.id).toBe(columnId);
 		expect(data.column.ownerId).toBe(accountId);
+	});
+
+	it("moves deleted columns into garbage can list", async () => {
+		const accountId = await createAccount();
+		const columnId = await createColumn(accountId);
+		await deleteColumn(accountId, columnId);
+
+		const accountRes = await SELF.fetch(
+			`http://example.com/api/account/${normalizeAccountId(accountId)}`,
+		);
+		expect(accountRes.ok).toBe(true);
+		const data = (await accountRes.json()) as {
+			account: { columnOrder: string[] };
+			deletedColumns: Array<{ columnId: string; deletedAt: number }>;
+		};
+
+		expect(data.account.columnOrder).not.toContain(columnId);
+		expect(data.deletedColumns.some((c) => c.columnId === columnId)).toBe(true);
+	});
+
+	it("restores a trashed column back into account order", async () => {
+		const accountId = await createAccount();
+		const columnId = await createColumn(accountId);
+		await deleteColumn(accountId, columnId);
+		await restoreColumn(accountId, columnId);
+
+		const accountRes = await SELF.fetch(
+			`http://example.com/api/account/${normalizeAccountId(accountId)}`,
+		);
+		expect(accountRes.ok).toBe(true);
+		const data = (await accountRes.json()) as {
+			account: { columnOrder: string[] };
+			deletedColumns: Array<{ columnId: string }>;
+		};
+
+		expect(data.account.columnOrder).toContain(columnId);
+		expect(data.deletedColumns.some((c) => c.columnId === columnId)).toBe(false);
 	});
 
 	it("returns backup service misconfiguration error when admin backups unavailable", async () => {

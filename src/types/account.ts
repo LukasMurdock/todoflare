@@ -21,6 +21,11 @@ export interface ColumnMeta {
 	createdAt: number;
 }
 
+export interface DeletedColumn {
+	columnId: string;
+	deletedAt: number;
+}
+
 /**
  * Presence user for real-time awareness
  */
@@ -56,6 +61,7 @@ export interface CreateAccountResponse {
 export interface GetAccountResponse {
 	account: Account;
 	sharedColumns: ColumnMeta[]; // Columns shared TO this account
+	deletedColumns: DeletedColumn[];
 }
 
 export interface CreateColumnResponse {

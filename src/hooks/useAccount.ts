@@ -9,12 +9,14 @@ export function useAccount() {
 	const {
 		accountId,
 		account,
+		deletedColumns,
 		isLoading,
 		error,
 		connectionStatus,
 		createAccount,
 		loginWithAccountId,
 		logout,
+		restoreColumn,
 		exportAccountData,
 		importAccountData,
 		hasLocalData,
@@ -24,6 +26,7 @@ export function useAccount() {
 		// Account state
 		accountId,
 		account,
+		deletedColumns,
 		isAuthenticated: !!accountId && !!account,
 		isLoading,
 		error,
@@ -35,6 +38,7 @@ export function useAccount() {
 		createAccount,
 		loginWithAccountId,
 		logout,
+		restoreColumn,
 		exportAccountData,
 		importAccountData,
 

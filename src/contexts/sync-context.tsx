@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import type {
 	Account,
 	ColumnMeta,
+	DeletedColumn,
 	ConnectionStatus,
 	PresenceUser,
 	SyncMessage,
@@ -135,6 +136,7 @@ interface SyncContextValue {
 
 	// Shared columns
 	sharedColumns: ColumnMeta[];
+	deletedColumns: DeletedColumn[];
 
 	// Column connections
 	connectToColumn: (columnId: string) => void;
@@ -145,6 +147,7 @@ interface SyncContextValue {
 	// Column operations (via API)
 	createColumn: () => Promise<ColumnMeta | null>;
 	deleteColumn: (columnId: string) => Promise<boolean>;
+	restoreColumn: (columnId: string) => Promise<boolean>;
 	shareColumn: (columnId: string, targetAccountId: string) => Promise<boolean>;
 	revokeShare: (columnId: string, targetAccountId: string) => Promise<boolean>;
 	enablePublicLink: (
@@ -190,6 +193,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 	});
 	const [account, setAccount] = useState<Account | null>(null);
 	const [sharedColumns, setSharedColumns] = useState<ColumnMeta[]>([]);
+	const [deletedColumns, setDeletedColumns] = useState<DeletedColumn[]>([]);
 	const [isLoading, setIsLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
@@ -240,6 +244,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 						setAccountId(null);
 						setAccount(null);
 						setSharedColumns([]);
+						setDeletedColumns([]);
 						try {
 							localStorage.removeItem(ACCOUNT_STORAGE_KEY);
 						} catch {
@@ -261,6 +266,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			const data = (await response.json()) as GetAccountResponse;
 			setAccount(data.account);
 			setSharedColumns(data.sharedColumns || []);
+			setDeletedColumns(data.deletedColumns || []);
 			return data.account;
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "Unknown error");
@@ -354,6 +360,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		setAccountId(null);
 		setAccount(null);
 		setSharedColumns([]);
+		setDeletedColumns([]);
 		localStorage.removeItem(ACCOUNT_STORAGE_KEY);
 		updateConnectionStatus();
 	}, [updateConnectionStatus]);
@@ -629,6 +636,30 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		[accountId, disconnectFromColumn, fetchAccount],
 	);
 
+	const restoreColumn = useCallback(
+		async (columnId: string) => {
+			if (!accountId) return false;
+
+			try {
+				const response = await fetch(`/api/column/${columnId}/restore`, {
+					method: "POST",
+					headers: { "X-Account-ID": accountId },
+				});
+
+				if (!response.ok) {
+					throw new Error("Failed to restore column");
+				}
+
+				await fetchAccount(accountId);
+				return true;
+			} catch (err) {
+				setError(err instanceof Error ? err.message : "Unknown error");
+				return false;
+			}
+		},
+		[accountId, fetchAccount],
+	);
+
 	// Share a column
 	const shareColumn = useCallback(
 		async (columnId: string, targetAccountId: string) => {
@@ -855,12 +886,14 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		loginWithAccountId,
 		logout,
 		sharedColumns,
+		deletedColumns,
 		connectToColumn,
 		disconnectFromColumn,
 		getColumnStatus,
 		getColumnPresence,
 		createColumn,
 		deleteColumn,
+		restoreColumn,
 		shareColumn,
 		revokeShare,
 		enablePublicLink,

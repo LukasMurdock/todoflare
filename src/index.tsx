@@ -36,6 +36,7 @@ const app = new Hono<{ Bindings: Bindings }>();
 
 const ACCOUNT_SCHEMA_VERSION = 1;
 const COLUMN_META_SCHEMA_VERSION = 1;
+const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 type SchemaParseErrorCode =
 	| "invalid_json"
@@ -272,6 +273,32 @@ type AccountExportPayload = {
 	}>;
 };
 
+type DeletedColumnRecord = {
+	columnId: string;
+	deletedAt: number;
+};
+
+function parseDeletedColumnRecords(raw: string | null): DeletedColumnRecord[] {
+	if (!raw) return [];
+
+	try {
+		const parsed = JSON.parse(raw) as unknown;
+		if (!Array.isArray(parsed)) return [];
+
+		return parsed
+			.filter(
+				(item): item is DeletedColumnRecord =>
+					!!item &&
+					typeof item === "object" &&
+					typeof (item as { columnId?: unknown }).columnId === "string" &&
+					typeof (item as { deletedAt?: unknown }).deletedAt === "number",
+			)
+			.map((item) => ({ columnId: item.columnId, deletedAt: item.deletedAt }));
+	} catch {
+		return [];
+	}
+}
+
 async function restoreColumnFromBackupPayload(
 	env: Bindings,
 	columnId: string,
@@ -453,6 +480,56 @@ async function runScheduledBackups(env: Bindings) {
 	};
 }
 
+async function purgeExpiredTrashedColumns(env: Bindings) {
+	const now = Date.now();
+	let accountsScanned = 0;
+	let columnsPurged = 0;
+	let trashEntriesRemoved = 0;
+	let cursor: string | undefined;
+
+	while (true) {
+		const page = await env.ACCOUNTS.list({
+			prefix: "account:",
+			cursor,
+			limit: 1000,
+		});
+
+		for (const key of page.keys) {
+			const normalizedId = key.name.replace(/^account:/, "");
+			accountsScanned += 1;
+
+			const trashKey = `trash:${normalizedId}`;
+			const trashRaw = await env.ACCOUNTS.get(trashKey);
+			const trash = parseDeletedColumnRecords(trashRaw);
+			if (trash.length === 0) continue;
+
+			const keep: DeletedColumnRecord[] = [];
+			for (const entry of trash) {
+				if (now - entry.deletedAt < TRASH_RETENTION_MS) {
+					keep.push(entry);
+					continue;
+				}
+
+				const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(entry.columnId));
+				const deleteRes = await stub.fetch(
+					new Request("http://do/", { method: "DELETE" }),
+				);
+				if (deleteRes.ok) {
+					columnsPurged += 1;
+				}
+				trashEntriesRemoved += 1;
+			}
+
+			await env.ACCOUNTS.put(trashKey, JSON.stringify(keep));
+		}
+
+		if (page.list_complete) break;
+		cursor = page.cursor;
+	}
+
+	return { accountsScanned, columnsPurged, trashEntriesRemoved };
+}
+
 // ============================================
 // Account Routes
 // ============================================
@@ -560,7 +637,19 @@ app.get("/api/account/:id", async (c) => {
 		}
 	}
 
-	return c.json({ account, sharedColumns });
+	const now = Date.now();
+	const trashKey = `trash:${normalizedId}`;
+	const deletedColumnsRaw = await c.env.ACCOUNTS.get(trashKey);
+	const deletedColumns = parseDeletedColumnRecords(deletedColumnsRaw)
+		.filter((entry) => now - entry.deletedAt < TRASH_RETENTION_MS)
+		.sort((a, b) => b.deletedAt - a.deletedAt);
+
+	const originalDeleted = parseDeletedColumnRecords(deletedColumnsRaw);
+	if (deletedColumns.length !== originalDeleted.length) {
+		await c.env.ACCOUNTS.put(trashKey, JSON.stringify(deletedColumns));
+	}
+
+	return c.json({ account, sharedColumns, deletedColumns });
 });
 
 /**
@@ -904,10 +993,110 @@ app.delete("/api/column/:id", async (c) => {
 		}
 	}
 
-	// Delete the Durable Object
-	await stub.fetch(new Request("http://do/", { method: "DELETE" }));
+	// Remove public mapping if present
+	if (meta.publicId) {
+		await c.env.ACCOUNTS.delete(`public:${meta.publicId}`);
+	}
 
-	return c.json({ success: true });
+	// Revoke all shares/public access on the column itself
+	await stub.fetch(
+		new Request("http://do/share", {
+			method: "PUT",
+			body: JSON.stringify({ sharedWith: [] }),
+		}),
+	);
+	await stub.fetch(
+		new Request("http://do/public", {
+			method: "PUT",
+			body: JSON.stringify({ publicId: null }),
+		}),
+	);
+
+	// Add to owner's garbage can (30-day retention)
+	const trashKey = `trash:${normalizedOwnerId}`;
+	const trashRaw = await c.env.ACCOUNTS.get(trashKey);
+	const trash = parseDeletedColumnRecords(trashRaw).filter(
+		(entry) => Date.now() - entry.deletedAt < TRASH_RETENTION_MS,
+	);
+	const updatedTrash = [
+		{ columnId, deletedAt: Date.now() },
+		...trash.filter((entry) => entry.columnId !== columnId),
+	];
+	await c.env.ACCOUNTS.put(trashKey, JSON.stringify(updatedTrash));
+
+	return c.json({
+		success: true,
+		trashed: true,
+		deleteAfter: Date.now() + TRASH_RETENTION_MS,
+	});
+});
+
+/**
+ * Restore a column from owner's garbage can
+ */
+app.post("/api/column/:id/restore", async (c) => {
+	const readOnlyResponse = blockWritesIfReadOnly(c);
+	if (readOnlyResponse) return readOnlyResponse;
+
+	const columnId = c.req.param("id");
+	const accountId = c.req.header("X-Account-ID");
+
+	if (!accountId || !validateAccountId(accountId)) {
+		return c.json({ error: "Invalid account ID" }, 400);
+	}
+
+	const normalizedAccountId = normalizeAccountId(accountId);
+	const accountData = await c.env.ACCOUNTS.get(`account:${normalizedAccountId}`);
+	if (!accountData) {
+		return c.json({ error: "Account not found" }, 404);
+	}
+
+	const parsedAccount = parseAccountRecord(accountData);
+	if (!parsedAccount.ok) {
+		return schemaErrorResponse("account", parsedAccount);
+	}
+	const account = parsedAccount.value;
+
+	const trashKey = `trash:${normalizedAccountId}`;
+	const trashRaw = await c.env.ACCOUNTS.get(trashKey);
+	const trash = parseDeletedColumnRecords(trashRaw);
+	const entry = trash.find((item) => item.columnId === columnId);
+	if (!entry) {
+		return c.json({ error: "Column not in garbage can" }, 404);
+	}
+
+	if (Date.now() - entry.deletedAt >= TRASH_RETENTION_MS) {
+		return c.json({ error: "Column expired" }, 410);
+	}
+
+	const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
+	const metaResponse = await stub.fetch(new Request("http://do/meta"));
+	if (!metaResponse.ok) {
+		return c.json({ error: "Column not found" }, 404);
+	}
+
+	const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
+	if (!parsedMeta.ok) {
+		return schemaErrorResponse("column_meta", parsedMeta);
+	}
+	const meta = parsedMeta.value;
+
+	if (normalizeAccountId(meta.ownerId) !== normalizedAccountId) {
+		return c.json({ error: "Only owner can restore" }, 403);
+	}
+
+	if (!account.columnOrder.includes(columnId)) {
+		account.columnOrder.push(columnId);
+		await c.env.ACCOUNTS.put(
+			`account:${normalizedAccountId}`,
+			JSON.stringify(account),
+		);
+	}
+
+	const updatedTrash = trash.filter((item) => item.columnId !== columnId);
+	await c.env.ACCOUNTS.put(trashKey, JSON.stringify(updatedTrash));
+
+	return c.json({ success: true, column: meta });
 });
 
 /**
@@ -1648,18 +1837,27 @@ export default {
 		env: Bindings,
 		executionCtx: ExecutionContext,
 	) => {
-		if (!isAutoBackupEnabled(env)) return;
-
 		executionCtx.waitUntil(
-			runScheduledBackups(env).then((result) => {
+			(async () => {
+				const purgeResult = await purgeExpiredTrashedColumns(env);
+				console.log(
+					JSON.stringify({
+						event: "scheduled_trash_purge_run",
+						cron: controller.cron,
+						...purgeResult,
+					}),
+				);
+
+				if (!isAutoBackupEnabled(env)) return;
+				const backupResult = await runScheduledBackups(env);
 				console.log(
 					JSON.stringify({
 						event: "scheduled_backup_run",
 						cron: controller.cron,
-						...result,
+						...backupResult,
 					}),
 				);
-			}),
+			})(),
 		);
 	},
 };
