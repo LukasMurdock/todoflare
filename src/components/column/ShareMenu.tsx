@@ -41,7 +41,13 @@ export function ShareMenu({ columnId, columnMeta }: ShareMenuProps) {
 	// Sync with props
 	useEffect(() => {
 		if (columnMeta) {
-			setLocalSharedWith(columnMeta.sharedWith || []);
+			setLocalSharedWith((prev) => {
+				const incoming = columnMeta.sharedWith || [];
+				if (incoming.length === 0 && prev.length > 0) {
+					return prev;
+				}
+				return incoming;
+			});
 			setLocalPublicId(columnMeta.publicId || null);
 			if (columnMeta.publicId) {
 				setPublicUrl(`${window.location.origin}/p/${columnMeta.publicId}`);

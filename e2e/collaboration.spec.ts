@@ -334,4 +334,40 @@ test.describe("collaborative editing", () => {
 		await ownerContext.close();
 		await collaboratorContext.close();
 	});
+
+	test("share list shows account and removes it after revoke", async ({
+		page,
+		request,
+		baseURL,
+	}) => {
+		const appUrl = baseURL ?? "http://127.0.0.1:4173";
+		const ownerId = await createAccount(request, appUrl);
+		const collaboratorId = await createAccount(request, appUrl);
+
+		await bootstrapAuthenticatedPage(page, ownerId);
+		await addColumnAndGetId(page);
+
+		await page.getByRole("button", { name: "Share column" }).first().click();
+		const collaboratorDigits = collaboratorId.replace(/\s/g, "");
+		await page.getByRole("textbox", { name: "Account ID" }).click();
+		await page.getByRole("textbox", { name: "Account ID" }).fill(collaboratorDigits);
+		await expect(page.getByRole("button", { name: "Share", exact: true })).toBeEnabled();
+		const shareResponsePromise = page.waitForResponse(
+			(response) =>
+				response.request().method() === "POST" &&
+				response.url().includes("/api/column/") &&
+				response.url().includes("/share"),
+		);
+		await page.getByRole("button", { name: "Share", exact: true }).click();
+		const shareResponse = await shareResponsePromise;
+		expect(shareResponse.ok()).toBeTruthy();
+
+		const compactId = collaboratorId.replace(/\s/g, "");
+		const shortId = `${compactId.slice(0, 4)}...${compactId.slice(-4)}`;
+
+		await expect(page.getByText(shortId)).toBeVisible();
+
+		await page.getByRole("button", { name: `Revoke access for ${shortId}` }).click();
+		await expect(page.getByText(shortId)).toHaveCount(0);
+	});
 });
