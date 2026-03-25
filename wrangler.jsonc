@@ -16,6 +16,20 @@
 		"AUTO_BACKUP_ENABLED": "false",
 		"BACKUP_MAX_COLUMNS": "1000"
 	},
+	"observability": {
+		"enabled": true,
+		"logs": {
+			"enabled": true,
+			"invocation_logs": true,
+			"persist": true,
+			"head_sampling_rate": 1
+		},
+		"traces": {
+			"enabled": true,
+			"persist": true,
+			"head_sampling_rate": 1
+		}
+	},
 	"kv_namespaces": [
 		{
 			"binding": "ACCOUNTS",
