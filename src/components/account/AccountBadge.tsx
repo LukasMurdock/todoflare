@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Copy, LogOut, Check } from "lucide-react";
+import { useRef, useState, type ChangeEvent } from "react";
+import { Copy, LogOut, Check, Download, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
 	Tooltip,
@@ -18,8 +18,16 @@ import { truncateAccountId, displayAccountId } from "@/lib/account";
 import { cn } from "@/lib/utils";
 
 export function AccountBadge() {
-	const { accountId, connectionStatus, logout, isAuthenticated } = useAccount();
+	const {
+		accountId,
+		connectionStatus,
+		logout,
+		isAuthenticated,
+		exportAccountData,
+		importAccountData,
+	} = useAccount();
 	const [copied, setCopied] = useState(false);
+	const fileInputRef = useRef<HTMLInputElement | null>(null);
 
 	if (!isAuthenticated || !accountId) {
 		return null;
@@ -47,8 +55,47 @@ export function AccountBadge() {
 		offline: "Offline",
 	}[connectionStatus];
 
+	const handleExport = async () => {
+		const payload = await exportAccountData();
+		if (!payload) return;
+
+		const blob = new Blob([JSON.stringify(payload, null, 2)], {
+			type: "application/json",
+		});
+		const url = URL.createObjectURL(blob);
+		const link = document.createElement("a");
+		const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+		link.href = url;
+		link.download = `todoflare-export-${timestamp}.json`;
+		document.body.appendChild(link);
+		link.click();
+		link.remove();
+		URL.revokeObjectURL(url);
+	};
+
+	const handleImportSelect = async (event: ChangeEvent<HTMLInputElement>) => {
+		const file = event.target.files?.[0];
+		event.target.value = "";
+		if (!file) return;
+
+		try {
+			const text = await file.text();
+			const payload = JSON.parse(text);
+			await importAccountData(payload);
+		} catch (err) {
+			console.error("Failed to import file:", err);
+		}
+	};
+
 	return (
 		<DropdownMenu>
+			<input
+				ref={fileInputRef}
+				type="file"
+				accept="application/json"
+				onChange={handleImportSelect}
+				className="hidden"
+			/>
 			<Tooltip>
 				<TooltipTrigger asChild>
 					<DropdownMenuTrigger asChild>
@@ -91,6 +138,16 @@ export function AccountBadge() {
 						<Copy className="mr-2 h-4 w-4" />
 					)}
 					{copied ? "Copied!" : "Copy Account ID"}
+				</DropdownMenuItem>
+
+				<DropdownMenuItem onClick={handleExport}>
+					<Download className="mr-2 h-4 w-4" />
+					Export Data
+				</DropdownMenuItem>
+
+				<DropdownMenuItem onClick={() => fileInputRef.current?.click()}>
+					<Upload className="mr-2 h-4 w-4" />
+					Import Data
 				</DropdownMenuItem>
 
 				<DropdownMenuSeparator />

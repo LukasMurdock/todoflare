@@ -7,6 +7,40 @@ import type { ColumnMeta } from "@/types/account";
 import { normalizeAccountId } from "@/lib/account";
 
 const LOCAL_STORAGE_KEY = "todoflare-columns";
+const LOCAL_BACKUP_PREFIX = "todoflare-backup-";
+const LOCAL_BACKUP_INDEX_KEY = "todoflare-backup-index";
+const LOCAL_BACKUP_MAX_CHECKPOINTS = 24 * 30;
+
+function currentHourBucket(ts = Date.now()): string {
+	const d = new Date(ts);
+	const yyyy = d.getUTCFullYear().toString().padStart(4, "0");
+	const mm = (d.getUTCMonth() + 1).toString().padStart(2, "0");
+	const dd = d.getUTCDate().toString().padStart(2, "0");
+	const hh = d.getUTCHours().toString().padStart(2, "0");
+	return `${yyyy}${mm}${dd}${hh}`;
+}
+
+function persistLocalCheckpoint(columns: Column[]): void {
+	try {
+		const bucket = currentHourBucket();
+		const key = `${LOCAL_BACKUP_PREFIX}${bucket}`;
+		const serialized = JSON.stringify(columns);
+
+		localStorage.setItem(key, serialized);
+
+		const existingRaw = localStorage.getItem(LOCAL_BACKUP_INDEX_KEY);
+		const existing = existingRaw ? (JSON.parse(existingRaw) as string[]) : [];
+		const merged = [key, ...existing.filter((k) => k !== key)];
+		const kept = merged.slice(0, LOCAL_BACKUP_MAX_CHECKPOINTS);
+		localStorage.setItem(LOCAL_BACKUP_INDEX_KEY, JSON.stringify(kept));
+
+		for (const oldKey of merged.slice(LOCAL_BACKUP_MAX_CHECKPOINTS)) {
+			localStorage.removeItem(oldKey);
+		}
+	} catch (e) {
+		console.error("Failed to persist local checkpoint:", e);
+	}
+}
 
 function loadLocalColumns(): Column[] {
 	try {
@@ -25,7 +59,9 @@ function loadLocalColumns(): Column[] {
 
 function saveLocalColumns(columns: Column[]): void {
 	try {
-		localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(columns));
+		const serialized = JSON.stringify(columns);
+		localStorage.setItem(LOCAL_STORAGE_KEY, serialized);
+		persistLocalCheckpoint(columns);
 	} catch (e) {
 		console.error("Failed to save columns to localStorage:", e);
 	}

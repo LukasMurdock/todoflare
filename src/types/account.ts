@@ -2,6 +2,7 @@
  * Account stored in KV
  */
 export interface Account {
+	schemaVersion: number;
 	id: string; // "4829 1047 3856 2019" (formatted with spaces)
 	columnOrder: string[]; // Column IDs in user's preferred order
 	hiddenSharedColumns: string[]; // Shared columns user has hidden
@@ -12,6 +13,7 @@ export interface Account {
  * Column metadata stored in Durable Object
  */
 export interface ColumnMeta {
+	schemaVersion: number;
 	id: string;
 	ownerId: string; // Account ID that created this column
 	sharedWith: string[]; // Account IDs with full edit access
@@ -67,6 +69,18 @@ export interface ShareColumnRequest {
 export interface PublicLinkResponse {
 	publicId: string;
 	url: string;
+}
+
+export interface AccountExportColumn {
+	meta: ColumnMeta;
+	yjs: number[] | null;
+}
+
+export interface AccountExportPayload {
+	schemaVersion: 1;
+	exportedAt: number;
+	account: Account;
+	ownedColumns: AccountExportColumn[];
 }
 
 /**

@@ -7,6 +7,10 @@
     "preview": "vite preview",
     "test": "vitest",
     "test:e2e": "playwright test",
+    "backup:list": "node scripts/backup-admin.mjs list",
+    "backup:create": "node scripts/backup-admin.mjs create",
+    "backup:restore": "node scripts/backup-admin.mjs restore",
+    "backup:restore-account": "node scripts/backup-admin.mjs restore-account",
     "deploy": "vite build && wrangler deploy"
   },
   "dependencies": {

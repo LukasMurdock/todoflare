@@ -101,6 +101,24 @@ describe("Worker routes", () => {
 		expect(data.column.id).toBe(columnId);
 		expect(data.column.ownerId).toBe(accountId);
 	});
+
+	it("returns backup service misconfiguration error when admin backups unavailable", async () => {
+		const accountId = await createAccount();
+		const columnId = await createColumn(accountId);
+
+		const res = await SELF.fetch(
+			`http://example.com/api/admin/backups/column/${columnId}`,
+			{
+				headers: { Authorization: "Bearer test-token" },
+			},
+		);
+
+		expect(res.status).toBe(503);
+		const data = (await res.json()) as { error?: string };
+		expect(["backup_not_configured", "backup_auth_not_configured"]).toContain(
+			data.error,
+		);
+	});
 });
 
 describe("WebSocket upgrade routing", () => {

@@ -547,6 +547,9 @@ const WS_OP_COLUMN_DELETED = 0x04;
 const WS_OP_ACCESS_REVOKED = 0x05;
 const WS_OP_ERROR = 0x06;
 
+const DO_PERSIST_SCHEMA_VERSION = 1;
+const DO_MIGRATION_TAG = "column-room-sql-v1";
+
 const wsTextEncoder = new TextEncoder();
 const wsTextDecoder = new TextDecoder();
 
@@ -628,23 +631,96 @@ export class ColumnRoomSql extends DurableObject<unknown> {
 			);
 
 			CREATE INDEX IF NOT EXISTS idx_yjs_updates_ts ON yjs_updates(ts);
+
+			CREATE TABLE IF NOT EXISTS storage_migrations (
+				migration_tag TEXT PRIMARY KEY,
+				applied_at INTEGER NOT NULL
+			);
 		`);
+
+		this.addColumnIfMissing(
+			"meta",
+			"schema_version INTEGER NOT NULL DEFAULT 1",
+		);
+		this.addColumnIfMissing(
+			"meta",
+			"migration_tag TEXT NOT NULL DEFAULT 'column-room-sql-v1'",
+		);
+
+		this.addColumnIfMissing(
+			"yjs_snapshot",
+			"schema_version INTEGER NOT NULL DEFAULT 1",
+		);
+		this.addColumnIfMissing(
+			"yjs_snapshot",
+			"migration_tag TEXT NOT NULL DEFAULT 'column-room-sql-v1'",
+		);
+
+		this.addColumnIfMissing(
+			"yjs_updates",
+			"schema_version INTEGER NOT NULL DEFAULT 1",
+		);
+		this.addColumnIfMissing(
+			"yjs_updates",
+			"migration_tag TEXT NOT NULL DEFAULT 'column-room-sql-v1'",
+		);
+
+		this.ctx.storage.sql.exec(
+			"INSERT INTO storage_migrations (migration_tag, applied_at) VALUES (?, ?) ON CONFLICT(migration_tag) DO NOTHING",
+			DO_MIGRATION_TAG,
+			Date.now(),
+		);
+	}
+
+	private addColumnIfMissing(table: string, columnDefinition: string) {
+		try {
+			this.ctx.storage.sql.exec(
+				`ALTER TABLE ${table} ADD COLUMN ${columnDefinition}`,
+			);
+		} catch {
+			// Column already exists.
+		}
 	}
 
 	private loadStateFromSql() {
 		const metaRow = this.ctx.storage.sql
-			.exec<{ meta: string }>("SELECT meta FROM meta WHERE id = 1")
+			.exec<{ meta: string; schema_version: number; migration_tag: string }>(
+				"SELECT meta, schema_version, migration_tag FROM meta WHERE id = 1",
+			)
 			.toArray()[0];
 		if (metaRow?.meta) {
 			try {
-				this.meta = JSON.parse(metaRow.meta) as ColumnMeta;
+				const parsed = JSON.parse(metaRow.meta) as
+					| ColumnMeta
+					| {
+							schemaVersion: number;
+							migrationTag: string;
+							meta: ColumnMeta;
+					  };
+
+				if (
+					parsed &&
+					typeof parsed === "object" &&
+					"meta" in parsed &&
+					parsed.meta
+				) {
+					this.meta = parsed.meta;
+				} else {
+					this.meta = parsed as ColumnMeta;
+				}
 			} catch (err) {
 				console.error("Failed to parse stored meta:", err);
 			}
 		}
 
 		const snapshotRow = this.ctx.storage.sql
-			.exec<{ snapshot: ArrayBuffer }>("SELECT snapshot FROM yjs_snapshot WHERE id = 1")
+			.exec<{
+				snapshot: ArrayBuffer;
+				schema_version: number;
+				migration_tag: string;
+			}>(
+				"SELECT snapshot, schema_version, migration_tag FROM yjs_snapshot WHERE id = 1",
+			)
 			.toArray()[0];
 		if (snapshotRow?.snapshot) {
 			try {
@@ -740,17 +816,26 @@ export class ColumnRoomSql extends DurableObject<unknown> {
 
 	private persistMeta() {
 		if (!this.meta) return;
+		const envelope = {
+			schemaVersion: DO_PERSIST_SCHEMA_VERSION,
+			migrationTag: DO_MIGRATION_TAG,
+			meta: this.meta,
+		};
 		this.ctx.storage.sql.exec(
-			"INSERT INTO meta (id, meta) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET meta = excluded.meta",
-			JSON.stringify(this.meta),
+			"INSERT INTO meta (id, meta, schema_version, migration_tag) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET meta = excluded.meta, schema_version = excluded.schema_version, migration_tag = excluded.migration_tag",
+			JSON.stringify(envelope),
+			DO_PERSIST_SCHEMA_VERSION,
+			DO_MIGRATION_TAG,
 		);
 	}
 
 	private insertUpdate(update: Uint8Array) {
 		this.ctx.storage.sql.exec(
-			"INSERT INTO yjs_updates (update_blob, ts) VALUES (?, ?)",
+			"INSERT INTO yjs_updates (update_blob, ts, schema_version, migration_tag) VALUES (?, ?, ?, ?)",
 			toArrayBuffer(update),
 			Date.now(),
+			DO_PERSIST_SCHEMA_VERSION,
+			DO_MIGRATION_TAG,
 		);
 		this.scheduleCompaction();
 	}
@@ -759,9 +844,11 @@ export class ColumnRoomSql extends DurableObject<unknown> {
 		const snapshot = encodeStateAsUpdate(this.doc);
 		const now = Date.now();
 		this.ctx.storage.sql.exec(
-			"INSERT INTO yjs_snapshot (id, snapshot, updated_at) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET snapshot = excluded.snapshot, updated_at = excluded.updated_at;",
+			"INSERT INTO yjs_snapshot (id, snapshot, updated_at, schema_version, migration_tag) VALUES (1, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET snapshot = excluded.snapshot, updated_at = excluded.updated_at, schema_version = excluded.schema_version, migration_tag = excluded.migration_tag;",
 			toArrayBuffer(snapshot),
 			now,
+			DO_PERSIST_SCHEMA_VERSION,
+			DO_MIGRATION_TAG,
 		);
 	}
 
@@ -804,6 +891,15 @@ export class ColumnRoomSql extends DurableObject<unknown> {
 		if (request.method === "GET" && url.pathname === "/meta") {
 			if (!this.meta) return new Response("Column not found", { status: 404 });
 			return Response.json(this.meta);
+		}
+
+		if (request.method === "GET" && url.pathname === "/export") {
+			if (!this.meta) return new Response("Column not found", { status: 404 });
+			const snapshot = encodeStateAsUpdate(this.doc);
+			return Response.json({
+				meta: this.meta,
+				yjs: snapshot.length > 0 ? Array.from(snapshot) : null,
+			});
 		}
 
 		if (request.method === "POST" && url.pathname === "/init") {

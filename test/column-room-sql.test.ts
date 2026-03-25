@@ -126,6 +126,7 @@ describe("ColumnRoomSql Durable Object (HTTP)", () => {
 		const stub = getColumnRoomStub(columnId);
 
 		const meta: ColumnMeta = {
+			schemaVersion: 1,
 			id: columnId,
 			ownerId: "1111 1111 1111 1111",
 			sharedWith: [],
@@ -184,6 +185,56 @@ describe("ColumnRoomSql Durable Object (HTTP)", () => {
 		const metaResAfterDelete = await stub.fetch(new Request("http://do/meta"));
 		expect(metaResAfterDelete.status).toBe(404);
 	});
+
+	it("exports imported Yjs text state", async () => {
+		const columnId = "http-export-state";
+		const stub = getColumnRoomStub(columnId);
+
+		const meta: ColumnMeta = {
+			schemaVersion: 1,
+			id: columnId,
+			ownerId: "1111 1111 1111 1111",
+			sharedWith: [],
+			publicId: null,
+			createdAt: Date.now(),
+		};
+
+		const initRes = await stub.fetch(
+			new Request("http://do/init", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(meta),
+			}),
+		);
+		expect(initRes.ok).toBe(true);
+
+		const doc = new Y.Doc();
+		doc.getText("t").insert(0, "export me");
+		const update = encodeStateAsUpdate(doc);
+
+		const importRes = await stub.fetch(
+			new Request("http://do/import", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ meta, yjs: Array.from(update) }),
+			}),
+		);
+		expect(importRes.ok).toBe(true);
+
+		const exportRes = await stub.fetch(new Request("http://do/export"));
+		expect(exportRes.ok).toBe(true);
+		const exported = (await exportRes.json()) as {
+			meta: ColumnMeta;
+			yjs: number[] | null;
+		};
+
+		expect(exported.meta.id).toBe(columnId);
+		expect(exported.yjs).not.toBeNull();
+
+		const docOut = new Y.Doc();
+		applyUpdate(docOut, new Uint8Array(exported.yjs ?? []));
+		expect(docOut.getText("t").toString()).toBe("export me");
+	});
 });
 
 describe("ColumnRoomSql Durable Object (WebSocket)", () => {
@@ -206,6 +257,7 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 		const stub = getColumnRoomStub(columnId);
 
 		const meta: ColumnMeta = {
+			schemaVersion: 1,
 			id: columnId,
 			ownerId: "1111 1111 1111 1111",
 			sharedWith: [],
@@ -245,6 +297,7 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 		const sharedId = "2222 2222 2222 2222";
 
 		const meta: ColumnMeta = {
+			schemaVersion: 1,
 			id: columnId,
 			ownerId,
 			sharedWith: [sharedId],
@@ -294,6 +347,7 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 		const ownerId = "1111 1111 1111 1111";
 
 		const meta: ColumnMeta = {
+			schemaVersion: 1,
 			id: columnId,
 			ownerId,
 			sharedWith: [],

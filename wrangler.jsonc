@@ -9,6 +9,11 @@
 		"not_found_handling": "single-page-application",
 		"run_worker_first": ["/api/*", "/p/*"]
 	},
+	"vars": {
+		"READ_ONLY_MODE": "false",
+		"AUTO_BACKUP_ENABLED": "false",
+		"BACKUP_MAX_COLUMNS": "1000"
+	},
 	"kv_namespaces": [
 		{
 			"binding": "ACCOUNTS",
@@ -17,6 +22,12 @@
 		{
 			"binding": "RATE_LIMIT",
 			"id": "RATE_LIMIT_KV_ID"
+		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "BACKUPS",
+			"bucket_name": "todoflare-backups"
 		}
 	],
 	"durable_objects": {
@@ -40,5 +51,8 @@
 			"tag": "v3",
 			"deleted_classes": ["ColumnRoom"]
 		}
-	]
+	],
+	"triggers": {
+		"crons": ["0 * * * *"]
+	}
 }

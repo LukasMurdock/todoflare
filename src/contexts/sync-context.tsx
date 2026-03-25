@@ -19,6 +19,7 @@ import type {
 	CreateColumnResponse,
 	PublicLinkResponse,
 	RateLimitError,
+	AccountExportPayload,
 } from "@/types/account";
 import {
 	validateAccountId,
@@ -162,6 +163,8 @@ interface SyncContextValue {
 	// Account metadata updates
 	updateColumnOrder: (columnOrder: string[]) => Promise<void>;
 	updateHiddenSharedColumns: (hiddenSharedColumns: string[]) => Promise<void>;
+	exportAccountData: () => Promise<AccountExportPayload | null>;
+	importAccountData: (payload: AccountExportPayload) => Promise<boolean>;
 
 	// Check for existing localStorage data
 	hasLocalData: () => boolean;
@@ -772,6 +775,62 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		[accountId],
 	);
 
+	const exportAccountData = useCallback(async () => {
+		if (!accountId) return null;
+
+		try {
+			const response = await fetch(
+				`/api/account/${normalizeAccountId(accountId)}/export`,
+				{
+					headers: { "X-Account-ID": accountId },
+				},
+			);
+
+			if (!response.ok) {
+				throw new Error("Failed to export account data");
+			}
+
+			return (await response.json()) as AccountExportPayload;
+		} catch (err) {
+			setError(err instanceof Error ? err.message : "Unknown error");
+			toast.error("Failed to export data");
+			return null;
+		}
+	}, [accountId]);
+
+	const importAccountData = useCallback(
+		async (payload: AccountExportPayload) => {
+			if (!accountId) return false;
+
+			try {
+				const response = await fetch(
+					`/api/account/${normalizeAccountId(accountId)}/import`,
+					{
+						method: "POST",
+						headers: {
+							"Content-Type": "application/json",
+							"X-Account-ID": accountId,
+						},
+						body: JSON.stringify(payload),
+					},
+				);
+
+				if (!response.ok) {
+					throw new Error("Failed to import account data");
+				}
+
+				await fetchAccount(accountId);
+				toast.success("Data imported successfully");
+				return true;
+			} catch (err) {
+				setError(err instanceof Error ? err.message : "Unknown error");
+				toast.error("Failed to import data");
+				return false;
+			}
+		},
+		[accountId, fetchAccount],
+	);
+
 	// Check for existing localStorage data
 	const hasLocalData = useCallback(() => {
 		try {
@@ -811,6 +870,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		onColumnMessage,
 		updateColumnOrder,
 		updateHiddenSharedColumns,
+		exportAccountData,
+		importAccountData,
 		hasLocalData,
 	};
 

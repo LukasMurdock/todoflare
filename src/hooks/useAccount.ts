@@ -15,6 +15,8 @@ export function useAccount() {
 		createAccount,
 		loginWithAccountId,
 		logout,
+		exportAccountData,
+		importAccountData,
 		hasLocalData,
 	} = useSyncContext();
 
@@ -33,6 +35,8 @@ export function useAccount() {
 		createAccount,
 		loginWithAccountId,
 		logout,
+		exportAccountData,
+		importAccountData,
 
 		// Check for existing data
 		hasLocalData,
