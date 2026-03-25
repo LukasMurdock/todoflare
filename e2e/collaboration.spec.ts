@@ -79,6 +79,44 @@ async function addColumnAndGetId(page: Page) {
 }
 
 test.describe("collaborative editing", () => {
+	test("generate account and claim data keeps local offline data", async ({ page }) => {
+		await page.addInitScript(({ localColumnsKey, welcomeKey }) => {
+			const offlineColumns = [
+				{
+					id: "local-col-1",
+					value: [
+						{ type: "p", children: [{ text: "offline claim text" }] },
+					],
+					collapsed: false,
+				},
+			];
+
+			window.localStorage.removeItem("todoflare-account");
+			window.localStorage.setItem(welcomeKey, "true");
+			window.localStorage.setItem(localColumnsKey, JSON.stringify(offlineColumns));
+		}, {
+			localColumnsKey: LOCAL_COLUMNS_KEY,
+			welcomeKey: WELCOME_KEY,
+		});
+
+		await page.goto("/");
+		await expect(
+			page.getByRole("heading", { name: "You have existing local data" }),
+		).toBeVisible();
+
+		await page.getByRole("button", { name: "Generate Account & Claim Data" }).click();
+
+		await expect(
+			page.getByRole("heading", { name: "You have existing local data" }),
+		).toHaveCount(0);
+
+		const localData = await page.evaluate((localColumnsKey) => {
+			return window.localStorage.getItem(localColumnsKey);
+		}, LOCAL_COLUMNS_KEY);
+
+		expect(localData).toContain("offline claim text");
+	});
+
 	test("stale stored account id falls back to account modal", async ({ page }) => {
 		const staleAccountId = `9999 0000 ${Math.floor(Date.now() % 10000)
 			.toString()

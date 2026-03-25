@@ -10,9 +10,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useAccount } from "@/hooks/useAccount";
-import { useSyncContext } from "@/contexts/sync-context";
 import { formatAccountId, validateAccountId } from "@/lib/account";
-import { getLocalColumns, clearLocalColumns } from "@/hooks/useColumns";
+import { clearLocalColumns } from "@/hooks/useColumns";
 
 interface ClaimDataModalProps {
 	open: boolean;
@@ -21,7 +20,6 @@ interface ClaimDataModalProps {
 
 export function ClaimDataModal({ open, onOpenChange }: ClaimDataModalProps) {
 	const { createAccount, loginWithAccountId, isLoading, error } = useAccount();
-	const { createColumn } = useSyncContext();
 	const [mode, setMode] = useState<"choose" | "enter">("choose");
 	const [accountIdInput, setAccountIdInput] = useState("");
 	const [localError, setLocalError] = useState<string | null>(null);
@@ -38,19 +36,6 @@ export function ClaimDataModal({ open, onOpenChange }: ClaimDataModalProps) {
 				setIsClaimingData(false);
 				return;
 			}
-
-			// Get local columns
-			const localColumns = getLocalColumns();
-
-			// Create columns on server for each local column
-			// Note: In a full implementation, you'd also upload the column content
-			// For now, we create empty columns and the content would need to be synced
-			for (const _column of localColumns) {
-				await createColumn();
-			}
-
-			// Clear local storage after successful migration
-			clearLocalColumns();
 
 			onOpenChange(false);
 		} catch (err) {

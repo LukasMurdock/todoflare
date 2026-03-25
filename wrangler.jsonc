@@ -1,6 +1,8 @@
 {
 	"$schema": "./node_modules/wrangler/config-schema.json",
 	"name": "todoflare-prod",
+	"workers_dev": false,
+	"preview_urls": false,
 	"account_id": "440e7b1dda326614729fce463b0d6c33",
 	"compatibility_date": "2025-01-01",
 	"main": "./src/index.tsx",
@@ -46,5 +48,11 @@
 	],
 	"triggers": {
 		"crons": ["0 * * * *"]
-	}
+	},
+	"routes": [
+		{
+			"pattern": "todo.tamesystems.org",
+			"custom_domain": true
+		}
+	]
 }
