@@ -29,6 +29,21 @@ async function createColumn(accountId: string): Promise<string> {
 	return data.column.id;
 }
 
+async function createColumnWithId(
+	accountId: string,
+	columnId: string,
+): Promise<string> {
+	const res = await SELF.fetch("http://example.com/api/column", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ accountId, columnId }),
+	});
+	expect(res.ok).toBe(true);
+	const data = (await res.json()) as { column: { id: string } };
+	expect(data.column.id).toBe(columnId);
+	return data.column.id;
+}
+
 async function deleteColumn(accountId: string, columnId: string): Promise<void> {
 	const res = await SELF.fetch(`http://example.com/api/column/${columnId}`, {
 		method: "DELETE",
@@ -134,6 +149,45 @@ describe("Worker routes", () => {
 		const data = (await metaRes.json()) as { column: { id: string; ownerId: string } };
 		expect(data.column.id).toBe(columnId);
 		expect(data.column.ownerId).toBe(accountId);
+	});
+
+	it("creates a column using a client-provided id", async () => {
+		const accountId = await createAccount();
+		const columnId = crypto.randomUUID();
+		const createdId = await createColumnWithId(accountId, columnId);
+
+		expect(createdId).toBe(columnId);
+
+		const accountRes = await SELF.fetch(
+			`http://example.com/api/account/${normalizeAccountId(accountId)}`,
+		);
+		expect(accountRes.ok).toBe(true);
+		const data = (await accountRes.json()) as {
+			account: { columnOrder: string[] };
+		};
+
+		expect(data.account.columnOrder).toContain(columnId);
+	});
+
+	it("treats repeated create with same client id as idempotent", async () => {
+		const accountId = await createAccount();
+		const columnId = crypto.randomUUID();
+
+		await createColumnWithId(accountId, columnId);
+		await createColumnWithId(accountId, columnId);
+
+		const accountRes = await SELF.fetch(
+			`http://example.com/api/account/${normalizeAccountId(accountId)}`,
+		);
+		expect(accountRes.ok).toBe(true);
+		const data = (await accountRes.json()) as {
+			account: { columnOrder: string[] };
+		};
+
+		const occurrences = data.account.columnOrder.filter(
+			(id) => id === columnId,
+		).length;
+		expect(occurrences).toBe(1);
 	});
 
 	it("moves deleted columns into garbage can list", async () => {

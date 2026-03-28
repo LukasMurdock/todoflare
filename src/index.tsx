@@ -38,6 +38,8 @@ const app = new OpenAPIHono<{ Bindings: Bindings }>();
 const ACCOUNT_SCHEMA_VERSION = 1;
 const COLUMN_META_SCHEMA_VERSION = 1;
 const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const COLUMN_ID_PATTERN =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 registerAgentApi(app);
 
@@ -77,6 +79,22 @@ function schemaErrorResponse(
 			message: result.message,
 			expectedVersion: result.expectedVersion,
 			foundVersion: result.foundVersion ?? null,
+		},
+		{ status: 503 },
+	);
+}
+
+function isDurableObjectDurationError(err: unknown): boolean {
+	if (!(err instanceof Error)) return false;
+	return err.message.includes("Exceeded allowed duration in Durable Objects free tier");
+}
+
+function durableObjectUnavailableResponse() {
+	return Response.json(
+		{
+			error: "realtime_unavailable",
+			code: "durable_object_unavailable",
+			message: "Realtime backend is temporarily unavailable. Falling back to local mode is recommended.",
 		},
 		{ status: 503 },
 	);
@@ -203,6 +221,10 @@ function shouldSkipRateLimit(c: Context<{ Bindings: Bindings }>): boolean {
 
 function isReadOnlyMode(c: Context<{ Bindings: Bindings }>): boolean {
 	return c.env.READ_ONLY_MODE === "true" || c.env.READ_ONLY_MODE === "1";
+}
+
+function validateColumnId(columnId: string): boolean {
+	return COLUMN_ID_PATTERN.test(columnId);
 }
 
 function blockWritesIfReadOnly(c: Context<{ Bindings: Bindings }>): Response | null {
@@ -637,15 +659,25 @@ app.get("/api/account/:id", async (c) => {
 	// Fetch metadata for shared columns
 	const sharedColumns: ColumnMeta[] = [];
 	for (const columnId of sharedColumnIds) {
-				const stub = c.env.COLUMN_ROOM.get(
+		const stub = c.env.COLUMN_ROOM.get(
 			c.env.COLUMN_ROOM.idFromName(columnId),
 		);
-		const response = await stub.fetch(new Request("http://do/meta"));
-		if (response.ok) {
-			const parsedMeta = parseColumnMetaRecord(await response.json());
-			if (parsedMeta.ok) {
-				sharedColumns.push(parsedMeta.value);
+		try {
+			const response = await stub.fetch(new Request("http://do/meta"));
+			if (response.ok) {
+				const parsedMeta = parseColumnMetaRecord(await response.json());
+				if (parsedMeta.ok) {
+					sharedColumns.push(parsedMeta.value);
+				}
 			}
+		} catch (err) {
+			if (isDurableObjectDurationError(err)) {
+				console.warn("Skipping shared column metadata due to DO duration limit", {
+					columnId,
+				});
+				continue;
+			}
+			throw err;
 		}
 	}
 
@@ -884,10 +916,16 @@ app.post("/api/column", async (c) => {
 	const readOnlyResponse = blockWritesIfReadOnly(c);
 	if (readOnlyResponse) return readOnlyResponse;
 
-	const { accountId } = await c.req.json<{ accountId: string }>();
+	const body = await c.req.json<{ accountId?: string; columnId?: string }>();
+	const accountId = body.accountId;
+	const requestedColumnId = body.columnId;
 
-	if (!validateAccountId(accountId)) {
+	if (!accountId || !validateAccountId(accountId)) {
 		return c.json({ error: "Invalid account ID" }, 400);
+	}
+
+	if (requestedColumnId && !validateColumnId(requestedColumnId)) {
+		return c.json({ error: "Invalid column ID" }, 400);
 	}
 
 	const normalizedAccountId = normalizeAccountId(accountId);
@@ -904,13 +942,64 @@ app.post("/api/column", async (c) => {
 		return schemaErrorResponse("account", parsedAccount);
 	}
 	const account = parsedAccount.value;
+	const columnId = requestedColumnId ?? crypto.randomUUID();
+	const alreadyInOrder = account.columnOrder.includes(columnId);
+	const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
+
+	let existingMetaResponse: Response;
+	try {
+		existingMetaResponse = await stub.fetch(new Request("http://do/meta"));
+	} catch (err) {
+		if (isDurableObjectDurationError(err)) {
+			console.error("Durable object unavailable during metadata check", {
+				columnId,
+			});
+			return durableObjectUnavailableResponse();
+		}
+		throw err;
+	}
+
+	if (!existingMetaResponse.ok && existingMetaResponse.status >= 500) {
+		console.error("Durable object metadata check failed", {
+			columnId,
+			status: existingMetaResponse.status,
+		});
+		return durableObjectUnavailableResponse();
+	}
+
+	if (existingMetaResponse.ok) {
+		const parsedExisting = parseColumnMetaRecord(await existingMetaResponse.json());
+		if (!parsedExisting.ok) {
+			return schemaErrorResponse("column_meta", parsedExisting);
+		}
+
+		const existingMeta = parsedExisting.value;
+		if (
+			normalizeAccountId(existingMeta.ownerId) !== normalizedAccountId
+		) {
+			return c.json({ error: "Column already exists" }, 409);
+		}
+
+		if (!alreadyInOrder) {
+			if (account.columnOrder.length >= 100) {
+				return c.json({ error: "Column limit reached (100)" }, 400);
+			}
+
+			account.columnOrder.push(columnId);
+			await c.env.ACCOUNTS.put(
+				`account:${normalizedAccountId}`,
+				JSON.stringify(account),
+			);
+		}
+
+		return c.json({ column: existingMeta });
+	}
 
 	// Check column limit (100 per account)
-	if (account.columnOrder.length >= 100) {
+	if (!alreadyInOrder && account.columnOrder.length >= 100) {
 		return c.json({ error: "Column limit reached (100)" }, 400);
 	}
 
-	const columnId = crypto.randomUUID();
 	const meta: ColumnMeta = {
 		schemaVersion: COLUMN_META_SCHEMA_VERSION,
 		id: columnId,
@@ -921,20 +1010,39 @@ app.post("/api/column", async (c) => {
 	};
 
 	// Initialize the Durable Object
-		const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
-	await stub.fetch(
-		new Request("http://do/init", {
-			method: "POST",
-			body: JSON.stringify(meta),
-		}),
-	);
+	try {
+		const initResponse = await stub.fetch(
+			new Request("http://do/init", {
+				method: "POST",
+				body: JSON.stringify(meta),
+			}),
+		);
 
-	// Add to account's column order
-	account.columnOrder.push(columnId);
-	await c.env.ACCOUNTS.put(
-		`account:${normalizedAccountId}`,
-		JSON.stringify(account),
-	);
+		if (!initResponse.ok) {
+			console.error("Failed to initialize column durable object", {
+				columnId,
+				status: initResponse.status,
+			});
+			return durableObjectUnavailableResponse();
+		}
+	} catch (err) {
+		if (isDurableObjectDurationError(err)) {
+			console.error("Durable object unavailable during column creation", {
+				columnId,
+			});
+			return durableObjectUnavailableResponse();
+		}
+		throw err;
+	}
+
+	if (!alreadyInOrder) {
+		// Add to account's column order
+		account.columnOrder.push(columnId);
+		await c.env.ACCOUNTS.put(
+			`account:${normalizedAccountId}`,
+			JSON.stringify(account),
+		);
+	}
 
 	return c.json({ column: meta });
 });
