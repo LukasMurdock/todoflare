@@ -483,6 +483,7 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 	} = useSyncContext();
 
 	const isSyncedMode = !!accountId && !!account;
+	const [isYjsReady, setIsYjsReady] = React.useState(() => !isSyncedMode);
 
 	// Deterministic connection: make sure at least one column WS is opened
 	// while an editor is mounted. SyncContext ref-counting prevents flapping.
@@ -591,6 +592,12 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 		let cancelled = false;
 		let didInit = false;
 		let didDestroy = false;
+		setIsYjsReady(false);
+		const markReadyIfActive = () => {
+			if (!cancelled) {
+				setIsYjsReady(true);
+			}
+		};
 		const api = editor.getApi(YjsPlugin);
 
 		const initPromise = (async () => {
@@ -612,11 +619,17 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 					return;
 				}
 
+				markReadyIfActive();
+
 				// init(autoConnect: true) handles provider connections.
 			} catch (err) {
 				// dev StrictMode can race connect/disconnect; ignore duplicates.
-				if (String(err).includes("already connected")) return;
+				if (String(err).includes("already connected")) {
+					markReadyIfActive();
+					return;
+				}
 				console.error(err);
+				markReadyIfActive();
 			}
 		})();
 
@@ -730,19 +743,25 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 	);
 
 	const plate = (
-		<EditorContainer
-			className={cn("h-full", cmdPressed && "cmd-pressed")}
-			onClick={handleClick}
-		>
-			<Editor
-				variant="column"
-				role="textbox"
-				aria-multiline="true"
-				aria-label="Todo editor"
-				placeholder="Start typing..."
-				renderLeaf={renderLeaf}
-			/>
-		</EditorContainer>
+		isSyncedMode && !isYjsReady ? (
+			<EditorContainer className="h-full px-4 py-3 text-sm text-muted-foreground">
+				Preparing collaborative editor...
+			</EditorContainer>
+		) : (
+			<EditorContainer
+				className={cn("h-full", cmdPressed && "cmd-pressed")}
+				onClick={handleClick}
+			>
+				<Editor
+					variant="column"
+					role="textbox"
+					aria-multiline="true"
+					aria-label="Todo editor"
+					placeholder="Start typing..."
+					renderLeaf={renderLeaf}
+				/>
+			</EditorContainer>
+		)
 	);
 
 	return isSyncedMode ? (

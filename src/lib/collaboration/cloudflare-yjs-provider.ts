@@ -125,6 +125,11 @@ class CloudflareProvider implements UnifiedProvider {
 			this.options.transport.sendAwareness(this.options.columnId, update);
 		};
 		this.awareness.on("update", this.awarenessUpdateHandler);
+
+		if (!this.isSynced) {
+			this.isSynced = true;
+			this.onSyncChange?.(true);
+		}
 	}
 
 	disconnect() {
