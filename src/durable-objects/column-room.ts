@@ -637,56 +637,11 @@ export class ColumnRoomSql extends DurableObject<unknown> {
 				applied_at INTEGER NOT NULL
 			);
 		`);
-
-		this.addColumnIfMissing(
-			"meta",
-			"schema_version INTEGER NOT NULL DEFAULT 1",
-		);
-		this.addColumnIfMissing(
-			"meta",
-			"migration_tag TEXT NOT NULL DEFAULT 'column-room-sql-v1'",
-		);
-
-		this.addColumnIfMissing(
-			"yjs_snapshot",
-			"schema_version INTEGER NOT NULL DEFAULT 1",
-		);
-		this.addColumnIfMissing(
-			"yjs_snapshot",
-			"migration_tag TEXT NOT NULL DEFAULT 'column-room-sql-v1'",
-		);
-
-		this.addColumnIfMissing(
-			"yjs_updates",
-			"schema_version INTEGER NOT NULL DEFAULT 1",
-		);
-		this.addColumnIfMissing(
-			"yjs_updates",
-			"migration_tag TEXT NOT NULL DEFAULT 'column-room-sql-v1'",
-		);
-
-		this.ctx.storage.sql.exec(
-			"INSERT INTO storage_migrations (migration_tag, applied_at) VALUES (?, ?) ON CONFLICT(migration_tag) DO NOTHING",
-			DO_MIGRATION_TAG,
-			Date.now(),
-		);
-	}
-
-	private addColumnIfMissing(table: string, columnDefinition: string) {
-		try {
-			this.ctx.storage.sql.exec(
-				`ALTER TABLE ${table} ADD COLUMN ${columnDefinition}`,
-			);
-		} catch {
-			// Column already exists.
-		}
 	}
 
 	private loadStateFromSql() {
 		const metaRow = this.ctx.storage.sql
-			.exec<{ meta: string; schema_version: number; migration_tag: string }>(
-				"SELECT meta, schema_version, migration_tag FROM meta WHERE id = 1",
-			)
+			.exec<{ meta: string }>("SELECT meta FROM meta WHERE id = 1")
 			.toArray()[0];
 		if (metaRow?.meta) {
 			try {
@@ -714,12 +669,8 @@ export class ColumnRoomSql extends DurableObject<unknown> {
 		}
 
 		const snapshotRow = this.ctx.storage.sql
-			.exec<{
-				snapshot: ArrayBuffer;
-				schema_version: number;
-				migration_tag: string;
-			}>(
-				"SELECT snapshot, schema_version, migration_tag FROM yjs_snapshot WHERE id = 1",
+			.exec<{ snapshot: ArrayBuffer }>(
+				"SELECT snapshot FROM yjs_snapshot WHERE id = 1",
 			)
 			.toArray()[0];
 		if (snapshotRow?.snapshot) {
@@ -822,20 +773,16 @@ export class ColumnRoomSql extends DurableObject<unknown> {
 			meta: this.meta,
 		};
 		this.ctx.storage.sql.exec(
-			"INSERT INTO meta (id, meta, schema_version, migration_tag) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET meta = excluded.meta, schema_version = excluded.schema_version, migration_tag = excluded.migration_tag",
+			"INSERT INTO meta (id, meta) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET meta = excluded.meta",
 			JSON.stringify(envelope),
-			DO_PERSIST_SCHEMA_VERSION,
-			DO_MIGRATION_TAG,
 		);
 	}
 
 	private insertUpdate(update: Uint8Array) {
 		this.ctx.storage.sql.exec(
-			"INSERT INTO yjs_updates (update_blob, ts, schema_version, migration_tag) VALUES (?, ?, ?, ?)",
+			"INSERT INTO yjs_updates (update_blob, ts) VALUES (?, ?)",
 			toArrayBuffer(update),
 			Date.now(),
-			DO_PERSIST_SCHEMA_VERSION,
-			DO_MIGRATION_TAG,
 		);
 		this.scheduleCompaction();
 	}
@@ -844,11 +791,9 @@ export class ColumnRoomSql extends DurableObject<unknown> {
 		const snapshot = encodeStateAsUpdate(this.doc);
 		const now = Date.now();
 		this.ctx.storage.sql.exec(
-			"INSERT INTO yjs_snapshot (id, snapshot, updated_at, schema_version, migration_tag) VALUES (1, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET snapshot = excluded.snapshot, updated_at = excluded.updated_at, schema_version = excluded.schema_version, migration_tag = excluded.migration_tag;",
+			"INSERT INTO yjs_snapshot (id, snapshot, updated_at) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET snapshot = excluded.snapshot, updated_at = excluded.updated_at;",
 			toArrayBuffer(snapshot),
 			now,
-			DO_PERSIST_SCHEMA_VERSION,
-			DO_MIGRATION_TAG,
 		);
 	}
 
