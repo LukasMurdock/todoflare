@@ -19,15 +19,15 @@
 	"observability": {
 		"enabled": true,
 		"logs": {
-			"enabled": true,
-			"invocation_logs": true,
-			"persist": true,
-			"head_sampling_rate": 1
+			"enabled": false,
+			"invocation_logs": false,
+			"persist": false,
+			"head_sampling_rate": 0
 		},
 		"traces": {
-			"enabled": true,
-			"persist": true,
-			"head_sampling_rate": 1
+			"enabled": false,
+			"persist": false,
+			"head_sampling_rate": 0
 		}
 	},
 	"kv_namespaces": [
