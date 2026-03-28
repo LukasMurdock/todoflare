@@ -41,13 +41,7 @@ export function ShareMenu({ columnId, columnMeta }: ShareMenuProps) {
 	// Sync with props
 	useEffect(() => {
 		if (columnMeta) {
-			setLocalSharedWith((prev) => {
-				const incoming = columnMeta.sharedWith || [];
-				if (incoming.length === 0 && prev.length > 0) {
-					return prev;
-				}
-				return incoming;
-			});
+			setLocalSharedWith(columnMeta.sharedWith || []);
 			setLocalPublicId(columnMeta.publicId || null);
 			if (columnMeta.publicId) {
 				setPublicUrl(`${window.location.origin}/p/${columnMeta.publicId}`);
@@ -75,7 +69,15 @@ export function ShareMenu({ columnId, columnMeta }: ShareMenuProps) {
 		const success = await shareColumn(columnId, shareInput);
 
 		if (success) {
-			setLocalSharedWith((prev) => [...prev, shareInput]);
+			setLocalSharedWith((prev) => {
+				const normalizedTarget = shareInput.replace(/\s/g, "");
+				if (
+					prev.some((id) => id.replace(/\s/g, "") === normalizedTarget)
+				) {
+					return prev;
+				}
+				return [...prev, shareInput];
+			});
 			setShareInput("");
 			toast.success("Column shared successfully!");
 		} else {

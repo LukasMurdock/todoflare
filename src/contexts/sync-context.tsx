@@ -8,6 +8,32 @@ import {
 	type ReactNode,
 } from "react";
 import { toast } from "sonner";
+import { deriveSyncMode, type SyncMode } from "@/lib/sync/mode-machine";
+import { getLocalFirstDb } from "@/lib/local-first/rxdb";
+import type {
+	AccountSnapshotDoc,
+	ColumnIndexDoc,
+} from "@/lib/local-first/collections";
+import type { AccountEditCommand, ReplayReport } from "@/lib/sync/contracts";
+import {
+	createLocalFirstMutationQueueStorage,
+	LocalMutationQueueService,
+	type MutationReplayResult,
+} from "@/lib/sync/mutation-queue-service";
+import {
+	removeSharedWithByColumn,
+	upsertSharedWithByColumn,
+} from "@/lib/sync/replay-state";
+import {
+	flushBufferedColumnMessages,
+	queueOrSendColumnMessage,
+	type BufferedColumnSend,
+} from "@/lib/sync/column-send-buffer";
+import {
+	LocalYjsUpdateOutbox,
+	createLocalFirstYjsOutboxStorage,
+} from "@/lib/sync/yjs-update-outbox";
+import type { LocalFirstDatabase } from "@/lib/local-first/rxdb";
 import type {
 	Account,
 	ColumnMeta,
@@ -29,6 +55,12 @@ import {
 } from "@/lib/account";
 
 const ACCOUNT_STORAGE_KEY = "todoflare-account";
+const QUEUE_RESULT_CACHE_TTL_MS = 5 * 60 * 1000;
+const QUEUE_RESULT_CACHE_PRUNE_INTERVAL_MS = 60 * 1000;
+const MAX_PENDING_COLUMN_SENDS = 512;
+const PENDING_SEND_DROP_LOG_COOLDOWN_MS = 5000;
+const YJS_AWARENESS_REPLAY_MAX_AGE_MS = 30_000;
+const ACCESS_LOSS_NOTICE_COOLDOWN_MS = 2000;
 
 const WS_OP_SYNC = 0x01;
 const WS_OP_AWARENESS = 0x02;
@@ -87,29 +119,81 @@ function encodeOutboundMessage(message: PendingColumnSend): ArrayBuffer {
 	return encodeWsFrame(op, message.payload);
 }
 
-function flushPendingSends(conn: ColumnConnection) {
-	if (conn.status !== "connected") return;
-	if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) return;
-	if (conn.pendingSends.length === 0) return;
-
-	const ws = conn.ws;
-	for (const message of conn.pendingSends) {
-		try {
-			ws.send(encodeOutboundMessage(message));
-		} catch {
-			// ignore
-		}
-	}
-	conn.pendingSends = [];
+function flushPendingSends(
+	conn: ColumnConnection,
+	options?: { onSent?: (message: PendingColumnSend) => void },
+) {
+	void flushBufferedColumnMessages(conn, encodeOutboundMessage, {
+		onSent: options?.onSent,
+	});
 }
 
-type PendingColumnSend =
-	| { kind: "sync"; payload: Uint8Array }
-	| { kind: "awareness"; payload: Uint8Array };
+function asString(value: unknown): string | null {
+	return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function asStringArray(value: unknown): string[] | null {
+	if (!Array.isArray(value)) return null;
+	if (!value.every((item) => typeof item === "string")) return null;
+	return value;
+}
+
+function columnIdFromPayload(payload: Record<string, unknown>): string | null {
+	return asString(payload.columnId);
+}
+
+async function mutationResultFromResponse(
+	response: Response,
+): Promise<MutationReplayResult> {
+	if (response.ok) {
+		return { kind: "ack" };
+	}
+
+	if (response.status === 403) {
+		return { kind: "drop", reason: "revoked" };
+	}
+
+	if (response.status === 404 || response.status === 410) {
+		return { kind: "drop", reason: "not_found" };
+	}
+
+	if (response.status === 400 || response.status === 422) {
+		return { kind: "drop", reason: "validation_failed" };
+	}
+
+	return {
+		kind: "retry",
+		error: await response.text(),
+	};
+}
+
+function hasTerminalFailureForCommand(
+	report: ReplayReport | null,
+	queueId: string | null,
+): boolean {
+	if (!report || !queueId) return false;
+	return report.terminalFailures.some((failure) => failure.queueId === queueId);
+}
+
+function pruneExpiredQueueResults<T>(
+	cache: Map<string, CachedQueueResult<T>>,
+	cutoff: number,
+) {
+	for (const [queueId, cached] of cache) {
+		if (cached.storedAt < cutoff) {
+			cache.delete(queueId);
+		}
+	}
+}
+
+type PendingColumnSend = BufferedColumnSend & {
+	outboxId?: string;
+};
 
 interface ColumnConnection {
 	ws: WebSocket | null;
 	status: ConnectionStatus;
+	hasEverConnected: boolean;
 	presence: PresenceUser[];
 	reconnectTimeout: number | null;
 	reconnectAttempts: number;
@@ -117,6 +201,139 @@ interface ColumnConnection {
 	nonce: number;
 	pendingSends: PendingColumnSend[];
 	refCount: number;
+}
+
+function deriveOverallConnectionStatus(
+	connections: Iterable<ColumnConnection>,
+): ConnectionStatus {
+	const list = Array.from(connections);
+	if (list.length === 0) {
+		return "offline";
+	}
+
+	const hasConnected = list.some((c) => c.status === "connected");
+	if (hasConnected) {
+		return "connected";
+	}
+
+	const hasConnecting = list.some((c) => c.status === "connecting");
+	if (hasConnecting) {
+		return "connecting";
+	}
+
+	return "offline";
+}
+
+interface CachedQueueResult<T> {
+	value: T;
+	storedAt: number;
+}
+
+interface PendingSendDropStats {
+	syncDrops: number;
+	awarenessDrops: number;
+	lastLoggedAt: number;
+}
+
+interface PendingSendDropSummary {
+	syncDrops: number;
+	awarenessDrops: number;
+	affectedColumns: number;
+}
+
+interface YjsOutboxSummary {
+	totalPending: number;
+	activeColumns: number;
+	columnPending: Record<string, number>;
+}
+
+interface SyncStateSummary {
+	queueDepth: number;
+	yjsQueueDepth: number;
+	lastServerHydrationAt: number | null;
+	lastReplayAt: number | null;
+	lastReplayLatencyMs: number | null;
+	revokeDiscardCount: number;
+	convergenceFailureCount: number;
+}
+
+function emptyPendingSendDropSummary(): PendingSendDropSummary {
+	return {
+		syncDrops: 0,
+		awarenessDrops: 0,
+		affectedColumns: 0,
+	};
+}
+
+function summarizePendingSendDrops(
+	statsByColumn: Map<string, PendingSendDropStats>,
+): PendingSendDropSummary {
+	let syncDrops = 0;
+	let awarenessDrops = 0;
+
+	for (const stats of statsByColumn.values()) {
+		syncDrops += stats.syncDrops;
+		awarenessDrops += stats.awarenessDrops;
+	}
+
+	return {
+		syncDrops,
+		awarenessDrops,
+		affectedColumns: statsByColumn.size,
+	};
+}
+
+function emptyYjsOutboxSummary(): YjsOutboxSummary {
+	return {
+		totalPending: 0,
+		activeColumns: 0,
+		columnPending: {},
+	};
+}
+
+function summarizeYjsOutbox(
+	entries: Array<{ columnId: string }>,
+): YjsOutboxSummary {
+	const columnPending: Record<string, number> = {};
+
+	for (const entry of entries) {
+		columnPending[entry.columnId] = (columnPending[entry.columnId] ?? 0) + 1;
+	}
+
+	return {
+		totalPending: entries.length,
+		activeColumns: Object.keys(columnPending).length,
+		columnPending,
+	};
+}
+
+function accountSnapshotDocId(accountId: string): string {
+	return `account:${normalizeAccountId(accountId)}`;
+}
+
+function syncStateDocId(accountId: string | null): string {
+	if (!accountId) return "sync:guest";
+	return `sync:${normalizeAccountId(accountId)}`;
+}
+
+function buildColumnIndexSnapshot(
+	accountId: string,
+	account: Account,
+	sharedColumns: ColumnMeta[],
+): ColumnIndexDoc {
+	const hiddenSet = new Set(account.hiddenSharedColumns || []);
+	const sharedVisibleColumnIds = sharedColumns
+		.map((column) => column.id)
+		.filter((columnId) => !hiddenSet.has(columnId));
+
+	return {
+		id: accountSnapshotDocId(accountId),
+		accountId,
+		ownedColumnIds: [...(account.columnOrder || [])],
+		sharedVisibleColumnIds,
+		hiddenSharedColumnIds: [...(account.hiddenSharedColumns || [])],
+		updatedAt: Date.now(),
+	};
 }
 
 interface SyncContextValue {
@@ -128,15 +345,24 @@ interface SyncContextValue {
 
 	// Connection status
 	connectionStatus: ConnectionStatus;
+	isRealtimeDegraded: boolean;
+	syncMode: SyncMode;
+	syncStateSummary: SyncStateSummary;
+	pendingSendDropSummary: PendingSendDropSummary;
+	yjsOutboxSummary: YjsOutboxSummary;
 
 	// Account operations
 	createAccount: () => Promise<Account | null>;
 	loginWithAccountId: (id: string) => Promise<boolean>;
 	logout: () => void;
+	resetPendingSendDropSummary: () => void;
+	resetSyncTelemetry: () => void;
 
 	// Shared columns
 	sharedColumns: ColumnMeta[];
 	deletedColumns: DeletedColumn[];
+	sharedWithByColumn: Record<string, string[] | undefined>;
+	publicLinksByColumn: Record<string, PublicLinkResponse | null>;
 
 	// Column connections
 	connectToColumn: (columnId: string) => void;
@@ -194,18 +420,1068 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 	const [account, setAccount] = useState<Account | null>(null);
 	const [sharedColumns, setSharedColumns] = useState<ColumnMeta[]>([]);
 	const [deletedColumns, setDeletedColumns] = useState<DeletedColumn[]>([]);
+	const [sharedWithByColumn, setSharedWithByColumn] = useState<
+		Record<string, string[] | undefined>
+	>({});
+	const [publicLinksByColumn, setPublicLinksByColumn] = useState<
+		Record<string, PublicLinkResponse | null>
+	>({});
 	const [isLoading, setIsLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const [isRealtimeDegraded, setIsRealtimeDegraded] = useState(false);
+	const [mutationQueueDepth, setMutationQueueDepth] = useState(0);
+	const [lastServerHydrationAt, setLastServerHydrationAt] = useState<
+		number | null
+	>(null);
+	const [lastReplayAt, setLastReplayAt] = useState<number | null>(null);
+	const [lastReplayLatencyMs, setLastReplayLatencyMs] = useState<number | null>(
+		null,
+	);
+	const [revokeDiscardCount, setRevokeDiscardCount] = useState(0);
+	const [convergenceFailureCount, setConvergenceFailureCount] = useState(0);
+	const [hydratedSyncStateDocId, setHydratedSyncStateDocId] = useState<
+		string | null
+	>(null);
+	const [pendingSendDropSummary, setPendingSendDropSummary] =
+		useState<PendingSendDropSummary>(emptyPendingSendDropSummary);
+	const [yjsOutboxSummary, setYjsOutboxSummary] = useState<YjsOutboxSummary>(
+		emptyYjsOutboxSummary,
+	);
+	const [isNetworkOnline, setIsNetworkOnline] = useState(() => {
+		if (typeof navigator === "undefined") return true;
+		return navigator.onLine;
+	});
 
 	// Column WebSocket connections
 	const columnConnections = useRef<Map<string, ColumnConnection>>(new Map());
 	const messageCallbacks = useRef<
 		Map<string, Set<(message: SyncMessage) => void>>
 	>(new Map());
+	const accountIdRef = useRef<string | null>(accountId);
+	const pendingSendDropsByColumnRef = useRef<
+		Map<string, PendingSendDropStats>
+	>(new Map());
+	const recentAccessLossNoticesRef = useRef<Map<string, number>>(new Map());
+	const createColumnResultsByQueueIdRef = useRef<
+		Map<string, CachedQueueResult<ColumnMeta>>
+	>(
+		new Map(),
+	);
+	const publicLinkResultsByQueueIdRef = useRef<
+		Map<string, CachedQueueResult<PublicLinkResponse>>
+	>(
+		new Map(),
+	);
+	const localFirstDbRef = useRef<LocalFirstDatabase | null>(null);
+	const mutationQueueRef = useRef<LocalMutationQueueService | null>(null);
+	const yjsOutboxRef = useRef<LocalYjsUpdateOutbox | null>(null);
+
+	if (!mutationQueueRef.current) {
+		mutationQueueRef.current = new LocalMutationQueueService({
+			executor: async (mutation) => {
+				const activeAccountId = accountIdRef.current;
+				if (!activeAccountId) {
+					return { kind: "retry", error: "No active account session" };
+				}
+
+				const normalizedActiveAccountId = normalizeAccountId(activeAccountId);
+				if (normalizedActiveAccountId !== normalizeAccountId(mutation.entityId)) {
+					return {
+						kind: "retry",
+						error: "Active session does not match queued command account",
+					};
+				}
+
+				switch (mutation.opType) {
+					case "column.create": {
+						const columnId = asString(mutation.payload.columnId);
+						if (!columnId) {
+							return {
+								kind: "drop",
+								reason: "validation_failed",
+								error: "Invalid columnId payload",
+							};
+						}
+
+						const response = await fetch("/api/column", {
+							method: "POST",
+							headers: {
+								"Content-Type": "application/json",
+								"X-Idempotency-Key": mutation.idempotencyKey,
+							},
+							body: JSON.stringify({
+								accountId: activeAccountId,
+								columnId,
+							}),
+						});
+
+						if (response.ok) {
+							const payload = (await response.json()) as CreateColumnResponse;
+							if (payload?.column?.id === columnId) {
+								createColumnResultsByQueueIdRef.current.set(
+									mutation.queueId,
+									{ value: payload.column, storedAt: Date.now() },
+								);
+							}
+							return { kind: "ack" };
+						}
+
+						return mutationResultFromResponse(response);
+					}
+
+					case "column.reorder": {
+						const columnOrder = asStringArray(mutation.payload.columnOrder);
+						if (!columnOrder) {
+							return {
+								kind: "drop",
+								reason: "validation_failed",
+								error: "Invalid columnOrder payload",
+							};
+						}
+
+						const response = await fetch(
+							`/api/account/${normalizedActiveAccountId}/columns`,
+							{
+								method: "PUT",
+								headers: {
+									"Content-Type": "application/json",
+									"X-Idempotency-Key": mutation.idempotencyKey,
+								},
+								body: JSON.stringify({ columnOrder }),
+							},
+						);
+
+						return mutationResultFromResponse(response);
+					}
+
+					case "column.hide_shared": {
+						const hiddenSharedColumns = asStringArray(
+							mutation.payload.hiddenSharedColumns,
+						);
+						if (!hiddenSharedColumns) {
+							return {
+								kind: "drop",
+								reason: "validation_failed",
+								error: "Invalid hiddenSharedColumns payload",
+							};
+						}
+
+						const response = await fetch(
+							`/api/account/${normalizedActiveAccountId}/hidden`,
+							{
+								method: "PUT",
+								headers: {
+									"Content-Type": "application/json",
+									"X-Idempotency-Key": mutation.idempotencyKey,
+								},
+								body: JSON.stringify({ hiddenSharedColumns }),
+							},
+						);
+
+						return mutationResultFromResponse(response);
+					}
+
+					case "column.delete": {
+						const columnId = asString(mutation.payload.columnId);
+						if (!columnId) {
+							return {
+								kind: "drop",
+								reason: "validation_failed",
+								error: "Invalid columnId payload",
+							};
+						}
+
+						const response = await fetch(`/api/column/${columnId}`, {
+							method: "DELETE",
+							headers: {
+								"X-Account-ID": activeAccountId,
+								"X-Idempotency-Key": mutation.idempotencyKey,
+							},
+						});
+
+						const result = await mutationResultFromResponse(response);
+						if (result.kind === "ack") {
+							setSharedWithByColumn((prev) =>
+								removeSharedWithByColumn(prev, columnId),
+							);
+							setPublicLinksByColumn((prev) => {
+								if (!(columnId in prev)) return prev;
+								const { [columnId]: _removed, ...rest } = prev;
+								return rest;
+							});
+						}
+
+						return result;
+					}
+
+					case "column.restore": {
+						const columnId = asString(mutation.payload.columnId);
+						if (!columnId) {
+							return {
+								kind: "drop",
+								reason: "validation_failed",
+								error: "Invalid columnId payload",
+							};
+						}
+
+						const response = await fetch(`/api/column/${columnId}/restore`, {
+							method: "POST",
+							headers: {
+								"X-Account-ID": activeAccountId,
+								"X-Idempotency-Key": mutation.idempotencyKey,
+							},
+						});
+
+						return mutationResultFromResponse(response);
+					}
+
+					case "column.share": {
+						const columnId = asString(mutation.payload.columnId);
+						const targetAccountId = asString(mutation.payload.targetAccountId);
+						if (!columnId || !targetAccountId || !validateAccountId(targetAccountId)) {
+							return {
+								kind: "drop",
+								reason: "validation_failed",
+								error: "Invalid share payload",
+							};
+						}
+
+						const response = await fetch(`/api/column/${columnId}/share`, {
+							method: "POST",
+							headers: {
+								"Content-Type": "application/json",
+								"X-Account-ID": activeAccountId,
+								"X-Idempotency-Key": mutation.idempotencyKey,
+							},
+							body: JSON.stringify({ targetAccountId }),
+						});
+
+						if (response.ok) {
+							const payload = (await response.json()) as {
+								sharedWith?: unknown;
+							};
+							const nextSharedWith = asStringArray(payload.sharedWith);
+							if (nextSharedWith) {
+								setSharedWithByColumn((prev) =>
+									upsertSharedWithByColumn(prev, columnId, nextSharedWith),
+								);
+							}
+							return { kind: "ack" };
+						}
+
+						return mutationResultFromResponse(response);
+					}
+
+					case "column.revoke": {
+						const columnId = asString(mutation.payload.columnId);
+						const targetAccountId = asString(mutation.payload.targetAccountId);
+						if (!columnId || !targetAccountId || !validateAccountId(targetAccountId)) {
+							return {
+								kind: "drop",
+								reason: "validation_failed",
+								error: "Invalid revoke payload",
+							};
+						}
+
+						const response = await fetch(
+							`/api/column/${columnId}/share/${normalizeAccountId(targetAccountId)}`,
+							{
+								method: "DELETE",
+								headers: {
+									"X-Account-ID": activeAccountId,
+									"X-Idempotency-Key": mutation.idempotencyKey,
+								},
+							},
+						);
+
+						if (response.ok) {
+							const payload = (await response.json()) as {
+								sharedWith?: unknown;
+							};
+							const nextSharedWith = asStringArray(payload.sharedWith);
+							if (nextSharedWith) {
+								setSharedWithByColumn((prev) =>
+									upsertSharedWithByColumn(prev, columnId, nextSharedWith),
+								);
+							}
+							return { kind: "ack" };
+						}
+
+						return mutationResultFromResponse(response);
+					}
+
+					case "column.public.enable": {
+						const columnId = asString(mutation.payload.columnId);
+						if (!columnId) {
+							return {
+								kind: "drop",
+								reason: "validation_failed",
+								error: "Invalid columnId payload",
+							};
+						}
+
+						const response = await fetch(`/api/column/${columnId}/public`, {
+							method: "POST",
+							headers: {
+								"X-Account-ID": activeAccountId,
+								"X-Idempotency-Key": mutation.idempotencyKey,
+							},
+						});
+
+						if (response.ok) {
+							const payload = (await response.json()) as PublicLinkResponse;
+							publicLinkResultsByQueueIdRef.current.set(
+								mutation.queueId,
+								{ value: payload, storedAt: Date.now() },
+							);
+							setPublicLinksByColumn((prev) => {
+								const existing = prev[columnId];
+								if (
+									existing &&
+									existing.publicId === payload.publicId &&
+									existing.url === payload.url
+								) {
+									return prev;
+								}
+
+								return { ...prev, [columnId]: payload };
+							});
+							return { kind: "ack" };
+						}
+
+						return mutationResultFromResponse(response);
+					}
+
+					case "column.public.disable": {
+						const columnId = asString(mutation.payload.columnId);
+						if (!columnId) {
+							return {
+								kind: "drop",
+								reason: "validation_failed",
+								error: "Invalid columnId payload",
+							};
+						}
+
+						const response = await fetch(`/api/column/${columnId}/public`, {
+							method: "DELETE",
+							headers: {
+								"X-Account-ID": activeAccountId,
+								"X-Idempotency-Key": mutation.idempotencyKey,
+							},
+						});
+
+						const result = await mutationResultFromResponse(response);
+						if (result.kind === "ack") {
+							setPublicLinksByColumn((prev) => {
+								if (!(columnId in prev)) return prev;
+								const { [columnId]: _removed, ...rest } = prev;
+								return rest;
+							});
+						}
+						return result;
+					}
+
+					default:
+						return {
+							kind: "drop",
+							reason: "validation_failed",
+							error: `Unsupported opType: ${mutation.opType}`,
+						};
+				}
+			},
+		});
+	}
+
+	const mutationQueue = mutationQueueRef.current!;
+
+	if (!yjsOutboxRef.current) {
+		yjsOutboxRef.current = new LocalYjsUpdateOutbox();
+	}
+
+	const yjsOutbox = yjsOutboxRef.current;
+
+	const ensureLocalFirstDb = useCallback(async () => {
+		if (localFirstDbRef.current) {
+			return localFirstDbRef.current;
+		}
+
+		const db = await getLocalFirstDb();
+		localFirstDbRef.current = db;
+		return db;
+	}, []);
+
+	const hydrateAccountFromLocalSnapshot = useCallback(
+		async (id: string): Promise<boolean> => {
+			try {
+				const db = await ensureLocalFirstDb();
+				const snapshot = db.collections.accountSnapshot.get(
+					accountSnapshotDocId(id),
+				) as AccountSnapshotDoc | undefined;
+				if (!snapshot) return false;
+
+				setAccount(snapshot.account);
+				setSharedColumns(snapshot.sharedColumns || []);
+				setDeletedColumns(snapshot.deletedColumns || []);
+				return true;
+			} catch (err) {
+				console.error("Failed to hydrate account from local snapshot:", err);
+				return false;
+			}
+		},
+		[ensureLocalFirstDb],
+	);
+
+	const persistAccountLocalSnapshot = useCallback(
+		async (
+			id: string,
+			nextAccount: Account,
+			nextSharedColumns: ColumnMeta[],
+			nextDeletedColumns: DeletedColumn[],
+			options?: { reconciledAt?: number | null },
+		) => {
+			try {
+				const db = await ensureLocalFirstDb();
+				const docId = accountSnapshotDocId(id);
+				const existing = db.collections.accountSnapshot.get(docId);
+				const previousHydratedAt = existing?.hydratedAt ?? Date.now();
+
+				db.collections.accountSnapshot.set(docId, {
+					id: docId,
+					accountId: id,
+					account: nextAccount,
+					sharedColumns: nextSharedColumns,
+					deletedColumns: nextDeletedColumns,
+					hydratedAt: previousHydratedAt,
+					reconciledAt: options?.reconciledAt ?? null,
+				});
+
+				db.collections.columnIndex.set(
+					docId,
+					buildColumnIndexSnapshot(id, nextAccount, nextSharedColumns),
+				);
+			} catch (err) {
+				console.error("Failed to persist local account snapshot:", err);
+			}
+		},
+		[ensureLocalFirstDb],
+	);
+
+	const loadSyncStateFromLocalStore = useCallback(
+		async (id: string | null) => {
+			try {
+				const db = await ensureLocalFirstDb();
+				const snapshot = db.collections.syncState.get(syncStateDocId(id));
+				if (!snapshot) return null;
+
+				return {
+					lastServerHydrationAt: snapshot.lastServerHydrationAt,
+					lastReplayAt: snapshot.lastReplayAt,
+					lastReplayLatencyMs: snapshot.lastReplayLatencyMs ?? null,
+					revokeDiscardCount: snapshot.revokeDiscardCount ?? 0,
+					convergenceFailureCount: snapshot.convergenceFailureCount ?? 0,
+				};
+			} catch (err) {
+				console.error("Failed to load sync state from local store:", err);
+				return null;
+			}
+		},
+		[ensureLocalFirstDb],
+	);
+
+	const persistSyncStateToLocalStore = useCallback(
+		async (params: {
+			accountIdValue: string | null;
+			mode: SyncMode;
+			queueDepth: number;
+			yjsQueueDepth: number;
+			lastServerHydrationAtValue: number | null;
+			lastReplayAtValue: number | null;
+			lastReplayLatencyMsValue: number | null;
+			revokeDiscardCountValue: number;
+			convergenceFailureCountValue: number;
+		}) => {
+			try {
+				const db = await ensureLocalFirstDb();
+				const docId = syncStateDocId(params.accountIdValue);
+				db.collections.syncState.set(docId, {
+					id: docId,
+					accountId: params.accountIdValue,
+					mode: params.mode,
+					queueDepth: params.queueDepth,
+					yjsQueueDepth: params.yjsQueueDepth,
+					lastServerHydrationAt: params.lastServerHydrationAtValue,
+					lastReplayAt: params.lastReplayAtValue,
+					lastReplayLatencyMs: params.lastReplayLatencyMsValue,
+					revokeDiscardCount: params.revokeDiscardCountValue,
+					convergenceFailureCount: params.convergenceFailureCountValue,
+					updatedAt: Date.now(),
+				});
+			} catch (err) {
+				console.error("Failed to persist sync state to local store:", err);
+			}
+		},
+		[ensureLocalFirstDb],
+	);
+
+	const refreshYjsOutboxSummary = useCallback(() => {
+		if (!accountId) {
+			setYjsOutboxSummary(emptyYjsOutboxSummary());
+			return;
+		}
+
+		const entries = yjsOutbox
+			.getAllEntries()
+			.filter((entry) => entry.accountId === accountId);
+		setYjsOutboxSummary(summarizeYjsOutbox(entries));
+	}, [accountId, yjsOutbox]);
 
 	// Overall connection status (derived from column connections)
 	const [connectionStatus, setConnectionStatus] =
 		useState<ConnectionStatus>("offline");
+
+	const syncMode = deriveSyncMode({
+		hasAccountSession: !!accountId,
+		isPublicReadonly: false,
+		isNetworkOnline,
+		isRealtimeDegraded,
+		connectionStatus,
+	});
+	const activeSyncStateDocId = syncStateDocId(accountId);
+
+	const syncStateSummary: SyncStateSummary = {
+		queueDepth: mutationQueueDepth,
+		yjsQueueDepth: yjsOutboxSummary.totalPending,
+		lastServerHydrationAt,
+		lastReplayAt,
+		lastReplayLatencyMs,
+		revokeDiscardCount,
+		convergenceFailureCount,
+	};
+
+	useEffect(() => {
+		const subscription = mutationQueue.pending$().subscribe((pending) => {
+			if (!accountId) {
+				setMutationQueueDepth(0);
+				return;
+			}
+
+			const normalizedAccountId = normalizeAccountId(accountId);
+			const depth = pending.filter(
+				(mutation) => normalizeAccountId(mutation.entityId) === normalizedAccountId,
+			).length;
+			setMutationQueueDepth(depth);
+		});
+
+		return () => {
+			subscription.unsubscribe();
+		};
+	}, [accountId, mutationQueue]);
+
+	useEffect(() => {
+		let cancelled = false;
+		setHydratedSyncStateDocId(null);
+		setLastServerHydrationAt(null);
+		setLastReplayAt(null);
+		setLastReplayLatencyMs(null);
+		setRevokeDiscardCount(0);
+		setConvergenceFailureCount(0);
+
+		void (async () => {
+			const snapshot = await loadSyncStateFromLocalStore(accountId);
+			if (cancelled) return;
+
+			setLastServerHydrationAt((prev) => {
+				const loaded = snapshot?.lastServerHydrationAt ?? null;
+				if (loaded === null) return prev;
+				if (prev === null) return loaded;
+				return Math.max(prev, loaded);
+			});
+			setLastReplayAt((prev) => {
+				const loaded = snapshot?.lastReplayAt ?? null;
+				if (loaded === null) return prev;
+				if (prev === null) return loaded;
+				return Math.max(prev, loaded);
+			});
+			setLastReplayLatencyMs((prev) => {
+				const loaded = snapshot?.lastReplayLatencyMs ?? null;
+				if (prev !== null) return prev;
+				return loaded;
+			});
+			setRevokeDiscardCount((prev) => {
+				const loaded = snapshot?.revokeDiscardCount ?? 0;
+				return Math.max(prev, loaded);
+			});
+			setConvergenceFailureCount((prev) => {
+				const loaded = snapshot?.convergenceFailureCount ?? 0;
+				return Math.max(prev, loaded);
+			});
+			setHydratedSyncStateDocId(activeSyncStateDocId);
+		})();
+
+		return () => {
+			cancelled = true;
+		};
+	}, [accountId, activeSyncStateDocId, loadSyncStateFromLocalStore]);
+
+	useEffect(() => {
+		if (hydratedSyncStateDocId !== activeSyncStateDocId) return;
+
+		void persistSyncStateToLocalStore({
+			accountIdValue: accountId,
+			mode: syncMode,
+			queueDepth: mutationQueueDepth,
+			yjsQueueDepth: yjsOutboxSummary.totalPending,
+			lastServerHydrationAtValue: lastServerHydrationAt,
+			lastReplayAtValue: lastReplayAt,
+			lastReplayLatencyMsValue: lastReplayLatencyMs,
+			revokeDiscardCountValue: revokeDiscardCount,
+			convergenceFailureCountValue: convergenceFailureCount,
+		});
+	}, [
+		activeSyncStateDocId,
+		accountId,
+		convergenceFailureCount,
+		hydratedSyncStateDocId,
+		lastReplayAt,
+		lastReplayLatencyMs,
+		lastServerHydrationAt,
+		mutationQueueDepth,
+		persistSyncStateToLocalStore,
+		revokeDiscardCount,
+		syncMode,
+		yjsOutboxSummary.totalPending,
+	]);
+
+	useEffect(() => {
+		const onOnline = () => setIsNetworkOnline(true);
+		const onOffline = () => setIsNetworkOnline(false);
+
+		window.addEventListener("online", onOnline);
+		window.addEventListener("offline", onOffline);
+
+		return () => {
+			window.removeEventListener("online", onOnline);
+			window.removeEventListener("offline", onOffline);
+		};
+	}, []);
+
+	useEffect(() => {
+		let cancelled = false;
+
+		void (async () => {
+			const db = await ensureLocalFirstDb();
+			if (cancelled) return;
+
+			mutationQueue.swapStorage(createLocalFirstMutationQueueStorage(db));
+			yjsOutbox.swapStorage(createLocalFirstYjsOutboxStorage(db));
+			refreshYjsOutboxSummary();
+		})();
+
+		return () => {
+			cancelled = true;
+		};
+	}, [
+		ensureLocalFirstDb,
+		mutationQueue,
+		refreshYjsOutboxSummary,
+		yjsOutbox,
+	]);
+
+	useEffect(() => {
+		accountIdRef.current = accountId;
+		pendingSendDropsByColumnRef.current.clear();
+		recentAccessLossNoticesRef.current.clear();
+		setPendingSendDropSummary(emptyPendingSendDropSummary());
+		refreshYjsOutboxSummary();
+		createColumnResultsByQueueIdRef.current.clear();
+		publicLinkResultsByQueueIdRef.current.clear();
+		setSharedWithByColumn({});
+		setPublicLinksByColumn({});
+	}, [accountId, refreshYjsOutboxSummary]);
+
+	useEffect(() => {
+		if (!accountId) return;
+
+		let cancelled = false;
+		void (async () => {
+			const hydrated = await hydrateAccountFromLocalSnapshot(accountId);
+			if (cancelled) return;
+			if (hydrated) {
+				setError(null);
+			}
+		})();
+
+		return () => {
+			cancelled = true;
+		};
+	}, [accountId, hydrateAccountFromLocalSnapshot]);
+
+	useEffect(() => {
+		const pruneCaches = () => {
+			const cutoff = Date.now() - QUEUE_RESULT_CACHE_TTL_MS;
+			pruneExpiredQueueResults(createColumnResultsByQueueIdRef.current, cutoff);
+			pruneExpiredQueueResults(publicLinkResultsByQueueIdRef.current, cutoff);
+		};
+
+		pruneCaches();
+		const timerId = window.setInterval(
+			pruneCaches,
+			QUEUE_RESULT_CACHE_PRUNE_INTERVAL_MS,
+		);
+
+		return () => {
+			window.clearInterval(timerId);
+		};
+	}, []);
+
+	const markRealtimeDegraded = useCallback((reason: string) => {
+		setIsRealtimeDegraded((prev) => {
+			if (prev) return prev;
+			toast.warning(reason);
+			return true;
+		});
+	}, []);
+
+	const acknowledgeYjsOutboxMessage = useCallback(
+		(message: PendingColumnSend) => {
+			if (!message.outboxId) return;
+			yjsOutbox.acknowledge([message.outboxId]);
+			refreshYjsOutboxSummary();
+		},
+		[refreshYjsOutboxSummary, yjsOutbox],
+	);
+
+	const loadYjsReplayIntoPending = useCallback(
+		(columnId: string, conn: ColumnConnection) => {
+			if (!accountId) return;
+
+			const replayable = yjsOutbox.getReplayableForColumn(accountId, columnId, {
+				awarenessMaxAgeMs: YJS_AWARENESS_REPLAY_MAX_AGE_MS,
+			});
+			if (replayable.length === 0) {
+				refreshYjsOutboxSummary();
+				return;
+			}
+
+			const existingOutboxIds = new Set(
+				conn.pendingSends
+					.map((message) => message.outboxId)
+					.filter((id): id is string => typeof id === "string"),
+			);
+
+			for (const entry of replayable) {
+				if (existingOutboxIds.has(entry.id)) continue;
+
+				conn.pendingSends.push({
+					kind: entry.kind,
+					payload: new Uint8Array(entry.updateBytes),
+					outboxId: entry.id,
+				});
+				existingOutboxIds.add(entry.id);
+			}
+
+			refreshYjsOutboxSummary();
+		},
+		[accountId, refreshYjsOutboxSummary, yjsOutbox],
+	);
+
+	const resetPendingSendDropSummary = useCallback(() => {
+		pendingSendDropsByColumnRef.current.clear();
+		setPendingSendDropSummary(emptyPendingSendDropSummary());
+	}, []);
+
+	const resetSyncTelemetry = useCallback(() => {
+		resetPendingSendDropSummary();
+		setLastReplayLatencyMs(null);
+		setRevokeDiscardCount(0);
+		setConvergenceFailureCount(0);
+	}, [resetPendingSendDropSummary]);
+
+	const recordPendingSendDrop = useCallback(
+		(
+			columnId: string,
+			kind: PendingColumnSend["kind"],
+			pendingCount: number,
+		) => {
+			const now = Date.now();
+			const stats = pendingSendDropsByColumnRef.current.get(columnId) ?? {
+				syncDrops: 0,
+				awarenessDrops: 0,
+				lastLoggedAt: 0,
+			};
+
+			if (kind === "sync") {
+				stats.syncDrops += 1;
+			} else {
+				stats.awarenessDrops += 1;
+			}
+
+			const shouldLog =
+				kind === "sync" ||
+				now - stats.lastLoggedAt >= PENDING_SEND_DROP_LOG_COOLDOWN_MS;
+			if (shouldLog) {
+				stats.lastLoggedAt = now;
+				console.warn("Dropped pending column message due to backlog cap", {
+					columnId,
+					kind,
+					pendingCount,
+					maxPending: MAX_PENDING_COLUMN_SENDS,
+					syncDrops: stats.syncDrops,
+					awarenessDrops: stats.awarenessDrops,
+				});
+			}
+
+			pendingSendDropsByColumnRef.current.set(columnId, stats);
+			setPendingSendDropSummary(
+				summarizePendingSendDrops(pendingSendDropsByColumnRef.current),
+			);
+		},
+		[],
+	);
+
+	const detachColumnSync = useCallback((columnId: string) => {
+		const conn = columnConnections.current.get(columnId);
+		if (!conn) return;
+
+		conn.shouldReconnect = false;
+		conn.nonce += 1;
+		if (conn.reconnectTimeout) {
+			clearTimeout(conn.reconnectTimeout);
+		}
+		if (conn.ws) {
+			conn.ws.close();
+		}
+
+		columnConnections.current.delete(columnId);
+		pendingSendDropsByColumnRef.current.delete(columnId);
+		setPendingSendDropSummary(
+			summarizePendingSendDrops(pendingSendDropsByColumnRef.current),
+		);
+		messageCallbacks.current.delete(columnId);
+		setConnectionStatus(
+			deriveOverallConnectionStatus(columnConnections.current.values()),
+		);
+	}, []);
+
+	const applyColumnAccessLossPolicy = useCallback(
+		async (
+			columnId: string,
+			reason: "revoked" | "column_deleted",
+			source: "websocket" | "replay",
+		) => {
+			if (!columnId) return;
+
+			const droppedMutationCount = await mutationQueue.dropWhere(
+				(mutation) => columnIdFromPayload(mutation.payload) === columnId,
+				reason,
+			);
+			const droppedYjsCount = accountId
+				? yjsOutbox.dropForColumn(accountId, columnId)
+				: yjsOutbox.dropWhere((entry) => entry.columnId === columnId);
+
+			refreshYjsOutboxSummary();
+
+			setSharedColumns((prev) => prev.filter((column) => column.id !== columnId));
+			setSharedWithByColumn((prev) => removeSharedWithByColumn(prev, columnId));
+			setPublicLinksByColumn((prev) => {
+				if (!(columnId in prev)) return prev;
+				const { [columnId]: _removed, ...rest } = prev;
+				return rest;
+			});
+			setAccount((prev) => {
+				if (!prev) return prev;
+
+				const nextColumnOrder = prev.columnOrder.filter((id) => id !== columnId);
+				const nextHiddenSharedColumns = prev.hiddenSharedColumns.filter(
+					(id) => id !== columnId,
+				);
+
+				if (
+					nextColumnOrder.length === prev.columnOrder.length &&
+					nextHiddenSharedColumns.length === prev.hiddenSharedColumns.length
+				) {
+					return prev;
+				}
+
+				return {
+					...prev,
+					columnOrder: nextColumnOrder,
+					hiddenSharedColumns: nextHiddenSharedColumns,
+				};
+			});
+
+			detachColumnSync(columnId);
+
+			const discardedCount = droppedMutationCount + droppedYjsCount;
+			if (reason === "revoked" && discardedCount > 0) {
+				setRevokeDiscardCount((prev) => prev + discardedCount);
+			}
+			const noticeKey = `${reason}:${columnId}`;
+			const now = Date.now();
+			const lastNotifiedAt = recentAccessLossNoticesRef.current.get(noticeKey) ?? 0;
+			const shouldNotify = now - lastNotifiedAt >= ACCESS_LOSS_NOTICE_COOLDOWN_MS;
+			if (!shouldNotify) return;
+
+			recentAccessLossNoticesRef.current.set(noticeKey, now);
+
+			if (reason === "revoked") {
+				if (discardedCount > 0) {
+					toast.warning("Access revoked. Unsynced changes were discarded.");
+				} else if (source === "websocket") {
+					toast.warning("Your access to this column has been revoked");
+				}
+				setError("Access revoked");
+				return;
+			}
+
+			if (discardedCount > 0) {
+				toast.error("This column was deleted. Unsynced changes were discarded.");
+			} else if (source === "websocket") {
+				toast.error("This column has been deleted by its owner");
+			}
+		},
+		[
+			accountId,
+			detachColumnSync,
+			mutationQueue,
+			refreshYjsOutboxSummary,
+			yjsOutbox,
+		],
+	);
+
+	const enqueueAccountCommand = useCallback(
+		async (
+			opType: AccountEditCommand["opType"],
+			payload: Record<string, unknown>,
+		) => {
+			if (!accountId) return null;
+
+			const createdAt = Date.now();
+			const command: AccountEditCommand = {
+				idempotencyKey: crypto.randomUUID(),
+				opType,
+				entityId: accountId,
+				payload,
+				createdAt,
+				attemptCount: 0,
+				nextRetryAt: createdAt,
+			};
+
+			return mutationQueue.enqueue(command);
+		},
+		[accountId, mutationQueue],
+	);
+
+	const replayMutationQueue = useCallback(async (): Promise<ReplayReport | null> => {
+		if (!accountId) return null;
+		if (!isNetworkOnline) return null;
+		if (isRealtimeDegraded) return null;
+
+		const replayStartedAt = Date.now();
+		const report = await mutationQueue.replay({ maxBatch: 50 });
+		if (report.attempted > 0) {
+			const replayFinishedAt = Date.now();
+			setLastReplayAt(replayFinishedAt);
+			setLastReplayLatencyMs(Math.max(0, replayFinishedAt - replayStartedAt));
+		}
+
+		const ackedCreatedColumnIds = report.ackedCommands
+			.filter((command) => command.opType === "column.create")
+			.map((command) => asString(command.payload.columnId))
+			.filter((columnId): columnId is string => !!columnId);
+		if (ackedCreatedColumnIds.length > 0) {
+			const createdSet = new Set(ackedCreatedColumnIds);
+			setAccount((prev) => {
+				if (!prev) return prev;
+
+				const nextOrder = [...prev.columnOrder];
+				let changed = false;
+				for (const columnId of createdSet) {
+					if (nextOrder.includes(columnId)) continue;
+					nextOrder.push(columnId);
+					changed = true;
+				}
+
+				if (!changed) return prev;
+				return { ...prev, columnOrder: nextOrder };
+			});
+		}
+
+		const failedCreatedColumnIds = report.terminalFailures
+			.filter((failure) => failure.opType === "column.create")
+			.map((failure) => asString(failure.payload.columnId))
+			.filter((columnId): columnId is string => !!columnId);
+		if (failedCreatedColumnIds.length > 0) {
+			const failedSet = new Set(failedCreatedColumnIds);
+			setAccount((prev) => {
+				if (!prev) return prev;
+
+				const nextOrder = prev.columnOrder.filter(
+					(columnId) => !failedSet.has(columnId),
+				);
+				if (nextOrder.length === prev.columnOrder.length) {
+					return prev;
+				}
+
+				return { ...prev, columnOrder: nextOrder };
+			});
+		}
+
+		for (const failure of report.terminalFailures) {
+			createColumnResultsByQueueIdRef.current.delete(failure.queueId);
+			publicLinkResultsByQueueIdRef.current.delete(failure.queueId);
+		}
+
+		const revokedColumnIds = new Set(
+			report.terminalFailures
+				.filter((failure) => failure.reason === "revoked")
+				.map((failure) => columnIdFromPayload(failure.payload))
+				.filter((columnId): columnId is string => !!columnId),
+		);
+		for (const revokedColumnId of revokedColumnIds) {
+			await applyColumnAccessLossPolicy(revokedColumnId, "revoked", "replay");
+		}
+
+		const nonRevokedFailures = report.terminalFailures.filter(
+			(failure) => failure.reason !== "revoked",
+		);
+		if (nonRevokedFailures.length > 0) {
+			setConvergenceFailureCount(
+				(prev) => prev + nonRevokedFailures.length,
+			);
+			setError("Some offline changes could not be synced");
+			toast.error("Some offline changes could not be synced");
+		}
+		return report;
+	}, [
+		accountId,
+		applyColumnAccessLossPolicy,
+		isNetworkOnline,
+		isRealtimeDegraded,
+		mutationQueue,
+	]);
+
+	useEffect(() => {
+		if (!accountId) return;
+		if (!isNetworkOnline) return;
+		if (isRealtimeDegraded) return;
+
+		let cancelled = false;
+		const runReplay = async () => {
+			if (cancelled) return;
+			await replayMutationQueue();
+		};
+
+		void runReplay();
+		const timerId = window.setInterval(() => {
+			void runReplay();
+		}, 5000);
+
+		return () => {
+			cancelled = true;
+			window.clearInterval(timerId);
+		};
+	}, [accountId, isNetworkOnline, isRealtimeDegraded, replayMutationQueue]);
 
 	// Update overall connection status based on column connections
 	const updateConnectionStatus = useCallback(() => {
@@ -264,9 +1540,18 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			}
 
 			const data = (await response.json()) as GetAccountResponse;
+			const hydratedAt = Date.now();
 			setAccount(data.account);
 			setSharedColumns(data.sharedColumns || []);
 			setDeletedColumns(data.deletedColumns || []);
+			setLastServerHydrationAt(hydratedAt);
+			await persistAccountLocalSnapshot(
+				id,
+				data.account,
+				data.sharedColumns || [],
+				data.deletedColumns || [],
+				{ reconciledAt: hydratedAt },
+			);
 			return data.account;
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "Unknown error");
@@ -274,14 +1559,32 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		} finally {
 			setIsLoading(false);
 		}
-	}, [accountId]);
+	}, [accountId, persistAccountLocalSnapshot]);
 
 	// Load account on mount if we have an account ID
 	useEffect(() => {
-		if (accountId) {
-			fetchAccount(accountId);
-		}
-	}, [accountId, fetchAccount]);
+		if (!accountId) return;
+		if (!isNetworkOnline) return;
+
+		void fetchAccount(accountId);
+	}, [accountId, fetchAccount, isNetworkOnline]);
+
+	useEffect(() => {
+		if (!accountId || !account) return;
+
+		void persistAccountLocalSnapshot(
+			accountId,
+			account,
+			sharedColumns,
+			deletedColumns,
+		);
+	}, [
+		accountId,
+		account,
+		sharedColumns,
+		deletedColumns,
+		persistAccountLocalSnapshot,
+	]);
 
 	// Create new account
 	const createAccount = useCallback(async () => {
@@ -356,6 +1659,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			}
 		}
 		columnConnections.current.clear();
+		resetSyncTelemetry();
+		recentAccessLossNoticesRef.current.clear();
 
 		setAccountId(null);
 		setAccount(null);
@@ -363,12 +1668,13 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		setDeletedColumns([]);
 		localStorage.removeItem(ACCOUNT_STORAGE_KEY);
 		updateConnectionStatus();
-	}, [updateConnectionStatus]);
+	}, [resetSyncTelemetry, updateConnectionStatus]);
 
 	// Connect to a column's WebSocket
 	const connectToColumn = useCallback(
 		(columnId: string) => {
 			if (!accountId) return;
+			if (isRealtimeDegraded) return;
 
 			const existing = columnConnections.current.get(columnId);
 			if (existing && existing.status !== "offline") {
@@ -380,6 +1686,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 				const conn: ColumnConnection = columnConnections.current.get(columnId) || {
 					ws: null,
 					status: "connecting" as ConnectionStatus,
+					hasEverConnected: false,
 					presence: [],
 					reconnectTimeout: null,
 					reconnectAttempts: 0,
@@ -413,10 +1720,16 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 					}
 
 					conn.status = "connected";
+					conn.hasEverConnected = true;
 					conn.reconnectAttempts = 0;
 
+					// Rehydrate persistent Yjs outbox entries for this column.
+					loadYjsReplayIntoPending(columnId, conn);
+
 					// Flush any queued sends from before connect.
-					flushPendingSends(conn);
+					flushPendingSends(conn, {
+						onSent: acknowledgeYjsOutboxMessage,
+					});
 
 					updateConnectionStatus();
 				};
@@ -448,9 +1761,19 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 
 						// Handle special messages with toasts
 						if (decodedMessage.type === "column-deleted") {
-							toast.error("This column has been deleted by its owner");
+							await applyColumnAccessLossPolicy(
+								columnId,
+								"column_deleted",
+								"websocket",
+							);
+							return;
 						} else if (decodedMessage.type === "access-revoked") {
-							toast.warning("Your access to this column has been revoked");
+							await applyColumnAccessLossPolicy(
+								columnId,
+								"revoked",
+								"websocket",
+							);
+							return;
 						} else if (decodedMessage.type === "error") {
 							toast.error(decodedMessage.message);
 						}
@@ -486,6 +1809,12 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 						30000,
 					);
 					conn.reconnectAttempts++;
+					if (!conn.hasEverConnected && conn.reconnectAttempts >= 3) {
+						markRealtimeDegraded(
+							"Realtime connection failed repeatedly. Switched to local-only mode.",
+						);
+						return;
+					}
 					conn.reconnectTimeout = window.setTimeout(connect, delay);
 				};
 
@@ -496,8 +1825,32 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 
 			connect();
 		},
-		[accountId, updateConnectionStatus],
+		[
+			acknowledgeYjsOutboxMessage,
+			accountId,
+			applyColumnAccessLossPolicy,
+			isRealtimeDegraded,
+			loadYjsReplayIntoPending,
+			markRealtimeDegraded,
+			updateConnectionStatus,
+		],
 	);
+
+	useEffect(() => {
+		if (!isRealtimeDegraded) return;
+
+		for (const conn of columnConnections.current.values()) {
+			conn.shouldReconnect = false;
+			if (conn.reconnectTimeout) {
+				clearTimeout(conn.reconnectTimeout);
+			}
+			if (conn.ws) {
+				conn.ws.close();
+			}
+		}
+		columnConnections.current.clear();
+		updateConnectionStatus();
+	}, [isRealtimeDegraded, updateConnectionStatus]);
 
 	// Disconnect from a column
 	const disconnectFromColumn = useCallback(
@@ -516,6 +1869,10 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 						clearTimeout(conn.reconnectTimeout);
 					}
 					columnConnections.current.delete(columnId);
+					pendingSendDropsByColumnRef.current.delete(columnId);
+					setPendingSendDropSummary(
+						summarizePendingSendDrops(pendingSendDropsByColumnRef.current),
+					);
 					messageCallbacks.current.delete(columnId);
 					updateConnectionStatus();
 				}
@@ -539,32 +1896,106 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 
 	// Send update to column
 	const sendUpdate = useCallback((columnId: string, update: Uint8Array) => {
-		const conn = columnConnections.current.get(columnId);
-		if (!conn?.ws) return;
-
-		const message: PendingColumnSend = { kind: "sync", payload: update };
-
-		if (conn.ws.readyState === WebSocket.OPEN) {
-			conn.ws.send(encodeOutboundMessage(message));
-			return;
+		let conn = columnConnections.current.get(columnId);
+		if (!conn) {
+			conn = {
+				ws: null,
+				status: "offline",
+				hasEverConnected: false,
+				presence: [],
+				reconnectTimeout: null,
+				reconnectAttempts: 0,
+				shouldReconnect: true,
+				nonce: 0,
+				pendingSends: [],
+				refCount: 0,
+			};
+			columnConnections.current.set(columnId, conn);
 		}
 
-		conn.pendingSends.push(message);
-	}, []);
+		const outboxId = accountId
+			? yjsOutbox.enqueue({
+					accountId,
+					columnId,
+					kind: "sync",
+					payload: update,
+			  })
+			: undefined;
+		if (outboxId) {
+			refreshYjsOutboxSummary();
+		}
+
+		const message: PendingColumnSend = {
+			kind: "sync",
+			payload: update,
+			outboxId,
+		};
+		queueOrSendColumnMessage(conn, message, encodeOutboundMessage, {
+			maxPendingMessages: MAX_PENDING_COLUMN_SENDS,
+			dropPolicy: "drop_awareness_first",
+			onSent: acknowledgeYjsOutboxMessage,
+			onDrop: ({ droppedMessage, pendingCount }) => {
+				recordPendingSendDrop(columnId, droppedMessage.kind, pendingCount);
+			},
+		});
+	}, [
+		accountId,
+		acknowledgeYjsOutboxMessage,
+		recordPendingSendDrop,
+		refreshYjsOutboxSummary,
+		yjsOutbox,
+	]);
 
 	const sendAwareness = useCallback((columnId: string, update: Uint8Array) => {
-		const conn = columnConnections.current.get(columnId);
-		if (!conn?.ws) return;
-
-		const message: PendingColumnSend = { kind: "awareness", payload: update };
-
-		if (conn.ws.readyState === WebSocket.OPEN) {
-			conn.ws.send(encodeOutboundMessage(message));
-			return;
+		let conn = columnConnections.current.get(columnId);
+		if (!conn) {
+			conn = {
+				ws: null,
+				status: "offline",
+				hasEverConnected: false,
+				presence: [],
+				reconnectTimeout: null,
+				reconnectAttempts: 0,
+				shouldReconnect: true,
+				nonce: 0,
+				pendingSends: [],
+				refCount: 0,
+			};
+			columnConnections.current.set(columnId, conn);
 		}
 
-		conn.pendingSends.push(message);
-	}, []);
+		const outboxId = accountId
+			? yjsOutbox.enqueue({
+					accountId,
+					columnId,
+					kind: "awareness",
+					payload: update,
+			  })
+			: undefined;
+		if (outboxId) {
+			refreshYjsOutboxSummary();
+		}
+
+		const message: PendingColumnSend = {
+			kind: "awareness",
+			payload: update,
+			outboxId,
+		};
+		queueOrSendColumnMessage(conn, message, encodeOutboundMessage, {
+			maxPendingMessages: MAX_PENDING_COLUMN_SENDS,
+			dropPolicy: "drop_awareness_first",
+			onSent: acknowledgeYjsOutboxMessage,
+			onDrop: ({ droppedMessage, pendingCount }) => {
+				recordPendingSendDrop(columnId, droppedMessage.kind, pendingCount);
+			},
+		});
+	}, [
+		accountId,
+		acknowledgeYjsOutboxMessage,
+		recordPendingSendDrop,
+		refreshYjsOutboxSummary,
+		yjsOutbox,
+	]);
 
 	// Subscribe to column messages
 	const onColumnMessage = useCallback(
@@ -585,145 +2016,214 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 	const createColumn = useCallback(async () => {
 		if (!accountId) return null;
 
-		try {
-			const response = await fetch("/api/column", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ accountId }),
-			});
+		const columnId = crypto.randomUUID();
+		const provisionalColumn: ColumnMeta = {
+			schemaVersion: 1,
+			id: columnId,
+			ownerId: displayAccountId(accountId),
+			sharedWith: [],
+			publicId: null,
+			createdAt: Date.now(),
+		};
 
-			if (!response.ok) {
-				throw new Error("Failed to create column");
+		setAccount((prev) => {
+			if (!prev) return prev;
+			if (prev.columnOrder.includes(columnId)) return prev;
+			return {
+				...prev,
+				columnOrder: [...prev.columnOrder, columnId],
+			};
+		});
+
+		try {
+			const queueId = await enqueueAccountCommand("column.create", {
+				columnId,
+			});
+			const report = await replayMutationQueue();
+
+			if (hasTerminalFailureForCommand(report, queueId)) {
+				disconnectFromColumn(columnId);
+				setAccount((prev) => {
+					if (!prev) return prev;
+					return {
+						...prev,
+						columnOrder: prev.columnOrder.filter((id) => id !== columnId),
+					};
+				});
+				await fetchAccount(accountId);
+				return null;
 			}
 
-			const data = (await response.json()) as CreateColumnResponse;
+			if (!queueId) {
+				return provisionalColumn;
+			}
 
-			// Optimistically update local account state so UI feels instant.
+			const created = createColumnResultsByQueueIdRef.current.get(queueId);
+			if (created) {
+				createColumnResultsByQueueIdRef.current.delete(queueId);
+				return created.value;
+			}
+
+			return provisionalColumn;
+		} catch (err) {
+			disconnectFromColumn(columnId);
 			setAccount((prev) => {
 				if (!prev) return prev;
-				if (prev.columnOrder.includes(data.column.id)) return prev;
 				return {
 					...prev,
-					columnOrder: [...prev.columnOrder, data.column.id],
+					columnOrder: prev.columnOrder.filter((id) => id !== columnId),
 				};
 			});
 
-			// Reconcile with server in the background.
-			void fetchAccount(accountId);
-
-			return data.column;
-		} catch (err) {
-			setError(err instanceof Error ? err.message : "Unknown error");
+			const message = err instanceof Error ? err.message : "Unknown error";
+			setError(message);
+			if (message.includes("Exceeded allowed duration in Durable Objects free tier")) {
+				markRealtimeDegraded(
+					"Realtime exceeded Durable Object limits. Using local-only mode.",
+				);
+			}
 			return null;
 		}
-	}, [accountId, fetchAccount]);
+	}, [
+		accountId,
+		disconnectFromColumn,
+		enqueueAccountCommand,
+		fetchAccount,
+		markRealtimeDegraded,
+		replayMutationQueue,
+	]);
 
 	// Delete a column
 	const deleteColumn = useCallback(
 		async (columnId: string) => {
 			if (!accountId) return false;
 
+			disconnectFromColumn(columnId);
+			const deletedAt = Date.now();
+			setAccount((prev) => {
+				if (!prev) return prev;
+				return {
+					...prev,
+					columnOrder: prev.columnOrder.filter((id) => id !== columnId),
+				};
+			});
+			setDeletedColumns((prev) => [
+				{ columnId, deletedAt },
+				...prev.filter((entry) => entry.columnId !== columnId),
+			]);
+
 			try {
-				const response = await fetch(`/api/column/${columnId}`, {
-					method: "DELETE",
-					headers: { "X-Account-ID": accountId },
+				const queueId = await enqueueAccountCommand("column.delete", {
+					columnId,
 				});
-
-				if (!response.ok) {
-					throw new Error("Failed to delete column");
+				const report = await replayMutationQueue();
+				if (hasTerminalFailureForCommand(report, queueId)) {
+					await fetchAccount(accountId);
+					return false;
 				}
-
-				// Disconnect and refresh
-				disconnectFromColumn(columnId);
-				await fetchAccount(accountId);
-
 				return true;
 			} catch (err) {
+				await fetchAccount(accountId);
 				setError(err instanceof Error ? err.message : "Unknown error");
 				return false;
 			}
 		},
-		[accountId, disconnectFromColumn, fetchAccount],
+		[
+			accountId,
+			disconnectFromColumn,
+			enqueueAccountCommand,
+			fetchAccount,
+			replayMutationQueue,
+		],
 	);
 
 	const restoreColumn = useCallback(
 		async (columnId: string) => {
 			if (!accountId) return false;
 
+			setDeletedColumns((prev) =>
+				prev.filter((entry) => entry.columnId !== columnId),
+			);
+			setAccount((prev) => {
+				if (!prev) return prev;
+				if (prev.columnOrder.includes(columnId)) return prev;
+				return {
+					...prev,
+					columnOrder: [...prev.columnOrder, columnId],
+				};
+			});
+
 			try {
-				const response = await fetch(`/api/column/${columnId}/restore`, {
-					method: "POST",
-					headers: { "X-Account-ID": accountId },
+				const queueId = await enqueueAccountCommand("column.restore", {
+					columnId,
 				});
-
-				if (!response.ok) {
-					throw new Error("Failed to restore column");
+				const report = await replayMutationQueue();
+				if (hasTerminalFailureForCommand(report, queueId)) {
+					await fetchAccount(accountId);
+					return false;
 				}
-
-				await fetchAccount(accountId);
 				return true;
 			} catch (err) {
+				await fetchAccount(accountId);
 				setError(err instanceof Error ? err.message : "Unknown error");
 				return false;
 			}
 		},
-		[accountId, fetchAccount],
+		[accountId, enqueueAccountCommand, fetchAccount, replayMutationQueue],
 	);
 
 	// Share a column
 	const shareColumn = useCallback(
 		async (columnId: string, targetAccountId: string) => {
 			if (!accountId) return false;
+			if (!validateAccountId(targetAccountId)) return false;
 
 			try {
-				const response = await fetch(`/api/column/${columnId}/share`, {
-					method: "POST",
-					headers: {
-						"Content-Type": "application/json",
-						"X-Account-ID": accountId,
-					},
-					body: JSON.stringify({ targetAccountId }),
+				const queueId = await enqueueAccountCommand("column.share", {
+					columnId,
+					targetAccountId,
 				});
-
-				if (!response.ok) {
-					const data = (await response.json()) as { error: string };
-					throw new Error(data.error || "Failed to share column");
+				const report = await replayMutationQueue();
+				if (!report) {
+					return false;
 				}
-
+				if (hasTerminalFailureForCommand(report, queueId)) {
+					return false;
+				}
 				return true;
 			} catch (err) {
 				setError(err instanceof Error ? err.message : "Unknown error");
 				return false;
 			}
 		},
-		[accountId],
+		[accountId, enqueueAccountCommand, replayMutationQueue],
 	);
 
 	// Revoke share
 	const revokeShare = useCallback(
 		async (columnId: string, targetAccountId: string) => {
 			if (!accountId) return false;
+			if (!validateAccountId(targetAccountId)) return false;
 
 			try {
-				const response = await fetch(
-					`/api/column/${columnId}/share/${normalizeAccountId(targetAccountId)}`,
-					{
-						method: "DELETE",
-						headers: { "X-Account-ID": accountId },
-					},
-				);
-
-				if (!response.ok) {
-					throw new Error("Failed to revoke share");
+				const queueId = await enqueueAccountCommand("column.revoke", {
+					columnId,
+					targetAccountId,
+				});
+				const report = await replayMutationQueue();
+				if (!report) {
+					return false;
 				}
-
+				if (hasTerminalFailureForCommand(report, queueId)) {
+					return false;
+				}
 				return true;
 			} catch (err) {
 				setError(err instanceof Error ? err.message : "Unknown error");
 				return false;
 			}
 		},
-		[accountId],
+		[accountId, enqueueAccountCommand, replayMutationQueue],
 	);
 
 	// Enable public link
@@ -732,22 +2232,31 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			if (!accountId) return null;
 
 			try {
-				const response = await fetch(`/api/column/${columnId}/public`, {
-					method: "POST",
-					headers: { "X-Account-ID": accountId },
+				const queueId = await enqueueAccountCommand("column.public.enable", {
+					columnId,
 				});
-
-				if (!response.ok) {
-					throw new Error("Failed to enable public link");
+				const report = await replayMutationQueue();
+				if (hasTerminalFailureForCommand(report, queueId)) {
+					return null;
 				}
 
-				return (await response.json()) as PublicLinkResponse;
+				if (!queueId) {
+					return null;
+				}
+
+				const result = publicLinkResultsByQueueIdRef.current.get(queueId);
+				if (result) {
+					publicLinkResultsByQueueIdRef.current.delete(queueId);
+					return result.value;
+				}
+
+				return null;
 			} catch (err) {
 				setError(err instanceof Error ? err.message : "Unknown error");
 				return null;
 			}
 		},
-		[accountId],
+		[accountId, enqueueAccountCommand, replayMutationQueue],
 	);
 
 	// Disable public link
@@ -756,22 +2265,23 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			if (!accountId) return false;
 
 			try {
-				const response = await fetch(`/api/column/${columnId}/public`, {
-					method: "DELETE",
-					headers: { "X-Account-ID": accountId },
+				const queueId = await enqueueAccountCommand("column.public.disable", {
+					columnId,
 				});
-
-				if (!response.ok) {
-					throw new Error("Failed to disable public link");
+				const report = await replayMutationQueue();
+				if (!report) {
+					return false;
 				}
-
+				if (hasTerminalFailureForCommand(report, queueId)) {
+					return false;
+				}
 				return true;
 			} catch (err) {
 				setError(err instanceof Error ? err.message : "Unknown error");
 				return false;
 			}
 		},
-		[accountId],
+		[accountId, enqueueAccountCommand, replayMutationQueue],
 	);
 
 	// Update column order
@@ -779,19 +2289,16 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		async (columnOrder: string[]) => {
 			if (!accountId) return;
 
-			try {
-				await fetch(`/api/account/${normalizeAccountId(accountId)}/columns`, {
-					method: "PUT",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ columnOrder }),
-				});
+			setAccount((prev) => (prev ? { ...prev, columnOrder } : null));
 
-				setAccount((prev) => (prev ? { ...prev, columnOrder } : null));
+			try {
+				await enqueueAccountCommand("column.reorder", { columnOrder });
+				await replayMutationQueue();
 			} catch (err) {
 				console.error("Failed to update column order:", err);
 			}
 		},
-		[accountId],
+		[accountId, enqueueAccountCommand, replayMutationQueue],
 	);
 
 	// Update hidden shared columns
@@ -799,21 +2306,20 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		async (hiddenSharedColumns: string[]) => {
 			if (!accountId) return;
 
-			try {
-				await fetch(`/api/account/${normalizeAccountId(accountId)}/hidden`, {
-					method: "PUT",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ hiddenSharedColumns }),
-				});
+			setAccount((prev) =>
+				prev ? { ...prev, hiddenSharedColumns } : null,
+			);
 
-				setAccount((prev) =>
-					prev ? { ...prev, hiddenSharedColumns } : null,
-				);
+			try {
+				await enqueueAccountCommand("column.hide_shared", {
+					hiddenSharedColumns,
+				});
+				await replayMutationQueue();
 			} catch (err) {
 				console.error("Failed to update hidden shared columns:", err);
 			}
 		},
-		[accountId],
+		[accountId, enqueueAccountCommand, replayMutationQueue],
 	);
 
 	const exportAccountData = useCallback(async () => {
@@ -892,11 +2398,20 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		isLoading,
 		error,
 		connectionStatus,
+		isRealtimeDegraded,
+		syncMode,
+		syncStateSummary,
+		pendingSendDropSummary,
+		yjsOutboxSummary,
 		createAccount,
 		loginWithAccountId,
 		logout,
+		resetPendingSendDropSummary,
+		resetSyncTelemetry,
 		sharedColumns,
 		deletedColumns,
+		sharedWithByColumn,
+		publicLinksByColumn,
 		connectToColumn,
 		disconnectFromColumn,
 		getColumnStatus,

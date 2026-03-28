@@ -1,5 +1,14 @@
 import { useRef, useState, type ChangeEvent } from "react";
-import { Copy, LogOut, Check, Download, Upload, Trash2 } from "lucide-react";
+import {
+	Copy,
+	LogOut,
+	Check,
+	Download,
+	FileDown,
+	Upload,
+	Trash2,
+	RotateCcw,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
 	Tooltip,
@@ -8,6 +17,7 @@ import {
 } from "@/components/ui/tooltip";
 import {
 	DropdownMenu,
+	DropdownMenuCheckboxItem,
 	DropdownMenuContent,
 	DropdownMenuItem,
 	DropdownMenuSeparator,
@@ -28,7 +38,13 @@ export function AccountBadge() {
 	const {
 		accountId,
 		connectionStatus,
+		isRealtimeDegraded,
+		syncMode,
+		syncStateSummary,
+		pendingSendDropSummary,
+		yjsOutboxSummary,
 		logout,
+		resetSyncTelemetry,
 		isAuthenticated,
 		restoreColumn,
 		exportAccountData,
@@ -36,6 +52,9 @@ export function AccountBadge() {
 		deletedColumns,
 	} = useAccount();
 	const [copied, setCopied] = useState(false);
+	const [copiedSyncDebug, setCopiedSyncDebug] = useState(false);
+	const [downloadedSyncDebug, setDownloadedSyncDebug] = useState(false);
+	const [redactSyncDebugIds, setRedactSyncDebugIds] = useState(true);
 	const [showGarbageCan, setShowGarbageCan] = useState(false);
 	const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -64,6 +83,135 @@ export function AccountBadge() {
 		connecting: "Connecting...",
 		offline: "Offline",
 	}[connectionStatus];
+
+	const effectiveStatusText = isRealtimeDegraded
+		? "Local-only mode"
+		: statusText;
+
+	const syncModeText = {
+		guest_local: "Guest local",
+		account_offline: "Account offline",
+		account_syncing: "Account syncing",
+		account_realtime: "Account realtime",
+		public_readonly: "Public readonly",
+	}[syncMode];
+
+	const totalPendingDrops =
+		pendingSendDropSummary.syncDrops + pendingSendDropSummary.awarenessDrops;
+	const hasSyncTelemetry =
+		totalPendingDrops > 0 ||
+		syncStateSummary.lastReplayLatencyMs !== null ||
+		syncStateSummary.revokeDiscardCount > 0 ||
+		syncStateSummary.convergenceFailureCount > 0;
+	const hasPendingYjsOutbox = yjsOutboxSummary.totalPending > 0;
+	const topYjsOutboxColumns = Object.entries(yjsOutboxSummary.columnPending)
+		.sort((a, b) => {
+			if (b[1] === a[1]) return a[0].localeCompare(b[0]);
+			return b[1] - a[1];
+		})
+		.slice(0, 3);
+	const remainingYjsOutboxColumns = Math.max(
+		0,
+		yjsOutboxSummary.activeColumns - topYjsOutboxColumns.length,
+	);
+
+	const formatColumnId = (columnId: string) => {
+		if (columnId.length <= 12) return columnId;
+		return `${columnId.slice(0, 6)}...${columnId.slice(-4)}`;
+	};
+
+	const formatSyncTimestamp = (value: number | null) => {
+		if (!value) return "Never";
+		return new Date(value).toLocaleString();
+	};
+
+	const formatLatencyMs = (value: number | null) => {
+		if (value === null) return "n/a";
+		return `${value} ms`;
+	};
+
+	const redactColumnIdForSnapshot = (columnId: string) => {
+		if (columnId.length <= 8) return "[redacted]";
+		return `${columnId.slice(0, 4)}...[redacted]...${columnId.slice(-4)}`;
+	};
+
+	const buildSyncDebugSnapshot = () => {
+		const displayedAccountId = displayAccountId(accountId);
+		const snapshotAccountId = redactSyncDebugIds
+			? truncateAccountId(displayedAccountId)
+			: displayedAccountId;
+
+		return {
+			capturedAt: new Date().toISOString(),
+			redactedIds: redactSyncDebugIds,
+			accountId: snapshotAccountId,
+			networkOnline: typeof navigator === "undefined" ? null : navigator.onLine,
+			sync: {
+				mode: syncMode,
+				connectionStatus,
+				isRealtimeDegraded,
+				queueDepth: syncStateSummary.queueDepth,
+				yjsQueueDepth: syncStateSummary.yjsQueueDepth,
+				lastServerHydrationAt: syncStateSummary.lastServerHydrationAt,
+				lastReplayAt: syncStateSummary.lastReplayAt,
+				lastReplayLatencyMs: syncStateSummary.lastReplayLatencyMs,
+				revokeDiscardCount: syncStateSummary.revokeDiscardCount,
+				convergenceFailureCount: syncStateSummary.convergenceFailureCount,
+			},
+			yjsOutbox: {
+				totalPending: yjsOutboxSummary.totalPending,
+				activeColumns: yjsOutboxSummary.activeColumns,
+				topColumns: topYjsOutboxColumns.map(([columnId, count]) => ({
+					columnId: redactSyncDebugIds
+						? redactColumnIdForSnapshot(columnId)
+						: columnId,
+					pending: count,
+				})),
+				remainingColumns: remainingYjsOutboxColumns,
+			},
+			pendingSendDrops: {
+				syncDrops: pendingSendDropSummary.syncDrops,
+				awarenessDrops: pendingSendDropSummary.awarenessDrops,
+				affectedColumns: pendingSendDropSummary.affectedColumns,
+			},
+		};
+	};
+
+	const handleCopySyncDebugSnapshot = async () => {
+		try {
+			await navigator.clipboard.writeText(JSON.stringify(buildSyncDebugSnapshot(), null, 2));
+			setCopiedSyncDebug(true);
+			setTimeout(() => setCopiedSyncDebug(false), 2000);
+		} catch (err) {
+			console.error("Failed to copy sync debug snapshot:", err);
+		}
+	};
+
+	const handleDownloadSyncDebugSnapshot = () => {
+		try {
+			const blob = new Blob([JSON.stringify(buildSyncDebugSnapshot(), null, 2)], {
+				type: "application/json",
+			});
+			const url = URL.createObjectURL(blob);
+			const link = document.createElement("a");
+			const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+			link.href = url;
+			link.download = `todoflare-sync-debug-${timestamp}.json`;
+			document.body.appendChild(link);
+			link.click();
+			link.remove();
+			URL.revokeObjectURL(url);
+
+			setDownloadedSyncDebug(true);
+			setTimeout(() => setDownloadedSyncDebug(false), 2000);
+		} catch (err) {
+			console.error("Failed to download sync debug snapshot:", err);
+		}
+	};
+
+	const handleResetSyncTelemetry = () => {
+		resetSyncTelemetry();
+	};
 
 	const handleExport = async () => {
 		const payload = await exportAccountData();
@@ -180,7 +328,66 @@ export function AccountBadge() {
 				</TooltipTrigger>
 				<TooltipContent>
 					<p className="font-mono">{displayAccountId(accountId)}</p>
-					<p className="text-muted-foreground">{statusText}</p>
+					<p className="text-muted-foreground">{effectiveStatusText}</p>
+					<p className="text-muted-foreground">Mode: {syncModeText}</p>
+					<p className="text-muted-foreground">
+						Mutation queue: {syncStateSummary.queueDepth}
+					</p>
+					<p className="text-muted-foreground">
+						Yjs queue: {syncStateSummary.yjsQueueDepth}
+					</p>
+					<p className="text-muted-foreground">
+						Last server hydration: {formatSyncTimestamp(syncStateSummary.lastServerHydrationAt)}
+					</p>
+					<p className="text-muted-foreground">
+						Last replay: {formatSyncTimestamp(syncStateSummary.lastReplayAt)}
+					</p>
+					<p className="text-muted-foreground">
+						Replay latency: {formatLatencyMs(syncStateSummary.lastReplayLatencyMs)}
+					</p>
+					<p className="text-muted-foreground">
+						Revoked discards: {syncStateSummary.revokeDiscardCount}
+					</p>
+					<p className="text-muted-foreground">
+						Convergence failures: {syncStateSummary.convergenceFailureCount}
+					</p>
+					{hasPendingYjsOutbox ? (
+						<>
+							<p className="text-muted-foreground">
+								Pending Yjs outbox: {yjsOutboxSummary.totalPending} message
+								{yjsOutboxSummary.totalPending === 1 ? "" : "s"} across {" "}
+								{yjsOutboxSummary.activeColumns} column
+								{yjsOutboxSummary.activeColumns === 1 ? "" : "s"}
+							</p>
+							{topYjsOutboxColumns.length > 0 ? (
+								<p className="text-muted-foreground">
+									Top backlog: {" "}
+									{topYjsOutboxColumns
+										.map(
+											([columnId, count]) =>
+												`${formatColumnId(columnId)} (${count})`,
+										)
+										.join(", ")}
+									{remainingYjsOutboxColumns > 0
+										? `, +${remainingYjsOutboxColumns} more`
+										: ""}
+								</p>
+							) : null}
+						</>
+					) : null}
+					{totalPendingDrops > 0 ? (
+						<p className="text-muted-foreground">
+							Dropped queued messages: {pendingSendDropSummary.syncDrops} sync, {" "}
+							{pendingSendDropSummary.awarenessDrops} awareness across {" "}
+							{pendingSendDropSummary.affectedColumns} column
+							{pendingSendDropSummary.affectedColumns === 1 ? "" : "s"}
+						</p>
+					) : null}
+					{isRealtimeDegraded ? (
+						<p className="text-muted-foreground">
+							Realtime unavailable (Durable Object limit)
+						</p>
+					) : null}
 				</TooltipContent>
 				</Tooltip>
 
@@ -201,6 +408,35 @@ export function AccountBadge() {
 					{copied ? "Copied!" : "Copy Account ID"}
 				</DropdownMenuItem>
 
+				<DropdownMenuItem onClick={handleCopySyncDebugSnapshot}>
+					{copiedSyncDebug ? (
+						<Check className="mr-2 h-4 w-4 text-green-500" />
+					) : (
+						<Copy className="mr-2 h-4 w-4" />
+					)}
+					{copiedSyncDebug
+						? "Copied Debug Snapshot!"
+						: "Copy Sync Debug Snapshot"}
+				</DropdownMenuItem>
+
+				<DropdownMenuCheckboxItem
+					checked={redactSyncDebugIds}
+					onCheckedChange={(checked) => setRedactSyncDebugIds(checked === true)}
+				>
+					Redact IDs in Debug Snapshot
+				</DropdownMenuCheckboxItem>
+
+				<DropdownMenuItem onClick={handleDownloadSyncDebugSnapshot}>
+					{downloadedSyncDebug ? (
+						<Check className="mr-2 h-4 w-4 text-green-500" />
+					) : (
+						<FileDown className="mr-2 h-4 w-4" />
+					)}
+					{downloadedSyncDebug
+						? "Downloaded Debug Snapshot!"
+						: "Download Sync Debug Snapshot"}
+				</DropdownMenuItem>
+
 				<DropdownMenuItem onClick={handleExport}>
 					<Download className="mr-2 h-4 w-4" />
 					Export Data
@@ -214,6 +450,14 @@ export function AccountBadge() {
 				<DropdownMenuItem onClick={() => setShowGarbageCan(true)}>
 					<Trash2 className="mr-2 h-4 w-4" />
 					Recently Deleted ({deletedColumns.length})
+				</DropdownMenuItem>
+
+				<DropdownMenuItem
+					onClick={handleResetSyncTelemetry}
+					disabled={!hasSyncTelemetry}
+				>
+					<RotateCcw className="mr-2 h-4 w-4" />
+					Reset Sync Telemetry
 				</DropdownMenuItem>
 
 				<DropdownMenuSeparator />

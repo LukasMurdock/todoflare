@@ -91,11 +91,17 @@ export function useColumns() {
 		accountId,
 		account,
 		sharedColumns,
+		sharedWithByColumn,
+		publicLinksByColumn,
+		syncMode,
 		createColumn,
 		deleteColumn,
 		updateColumnOrder,
 		updateHiddenSharedColumns,
 	} = useSyncContext();
+
+	const usesSyncedMode =
+		!!accountId && !!account && syncMode !== "guest_local";
 
 	// Local columns (for offline/unauthenticated mode)
 	const [localColumns, setLocalColumns] = useState<Column[]>(() =>
@@ -141,19 +147,19 @@ export function useColumns() {
 
 	// Add column
 	const addColumn = useCallback(async () => {
-		if (accountId) {
+		if (usesSyncedMode) {
 			// Create column on server
 			await createColumn();
 		} else {
 			// Local-only mode
 			setLocalColumns((prev) => [...prev, createEmptyColumn()]);
 		}
-	}, [accountId, createColumn]);
+	}, [usesSyncedMode, createColumn]);
 
 	// Remove column
 	const removeColumn = useCallback(
 		async (id: string) => {
-			if (accountId) {
+			if (usesSyncedMode) {
 				// Check if we own this column
 				const meta = columnMetaMap.get(id);
 				const isOwner =
@@ -180,7 +186,7 @@ export function useColumns() {
 			}
 		},
 		[
-			accountId,
+			usesSyncedMode,
 			account,
 			columnMetaMap,
 			deleteColumn,
@@ -191,20 +197,20 @@ export function useColumns() {
 	// Update column value (for local-only mode)
 	const updateColumnValue = useCallback(
 		(id: string, value: Value) => {
-			if (!accountId) {
+			if (!usesSyncedMode) {
 				setLocalColumns((prev) =>
 					prev.map((col) => (col.id === id ? { ...col, value } : col)),
 				);
 			}
 			// In synced mode, updates go through Yjs collaboration
 		},
-		[accountId],
+		[usesSyncedMode],
 	);
 
 	// Reorder columns
 	const reorderColumns = useCallback(
 		async (activeId: string, overId: string) => {
-			if (accountId) {
+			if (usesSyncedMode) {
 				// Synced mode: update column order
 				const oldIndex = syncedColumnIds.indexOf(activeId);
 				const newIndex = syncedColumnIds.indexOf(overId);
@@ -237,13 +243,13 @@ export function useColumns() {
 				});
 			}
 		},
-		[accountId, syncedColumnIds, columnMetaMap, updateColumnOrder],
+		[usesSyncedMode, syncedColumnIds, columnMetaMap, updateColumnOrder],
 	);
 
 	// Toggle column collapsed
 	const toggleColumnCollapsed = useCallback(
 		(id: string) => {
-			if (!accountId) {
+			if (!usesSyncedMode) {
 				setLocalColumns((prev) =>
 					prev.map((col) =>
 						col.id === id ? { ...col, collapsed: !col.collapsed } : col,
@@ -257,32 +263,35 @@ export function useColumns() {
 				[id]: !prev[id],
 			}));
 		},
-		[accountId],
+		[usesSyncedMode],
 	);
 
 	// Get columns based on mode
 	const columns = useMemo(() => {
-		if (accountId && account) {
+		if (usesSyncedMode) {
 			// Synced mode: return column IDs with metadata
 			return syncedColumnIds.map((id) => {
 				const meta = columnMetaMap.get(id);
+				const localSharedWith = sharedWithByColumn[id];
+				const localPublicLink = publicLinksByColumn[id] || null;
 				return {
 					id,
 					value: EMPTY_COLUMN_VALUE,
 					collapsed: collapsedById[id] ?? false,
 					ownerId: meta?.ownerId || accountId,
-					sharedWith: meta?.sharedWith || [],
-					publicId: meta?.publicId || null,
+					sharedWith: localSharedWith ?? meta?.sharedWith ?? [],
+					publicId: localPublicLink?.publicId || meta?.publicId || null,
 				} as Column;
 			});
 		}
 		// Local-only mode
 		return localColumns;
 	}, [
-		accountId,
-		account,
+		usesSyncedMode,
 		syncedColumnIds,
 		columnMetaMap,
+		sharedWithByColumn,
+		publicLinksByColumn,
 		localColumns,
 		collapsedById,
 	]);
@@ -290,7 +299,7 @@ export function useColumns() {
 	// Check if a column is owned by the current user
 	const isColumnOwner = useCallback(
 		(columnId: string) => {
-			if (!accountId) return true; // Local mode, always owner
+			if (!usesSyncedMode) return true; // Local mode, always owner
 
 			const meta = columnMetaMap.get(columnId);
 			if (!meta) return true; // If no meta, it's owned
@@ -299,18 +308,18 @@ export function useColumns() {
 				normalizeAccountId(meta.ownerId) === normalizeAccountId(accountId)
 			);
 		},
-		[accountId, columnMetaMap],
+		[usesSyncedMode, accountId, columnMetaMap],
 	);
 
 	// Get column owner info
 	const getColumnOwner = useCallback(
 		(columnId: string): string | null => {
-			if (!accountId) return null;
+			if (!usesSyncedMode) return null;
 
 			const meta = columnMetaMap.get(columnId);
 			return meta?.ownerId || null;
 		},
-		[accountId, columnMetaMap],
+		[usesSyncedMode, accountId, columnMetaMap],
 	);
 
 	return {
