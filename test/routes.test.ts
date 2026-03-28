@@ -227,6 +227,75 @@ describe("Worker routes", () => {
 		expect(data.deletedColumns.some((c) => c.columnId === columnId)).toBe(false);
 	});
 
+	it("replays restore response for duplicate idempotency key", async () => {
+		const accountId = await createAccount();
+		const columnId = await createColumn(accountId);
+		await deleteColumn(accountId, columnId);
+
+		const idempotencyKey = crypto.randomUUID();
+		const requestRestore = () =>
+			SELF.fetch(`http://example.com/api/column/${columnId}/restore`, {
+				method: "POST",
+				headers: {
+					"X-Account-ID": accountId,
+					"X-Idempotency-Key": idempotencyKey,
+				},
+			});
+
+		const firstRestore = await requestRestore();
+		expect(firstRestore.ok).toBe(true);
+		const firstPayload = (await firstRestore.json()) as {
+			success: boolean;
+			column: { id: string };
+		};
+		expect(firstPayload.success).toBe(true);
+		expect(firstPayload.column.id).toBe(columnId);
+
+		const replayedRestore = await requestRestore();
+		expect(replayedRestore.ok).toBe(true);
+		expect(replayedRestore.headers.get("X-Idempotency-Replay")).toBe("1");
+		const replayedPayload = (await replayedRestore.json()) as {
+			success: boolean;
+			column: { id: string };
+		};
+		expect(replayedPayload.success).toBe(true);
+		expect(replayedPayload.column.id).toBe(columnId);
+	});
+
+	it("replays public-link enable response for duplicate idempotency key", async () => {
+		const accountId = await createAccount();
+		const columnId = await createColumn(accountId);
+		const idempotencyKey = crypto.randomUUID();
+
+		const enablePublic = () =>
+			SELF.fetch(`http://example.com/api/column/${columnId}/public`, {
+				method: "POST",
+				headers: {
+					"X-Account-ID": accountId,
+					"X-Idempotency-Key": idempotencyKey,
+				},
+			});
+
+		const firstEnable = await enablePublic();
+		expect(firstEnable.ok).toBe(true);
+		const firstPayload = (await firstEnable.json()) as {
+			publicId: string;
+			url: string;
+		};
+		expect(typeof firstPayload.publicId).toBe("string");
+
+		const replayedEnable = await enablePublic();
+		expect(replayedEnable.ok).toBe(true);
+		expect(replayedEnable.headers.get("X-Idempotency-Replay")).toBe("1");
+		const replayedPayload = (await replayedEnable.json()) as {
+			publicId: string;
+			url: string;
+		};
+
+		expect(replayedPayload.publicId).toBe(firstPayload.publicId);
+		expect(replayedPayload.url).toBe(firstPayload.url);
+	});
+
 	it("returns backup service misconfiguration error when admin backups unavailable", async () => {
 		const accountId = await createAccount();
 		const columnId = await createColumn(accountId);

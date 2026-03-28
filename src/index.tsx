@@ -40,6 +40,16 @@ const COLUMN_META_SCHEMA_VERSION = 1;
 const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const COLUMN_ID_PATTERN =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const IDEMPOTENCY_HEADER = "X-Idempotency-Key";
+const IDEMPOTENCY_KEY_MAX_LENGTH = 128;
+const IDEMPOTENCY_CACHE_TTL_SECONDS = 24 * 60 * 60;
+const IDEMPOTENCY_SCHEMA_VERSION = 1;
+
+interface IdempotencyCacheRecord {
+	schemaVersion: number;
+	status: number;
+	body: unknown;
+}
 
 registerAgentApi(app);
 
@@ -225,6 +235,122 @@ function isReadOnlyMode(c: Context<{ Bindings: Bindings }>): boolean {
 
 function validateColumnId(columnId: string): boolean {
 	return COLUMN_ID_PATTERN.test(columnId);
+}
+
+function parseIdempotencyKey(value: string | null | undefined): string | null {
+	if (!value) return null;
+
+	const key = value.trim();
+	if (!key) return null;
+	if (key.length > IDEMPOTENCY_KEY_MAX_LENGTH) return null;
+
+	return key;
+}
+
+function idempotencyCacheKey(
+	scope: string,
+	accountScope: string,
+	idempotencyKey: string,
+): string {
+	return `idempotency:${scope}:${accountScope}:${idempotencyKey}`;
+}
+
+function parseIdempotencyCacheRecord(
+	raw: string | null,
+): IdempotencyCacheRecord | null {
+	if (!raw) return null;
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		return null;
+	}
+
+	if (!parsed || typeof parsed !== "object") return null;
+
+	const record = parsed as {
+		schemaVersion?: number;
+		status?: number;
+		body?: unknown;
+	};
+
+	if (record.schemaVersion !== IDEMPOTENCY_SCHEMA_VERSION) return null;
+	if (typeof record.status !== "number") return null;
+	if (!("body" in record)) return null;
+
+	return {
+		schemaVersion: record.schemaVersion,
+		status: record.status,
+		body: record.body,
+	};
+}
+
+async function loadIdempotentReplayResponse(
+	env: Bindings,
+	cacheKey: string,
+): Promise<Response | null> {
+	const raw = await env.ACCOUNTS.get(cacheKey);
+	const record = parseIdempotencyCacheRecord(raw);
+	if (!record) return null;
+
+	return Response.json(record.body, {
+		status: record.status,
+		headers: {
+			"X-Idempotency-Replay": "1",
+		},
+	});
+}
+
+async function cacheIdempotentResponse(
+	env: Bindings,
+	cacheKey: string,
+	response: Response,
+) {
+	if (response.status < 200 || response.status >= 300) return;
+
+	const body = await response.clone().json().catch(() => undefined);
+	if (typeof body === "undefined") return;
+
+	const record: IdempotencyCacheRecord = {
+		schemaVersion: IDEMPOTENCY_SCHEMA_VERSION,
+		status: response.status,
+		body,
+	};
+
+	await env.ACCOUNTS.put(cacheKey, JSON.stringify(record), {
+		expirationTtl: IDEMPOTENCY_CACHE_TTL_SECONDS,
+	});
+}
+
+async function withIdempotentWrite(
+	c: Context<{ Bindings: Bindings }>,
+	options: { scope: string; accountId?: string | null },
+	handler: () => Promise<Response>,
+): Promise<Response> {
+	const idempotencyKey = parseIdempotencyKey(c.req.header(IDEMPOTENCY_HEADER));
+	if (!idempotencyKey) {
+		return handler();
+	}
+
+	const accountScope =
+		typeof options.accountId === "string" && validateAccountId(options.accountId)
+			? normalizeAccountId(options.accountId)
+			: "guest";
+	const cacheKey = idempotencyCacheKey(
+		options.scope,
+		accountScope,
+		idempotencyKey,
+	);
+
+	const replayResponse = await loadIdempotentReplayResponse(c.env, cacheKey);
+	if (replayResponse) {
+		return replayResponse;
+	}
+
+	const response = await handler();
+	await cacheIdempotentResponse(c.env, cacheKey, response);
+	return response;
 }
 
 function blockWritesIfReadOnly(c: Context<{ Bindings: Bindings }>): Response | null {
@@ -709,24 +835,30 @@ app.put("/api/account/:id/columns", async (c) => {
 		return c.json({ error: "Invalid account ID" }, 400);
 	}
 
-	const normalizedId = normalizeAccountId(accountId);
-	const accountData = await c.env.ACCOUNTS.get(`account:${normalizedId}`);
+	return withIdempotentWrite(
+		c,
+		{ scope: `account:${normalizeAccountId(accountId)}:columns`, accountId },
+		async () => {
+			const normalizedId = normalizeAccountId(accountId);
+			const accountData = await c.env.ACCOUNTS.get(`account:${normalizedId}`);
 
-	if (!accountData) {
-		return c.json({ error: "Account not found" }, 404);
-	}
+			if (!accountData) {
+				return c.json({ error: "Account not found" }, 404);
+			}
 
-	const parsedAccount = parseAccountRecord(accountData);
-	if (!parsedAccount.ok) {
-		return schemaErrorResponse("account", parsedAccount);
-	}
-	const account = parsedAccount.value;
-	const { columnOrder } = await c.req.json<{ columnOrder: string[] }>();
+			const parsedAccount = parseAccountRecord(accountData);
+			if (!parsedAccount.ok) {
+				return schemaErrorResponse("account", parsedAccount);
+			}
+			const account = parsedAccount.value;
+			const { columnOrder } = await c.req.json<{ columnOrder: string[] }>();
 
-	account.columnOrder = columnOrder;
-	await c.env.ACCOUNTS.put(`account:${normalizedId}`, JSON.stringify(account));
+			account.columnOrder = columnOrder;
+			await c.env.ACCOUNTS.put(`account:${normalizedId}`, JSON.stringify(account));
 
-	return c.json({ success: true });
+			return c.json({ success: true });
+		},
+	);
 });
 
 /**
@@ -742,26 +874,32 @@ app.put("/api/account/:id/hidden", async (c) => {
 		return c.json({ error: "Invalid account ID" }, 400);
 	}
 
-	const normalizedId = normalizeAccountId(accountId);
-	const accountData = await c.env.ACCOUNTS.get(`account:${normalizedId}`);
+	return withIdempotentWrite(
+		c,
+		{ scope: `account:${normalizeAccountId(accountId)}:hidden`, accountId },
+		async () => {
+			const normalizedId = normalizeAccountId(accountId);
+			const accountData = await c.env.ACCOUNTS.get(`account:${normalizedId}`);
 
-	if (!accountData) {
-		return c.json({ error: "Account not found" }, 404);
-	}
+			if (!accountData) {
+				return c.json({ error: "Account not found" }, 404);
+			}
 
-	const parsedAccount = parseAccountRecord(accountData);
-	if (!parsedAccount.ok) {
-		return schemaErrorResponse("account", parsedAccount);
-	}
-	const account = parsedAccount.value;
-	const { hiddenSharedColumns } = await c.req.json<{
-		hiddenSharedColumns: string[];
-	}>();
+			const parsedAccount = parseAccountRecord(accountData);
+			if (!parsedAccount.ok) {
+				return schemaErrorResponse("account", parsedAccount);
+			}
+			const account = parsedAccount.value;
+			const { hiddenSharedColumns } = await c.req.json<{
+				hiddenSharedColumns: string[];
+			}>();
 
-	account.hiddenSharedColumns = hiddenSharedColumns;
-	await c.env.ACCOUNTS.put(`account:${normalizedId}`, JSON.stringify(account));
+			account.hiddenSharedColumns = hiddenSharedColumns;
+			await c.env.ACCOUNTS.put(`account:${normalizedId}`, JSON.stringify(account));
 
-	return c.json({ success: true });
+			return c.json({ success: true });
+		},
+	);
 });
 
 /**
@@ -847,62 +985,70 @@ app.post("/api/account/:id/import", async (c) => {
 		return c.json({ error: "Access denied" }, 403);
 	}
 
-	const body = await c.req
-		.json<AccountExportPayload>()
-		.catch(() => null as AccountExportPayload | null);
-	if (!body || body.schemaVersion !== 1 || !Array.isArray(body.ownedColumns)) {
-		return c.json({ error: "Invalid import payload" }, 400);
-	}
+	return withIdempotentWrite(
+		c,
+		{ scope: `account:${normalizeAccountId(accountIdParam)}:import`, accountId: requesterAccountId },
+		async () => {
+			const body = await c.req
+				.json<AccountExportPayload>()
+				.catch(() => null as AccountExportPayload | null);
+			if (!body || body.schemaVersion !== 1 || !Array.isArray(body.ownedColumns)) {
+				return c.json({ error: "Invalid import payload" }, 400);
+			}
 
-	const normalizedId = normalizeAccountId(accountIdParam);
-	const accountData = await c.env.ACCOUNTS.get(`account:${normalizedId}`);
-	if (!accountData) {
-		return c.json({ error: "Account not found" }, 404);
-	}
+			const normalizedId = normalizeAccountId(accountIdParam);
+			const accountData = await c.env.ACCOUNTS.get(`account:${normalizedId}`);
+			if (!accountData) {
+				return c.json({ error: "Account not found" }, 404);
+			}
 
-	const parsedAccount = parseAccountRecord(accountData);
-	if (!parsedAccount.ok) {
-		return schemaErrorResponse("account", parsedAccount);
-	}
+			const parsedAccount = parseAccountRecord(accountData);
+			if (!parsedAccount.ok) {
+				return schemaErrorResponse("account", parsedAccount);
+			}
 
-	const account = parsedAccount.value;
-	const importedColumnIds: string[] = [];
+			const account = parsedAccount.value;
+			const importedColumnIds: string[] = [];
 
-	for (const column of body.ownedColumns) {
-		const parsedMeta = parseColumnMetaRecord(column.meta);
-		if (!parsedMeta.ok) continue;
+			for (const column of body.ownedColumns) {
+				const parsedMeta = parseColumnMetaRecord(column.meta);
+				if (!parsedMeta.ok) continue;
 
-		const newColumnId = crypto.randomUUID();
-		const importedMeta: ColumnMeta = {
-			...parsedMeta.value,
-			id: newColumnId,
-			ownerId: displayAccountId(accountIdParam),
-			sharedWith: [],
-			publicId: null,
-			createdAt: Date.now(),
-		};
+				const newColumnId = crypto.randomUUID();
+				const importedMeta: ColumnMeta = {
+					...parsedMeta.value,
+					id: newColumnId,
+					ownerId: displayAccountId(accountIdParam),
+					sharedWith: [],
+					publicId: null,
+					createdAt: Date.now(),
+				};
 
-		const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(newColumnId));
-		await stub.fetch(
-			new Request("http://do/init", {
-				method: "POST",
-				body: JSON.stringify(importedMeta),
-			}),
-		);
-		await stub.fetch(
-			new Request("http://do/import", {
-				method: "POST",
-				body: JSON.stringify({ meta: importedMeta, yjs: column.yjs ?? null }),
-			}),
-		);
+				const stub = c.env.COLUMN_ROOM.get(
+					c.env.COLUMN_ROOM.idFromName(newColumnId),
+				);
+				await stub.fetch(
+					new Request("http://do/init", {
+						method: "POST",
+						body: JSON.stringify(importedMeta),
+					}),
+				);
+				await stub.fetch(
+					new Request("http://do/import", {
+						method: "POST",
+						body: JSON.stringify({ meta: importedMeta, yjs: column.yjs ?? null }),
+					}),
+				);
 
-		importedColumnIds.push(newColumnId);
-	}
+				importedColumnIds.push(newColumnId);
+			}
 
-	account.columnOrder = [...account.columnOrder, ...importedColumnIds];
-	await c.env.ACCOUNTS.put(`account:${normalizedId}`, JSON.stringify(account));
+			account.columnOrder = [...account.columnOrder, ...importedColumnIds];
+			await c.env.ACCOUNTS.put(`account:${normalizedId}`, JSON.stringify(account));
 
-	return c.json({ success: true, importedColumns: importedColumnIds.length });
+			return c.json({ success: true, importedColumns: importedColumnIds.length });
+		},
+	);
 });
 
 // ============================================
@@ -929,122 +1075,132 @@ app.post("/api/column", async (c) => {
 	}
 
 	const normalizedAccountId = normalizeAccountId(accountId);
-	const accountData = await c.env.ACCOUNTS.get(
-		`account:${normalizedAccountId}`,
-	);
 
-	if (!accountData) {
-		return c.json({ error: "Account not found" }, 404);
-	}
+	return withIdempotentWrite(
+		c,
+		{
+			scope: requestedColumnId
+				? `account:${normalizedAccountId}:column:create:${requestedColumnId}`
+				: `account:${normalizedAccountId}:column:create`,
+			accountId,
+		},
+		async () => {
+			const accountData = await c.env.ACCOUNTS.get(
+				`account:${normalizedAccountId}`,
+			);
 
-	const parsedAccount = parseAccountRecord(accountData);
-	if (!parsedAccount.ok) {
-		return schemaErrorResponse("account", parsedAccount);
-	}
-	const account = parsedAccount.value;
-	const columnId = requestedColumnId ?? crypto.randomUUID();
-	const alreadyInOrder = account.columnOrder.includes(columnId);
-	const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
+			if (!accountData) {
+				return c.json({ error: "Account not found" }, 404);
+			}
 
-	let existingMetaResponse: Response;
-	try {
-		existingMetaResponse = await stub.fetch(new Request("http://do/meta"));
-	} catch (err) {
-		if (isDurableObjectDurationError(err)) {
-			console.error("Durable object unavailable during metadata check", {
-				columnId,
-			});
-			return durableObjectUnavailableResponse();
-		}
-		throw err;
-	}
+			const parsedAccount = parseAccountRecord(accountData);
+			if (!parsedAccount.ok) {
+				return schemaErrorResponse("account", parsedAccount);
+			}
+			const account = parsedAccount.value;
+			const columnId = requestedColumnId ?? crypto.randomUUID();
+			const alreadyInOrder = account.columnOrder.includes(columnId);
+			const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
 
-	if (!existingMetaResponse.ok && existingMetaResponse.status >= 500) {
-		console.error("Durable object metadata check failed", {
-			columnId,
-			status: existingMetaResponse.status,
-		});
-		return durableObjectUnavailableResponse();
-	}
+			let existingMetaResponse: Response;
+			try {
+				existingMetaResponse = await stub.fetch(new Request("http://do/meta"));
+			} catch (err) {
+				if (isDurableObjectDurationError(err)) {
+					console.error("Durable object unavailable during metadata check", {
+						columnId,
+					});
+					return durableObjectUnavailableResponse();
+				}
+				throw err;
+			}
 
-	if (existingMetaResponse.ok) {
-		const parsedExisting = parseColumnMetaRecord(await existingMetaResponse.json());
-		if (!parsedExisting.ok) {
-			return schemaErrorResponse("column_meta", parsedExisting);
-		}
+			if (!existingMetaResponse.ok && existingMetaResponse.status >= 500) {
+				console.error("Durable object metadata check failed", {
+					columnId,
+					status: existingMetaResponse.status,
+				});
+				return durableObjectUnavailableResponse();
+			}
 
-		const existingMeta = parsedExisting.value;
-		if (
-			normalizeAccountId(existingMeta.ownerId) !== normalizedAccountId
-		) {
-			return c.json({ error: "Column already exists" }, 409);
-		}
+			if (existingMetaResponse.ok) {
+				const parsedExisting = parseColumnMetaRecord(await existingMetaResponse.json());
+				if (!parsedExisting.ok) {
+					return schemaErrorResponse("column_meta", parsedExisting);
+				}
 
-		if (!alreadyInOrder) {
-			if (account.columnOrder.length >= 100) {
+				const existingMeta = parsedExisting.value;
+				if (normalizeAccountId(existingMeta.ownerId) !== normalizedAccountId) {
+					return c.json({ error: "Column already exists" }, 409);
+				}
+
+				if (!alreadyInOrder) {
+					if (account.columnOrder.length >= 100) {
+						return c.json({ error: "Column limit reached (100)" }, 400);
+					}
+
+					account.columnOrder.push(columnId);
+					await c.env.ACCOUNTS.put(
+						`account:${normalizedAccountId}`,
+						JSON.stringify(account),
+					);
+				}
+
+				return c.json({ column: existingMeta });
+			}
+
+			// Check column limit (100 per account)
+			if (!alreadyInOrder && account.columnOrder.length >= 100) {
 				return c.json({ error: "Column limit reached (100)" }, 400);
 			}
 
-			account.columnOrder.push(columnId);
-			await c.env.ACCOUNTS.put(
-				`account:${normalizedAccountId}`,
-				JSON.stringify(account),
-			);
-		}
+			const meta: ColumnMeta = {
+				schemaVersion: COLUMN_META_SCHEMA_VERSION,
+				id: columnId,
+				ownerId: displayAccountId(accountId),
+				sharedWith: [],
+				publicId: null,
+				createdAt: Date.now(),
+			};
 
-		return c.json({ column: existingMeta });
-	}
+			// Initialize the Durable Object
+			try {
+				const initResponse = await stub.fetch(
+					new Request("http://do/init", {
+						method: "POST",
+						body: JSON.stringify(meta),
+					}),
+				);
 
-	// Check column limit (100 per account)
-	if (!alreadyInOrder && account.columnOrder.length >= 100) {
-		return c.json({ error: "Column limit reached (100)" }, 400);
-	}
+				if (!initResponse.ok) {
+					console.error("Failed to initialize column durable object", {
+						columnId,
+						status: initResponse.status,
+					});
+					return durableObjectUnavailableResponse();
+				}
+			} catch (err) {
+				if (isDurableObjectDurationError(err)) {
+					console.error("Durable object unavailable during column creation", {
+						columnId,
+					});
+					return durableObjectUnavailableResponse();
+				}
+				throw err;
+			}
 
-	const meta: ColumnMeta = {
-		schemaVersion: COLUMN_META_SCHEMA_VERSION,
-		id: columnId,
-		ownerId: displayAccountId(accountId),
-		sharedWith: [],
-		publicId: null,
-		createdAt: Date.now(),
-	};
+			if (!alreadyInOrder) {
+				// Add to account's column order
+				account.columnOrder.push(columnId);
+				await c.env.ACCOUNTS.put(
+					`account:${normalizedAccountId}`,
+					JSON.stringify(account),
+				);
+			}
 
-	// Initialize the Durable Object
-	try {
-		const initResponse = await stub.fetch(
-			new Request("http://do/init", {
-				method: "POST",
-				body: JSON.stringify(meta),
-			}),
-		);
-
-		if (!initResponse.ok) {
-			console.error("Failed to initialize column durable object", {
-				columnId,
-				status: initResponse.status,
-			});
-			return durableObjectUnavailableResponse();
-		}
-	} catch (err) {
-		if (isDurableObjectDurationError(err)) {
-			console.error("Durable object unavailable during column creation", {
-				columnId,
-			});
-			return durableObjectUnavailableResponse();
-		}
-		throw err;
-	}
-
-	if (!alreadyInOrder) {
-		// Add to account's column order
-		account.columnOrder.push(columnId);
-		await c.env.ACCOUNTS.put(
-			`account:${normalizedAccountId}`,
-			JSON.stringify(account),
-		);
-	}
-
-	return c.json({ column: meta });
+			return c.json({ column: meta });
+		},
+	);
 });
 
 /**
@@ -1061,94 +1217,103 @@ app.delete("/api/column/:id", async (c) => {
 		return c.json({ error: "Invalid account ID" }, 400);
 	}
 
-		const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
-	const metaResponse = await stub.fetch(new Request("http://do/meta"));
+	return withIdempotentWrite(
+		c,
+		{
+			scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:delete`,
+			accountId,
+		},
+		async () => {
+			const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
+			const metaResponse = await stub.fetch(new Request("http://do/meta"));
 
-	if (!metaResponse.ok) {
-		return c.json({ error: "Column not found" }, 404);
-	}
+			if (!metaResponse.ok) {
+				return c.json({ error: "Column not found" }, 404);
+			}
 
-	const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
-	if (!parsedMeta.ok) {
-		return schemaErrorResponse("column_meta", parsedMeta);
-	}
-	const meta = parsedMeta.value;
+			const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
+			if (!parsedMeta.ok) {
+				return schemaErrorResponse("column_meta", parsedMeta);
+			}
+			const meta = parsedMeta.value;
 
-	// Only owner can delete
-	if (normalizeAccountId(meta.ownerId) !== normalizeAccountId(accountId)) {
-		return c.json({ error: "Only owner can delete" }, 403);
-	}
+			// Only owner can delete
+			if (normalizeAccountId(meta.ownerId) !== normalizeAccountId(accountId)) {
+				return c.json({ error: "Only owner can delete" }, 403);
+			}
 
-	// Remove from owner's column order
-	const normalizedOwnerId = normalizeAccountId(meta.ownerId);
-	const ownerData = await c.env.ACCOUNTS.get(`account:${normalizedOwnerId}`);
-	if (ownerData) {
-		const parsedOwner = parseAccountRecord(ownerData);
-		if (!parsedOwner.ok) {
-			return schemaErrorResponse("account", parsedOwner);
-		}
-		const ownerAccount = parsedOwner.value;
-		ownerAccount.columnOrder = ownerAccount.columnOrder.filter(
-			(id) => id !== columnId,
-		);
-		await c.env.ACCOUNTS.put(
-			`account:${normalizedOwnerId}`,
-			JSON.stringify(ownerAccount),
-		);
-	}
+			// Remove from owner's column order
+			const normalizedOwnerId = normalizeAccountId(meta.ownerId);
+			const ownerData = await c.env.ACCOUNTS.get(`account:${normalizedOwnerId}`);
+			if (ownerData) {
+				const parsedOwner = parseAccountRecord(ownerData);
+				if (!parsedOwner.ok) {
+					return schemaErrorResponse("account", parsedOwner);
+				}
+				const ownerAccount = parsedOwner.value;
+				ownerAccount.columnOrder = ownerAccount.columnOrder.filter(
+					(id) => id !== columnId,
+				);
+				await c.env.ACCOUNTS.put(
+					`account:${normalizedOwnerId}`,
+					JSON.stringify(ownerAccount),
+				);
+			}
 
-	// Remove from shared accounts' lists
-	for (const sharedAccountId of meta.sharedWith) {
-		const normalizedSharedId = normalizeAccountId(sharedAccountId);
-		const sharedColumnsData = await c.env.ACCOUNTS.get(
-			`shared:${normalizedSharedId}`,
-		);
-		if (sharedColumnsData) {
-			const sharedColumns = JSON.parse(sharedColumnsData) as string[];
-			const updated = sharedColumns.filter((id) => id !== columnId);
-			await c.env.ACCOUNTS.put(
-				`shared:${normalizedSharedId}`,
-				JSON.stringify(updated),
+			// Remove from shared accounts' lists
+			for (const sharedAccountId of meta.sharedWith) {
+				const normalizedSharedId = normalizeAccountId(sharedAccountId);
+				const sharedColumnsData = await c.env.ACCOUNTS.get(
+					`shared:${normalizedSharedId}`,
+				);
+				if (sharedColumnsData) {
+					const sharedColumns = JSON.parse(sharedColumnsData) as string[];
+					const updated = sharedColumns.filter((id) => id !== columnId);
+					await c.env.ACCOUNTS.put(
+						`shared:${normalizedSharedId}`,
+						JSON.stringify(updated),
+					);
+				}
+			}
+
+			// Remove public mapping if present
+			if (meta.publicId) {
+				await c.env.ACCOUNTS.delete(`public:${meta.publicId}`);
+			}
+
+			// Revoke all shares/public access on the column itself
+			await stub.fetch(
+				new Request("http://do/share", {
+					method: "PUT",
+					body: JSON.stringify({ sharedWith: [] }),
+				}),
 			);
-		}
-	}
+			await stub.fetch(
+				new Request("http://do/public", {
+					method: "PUT",
+					body: JSON.stringify({ publicId: null }),
+				}),
+			);
 
-	// Remove public mapping if present
-	if (meta.publicId) {
-		await c.env.ACCOUNTS.delete(`public:${meta.publicId}`);
-	}
+			// Add to owner's garbage can (30-day retention)
+			const trashKey = `trash:${normalizedOwnerId}`;
+			const trashRaw = await c.env.ACCOUNTS.get(trashKey);
+			const trash = parseDeletedColumnRecords(trashRaw).filter(
+				(entry) => Date.now() - entry.deletedAt < TRASH_RETENTION_MS,
+			);
+			const updatedTrash = [
+				{ columnId, deletedAt: Date.now() },
+				...trash.filter((entry) => entry.columnId !== columnId),
+			];
+			await c.env.ACCOUNTS.put(trashKey, JSON.stringify(updatedTrash));
 
-	// Revoke all shares/public access on the column itself
-	await stub.fetch(
-		new Request("http://do/share", {
-			method: "PUT",
-			body: JSON.stringify({ sharedWith: [] }),
-		}),
+			return c.json({
+				success: true,
+				trashed: true,
+				deleteAfter: Date.now() + TRASH_RETENTION_MS,
+			});
+		},
 	);
-	await stub.fetch(
-		new Request("http://do/public", {
-			method: "PUT",
-			body: JSON.stringify({ publicId: null }),
-		}),
-	);
-
-	// Add to owner's garbage can (30-day retention)
-	const trashKey = `trash:${normalizedOwnerId}`;
-	const trashRaw = await c.env.ACCOUNTS.get(trashKey);
-	const trash = parseDeletedColumnRecords(trashRaw).filter(
-		(entry) => Date.now() - entry.deletedAt < TRASH_RETENTION_MS,
-	);
-	const updatedTrash = [
-		{ columnId, deletedAt: Date.now() },
-		...trash.filter((entry) => entry.columnId !== columnId),
-	];
-	await c.env.ACCOUNTS.put(trashKey, JSON.stringify(updatedTrash));
-
-	return c.json({
-		success: true,
-		trashed: true,
-		deleteAfter: Date.now() + TRASH_RETENTION_MS,
-	});
 });
 
 /**
@@ -1165,58 +1330,67 @@ app.post("/api/column/:id/restore", async (c) => {
 		return c.json({ error: "Invalid account ID" }, 400);
 	}
 
-	const normalizedAccountId = normalizeAccountId(accountId);
-	const accountData = await c.env.ACCOUNTS.get(`account:${normalizedAccountId}`);
-	if (!accountData) {
-		return c.json({ error: "Account not found" }, 404);
-	}
+	return withIdempotentWrite(
+		c,
+		{
+			scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:restore`,
+			accountId,
+		},
+		async () => {
+			const normalizedAccountId = normalizeAccountId(accountId);
+			const accountData = await c.env.ACCOUNTS.get(`account:${normalizedAccountId}`);
+			if (!accountData) {
+				return c.json({ error: "Account not found" }, 404);
+			}
 
-	const parsedAccount = parseAccountRecord(accountData);
-	if (!parsedAccount.ok) {
-		return schemaErrorResponse("account", parsedAccount);
-	}
-	const account = parsedAccount.value;
+			const parsedAccount = parseAccountRecord(accountData);
+			if (!parsedAccount.ok) {
+				return schemaErrorResponse("account", parsedAccount);
+			}
+			const account = parsedAccount.value;
 
-	const trashKey = `trash:${normalizedAccountId}`;
-	const trashRaw = await c.env.ACCOUNTS.get(trashKey);
-	const trash = parseDeletedColumnRecords(trashRaw);
-	const entry = trash.find((item) => item.columnId === columnId);
-	if (!entry) {
-		return c.json({ error: "Column not in garbage can" }, 404);
-	}
+			const trashKey = `trash:${normalizedAccountId}`;
+			const trashRaw = await c.env.ACCOUNTS.get(trashKey);
+			const trash = parseDeletedColumnRecords(trashRaw);
+			const entry = trash.find((item) => item.columnId === columnId);
+			if (!entry) {
+				return c.json({ error: "Column not in garbage can" }, 404);
+			}
 
-	if (Date.now() - entry.deletedAt >= TRASH_RETENTION_MS) {
-		return c.json({ error: "Column expired" }, 410);
-	}
+			if (Date.now() - entry.deletedAt >= TRASH_RETENTION_MS) {
+				return c.json({ error: "Column expired" }, 410);
+			}
 
-	const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
-	const metaResponse = await stub.fetch(new Request("http://do/meta"));
-	if (!metaResponse.ok) {
-		return c.json({ error: "Column not found" }, 404);
-	}
+			const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
+			const metaResponse = await stub.fetch(new Request("http://do/meta"));
+			if (!metaResponse.ok) {
+				return c.json({ error: "Column not found" }, 404);
+			}
 
-	const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
-	if (!parsedMeta.ok) {
-		return schemaErrorResponse("column_meta", parsedMeta);
-	}
-	const meta = parsedMeta.value;
+			const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
+			if (!parsedMeta.ok) {
+				return schemaErrorResponse("column_meta", parsedMeta);
+			}
+			const meta = parsedMeta.value;
 
-	if (normalizeAccountId(meta.ownerId) !== normalizedAccountId) {
-		return c.json({ error: "Only owner can restore" }, 403);
-	}
+			if (normalizeAccountId(meta.ownerId) !== normalizedAccountId) {
+				return c.json({ error: "Only owner can restore" }, 403);
+			}
 
-	if (!account.columnOrder.includes(columnId)) {
-		account.columnOrder.push(columnId);
-		await c.env.ACCOUNTS.put(
-			`account:${normalizedAccountId}`,
-			JSON.stringify(account),
-		);
-	}
+			if (!account.columnOrder.includes(columnId)) {
+				account.columnOrder.push(columnId);
+				await c.env.ACCOUNTS.put(
+					`account:${normalizedAccountId}`,
+					JSON.stringify(account),
+				);
+			}
 
-	const updatedTrash = trash.filter((item) => item.columnId !== columnId);
-	await c.env.ACCOUNTS.put(trashKey, JSON.stringify(updatedTrash));
+			const updatedTrash = trash.filter((item) => item.columnId !== columnId);
+			await c.env.ACCOUNTS.put(trashKey, JSON.stringify(updatedTrash));
 
-	return c.json({ success: true, column: meta });
+			return c.json({ success: true, column: meta });
+		},
+	);
 });
 
 /**
@@ -1299,65 +1473,74 @@ app.post("/api/column/:id/share", async (c) => {
 		return c.json({ error: "Invalid target account ID" }, 400);
 	}
 
-	// Check target account exists
-	const normalizedTargetId = normalizeAccountId(targetAccountId);
-	const targetData = await c.env.ACCOUNTS.get(`account:${normalizedTargetId}`);
-	if (!targetData) {
-		return c.json({ error: "Target account not found" }, 404);
-	}
-	const parsedTarget = parseAccountRecord(targetData);
-	if (!parsedTarget.ok) {
-		return schemaErrorResponse("account", parsedTarget);
-	}
+	return withIdempotentWrite(
+		c,
+		{
+			scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:share:${normalizeAccountId(targetAccountId)}`,
+			accountId,
+		},
+		async () => {
+			// Check target account exists
+			const normalizedTargetId = normalizeAccountId(targetAccountId);
+			const targetData = await c.env.ACCOUNTS.get(`account:${normalizedTargetId}`);
+			if (!targetData) {
+				return c.json({ error: "Target account not found" }, 404);
+			}
+			const parsedTarget = parseAccountRecord(targetData);
+			if (!parsedTarget.ok) {
+				return schemaErrorResponse("account", parsedTarget);
+			}
 
-		const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
-	const metaResponse = await stub.fetch(new Request("http://do/meta"));
+			const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
+			const metaResponse = await stub.fetch(new Request("http://do/meta"));
 
-	if (!metaResponse.ok) {
-		return c.json({ error: "Column not found" }, 404);
-	}
+			if (!metaResponse.ok) {
+				return c.json({ error: "Column not found" }, 404);
+			}
 
-	const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
-	if (!parsedMeta.ok) {
-		return schemaErrorResponse("column_meta", parsedMeta);
-	}
-	const meta = parsedMeta.value;
+			const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
+			if (!parsedMeta.ok) {
+				return schemaErrorResponse("column_meta", parsedMeta);
+			}
+			const meta = parsedMeta.value;
 
-	// Only owner can share
-	if (normalizeAccountId(meta.ownerId) !== normalizeAccountId(accountId)) {
-		return c.json({ error: "Only owner can share" }, 403);
-	}
+			// Only owner can share
+			if (normalizeAccountId(meta.ownerId) !== normalizeAccountId(accountId)) {
+				return c.json({ error: "Only owner can share" }, 403);
+			}
 
-	// Add to sharedWith
-	const formattedTargetId = displayAccountId(targetAccountId);
-	if (!meta.sharedWith.includes(formattedTargetId)) {
-		meta.sharedWith.push(formattedTargetId);
+			// Add to sharedWith
+			const formattedTargetId = displayAccountId(targetAccountId);
+			if (!meta.sharedWith.includes(formattedTargetId)) {
+				meta.sharedWith.push(formattedTargetId);
 
-		await stub.fetch(
-			new Request("http://do/share", {
-				method: "PUT",
-				body: JSON.stringify({ sharedWith: meta.sharedWith }),
-			}),
-		);
+				await stub.fetch(
+					new Request("http://do/share", {
+						method: "PUT",
+						body: JSON.stringify({ sharedWith: meta.sharedWith }),
+					}),
+				);
 
-		// Add to target's shared columns list
-		const sharedColumnsData = await c.env.ACCOUNTS.get(
-			`shared:${normalizedTargetId}`,
-		);
-		const sharedColumns: string[] = sharedColumnsData
-			? JSON.parse(sharedColumnsData)
-			: [];
+				// Add to target's shared columns list
+				const sharedColumnsData = await c.env.ACCOUNTS.get(
+					`shared:${normalizedTargetId}`,
+				);
+				const sharedColumns: string[] = sharedColumnsData
+					? JSON.parse(sharedColumnsData)
+					: [];
 
-		if (!sharedColumns.includes(columnId)) {
-			sharedColumns.push(columnId);
-			await c.env.ACCOUNTS.put(
-				`shared:${normalizedTargetId}`,
-				JSON.stringify(sharedColumns),
-			);
-		}
-	}
+				if (!sharedColumns.includes(columnId)) {
+					sharedColumns.push(columnId);
+					await c.env.ACCOUNTS.put(
+						`shared:${normalizedTargetId}`,
+						JSON.stringify(sharedColumns),
+					);
+				}
+			}
 
-	return c.json({ success: true, sharedWith: meta.sharedWith });
+			return c.json({ success: true, sharedWith: meta.sharedWith });
+		},
+	);
 });
 
 /**
@@ -1375,51 +1558,60 @@ app.delete("/api/column/:id/share/:targetId", async (c) => {
 		return c.json({ error: "Invalid account ID" }, 400);
 	}
 
-		const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
-	const metaResponse = await stub.fetch(new Request("http://do/meta"));
+	return withIdempotentWrite(
+		c,
+		{
+			scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:revoke:${normalizeAccountId(targetAccountId)}`,
+			accountId,
+		},
+		async () => {
+			const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
+			const metaResponse = await stub.fetch(new Request("http://do/meta"));
 
-	if (!metaResponse.ok) {
-		return c.json({ error: "Column not found" }, 404);
-	}
+			if (!metaResponse.ok) {
+				return c.json({ error: "Column not found" }, 404);
+			}
 
-	const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
-	if (!parsedMeta.ok) {
-		return schemaErrorResponse("column_meta", parsedMeta);
-	}
-	const meta = parsedMeta.value;
+			const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
+			if (!parsedMeta.ok) {
+				return schemaErrorResponse("column_meta", parsedMeta);
+			}
+			const meta = parsedMeta.value;
 
-	// Only owner can revoke
-	if (normalizeAccountId(meta.ownerId) !== normalizeAccountId(accountId)) {
-		return c.json({ error: "Only owner can revoke sharing" }, 403);
-	}
+			// Only owner can revoke
+			if (normalizeAccountId(meta.ownerId) !== normalizeAccountId(accountId)) {
+				return c.json({ error: "Only owner can revoke sharing" }, 403);
+			}
 
-	// Remove from sharedWith
-	const normalizedTargetId = normalizeAccountId(targetAccountId);
-	meta.sharedWith = meta.sharedWith.filter(
-		(id) => normalizeAccountId(id) !== normalizedTargetId,
+			// Remove from sharedWith
+			const normalizedTargetId = normalizeAccountId(targetAccountId);
+			meta.sharedWith = meta.sharedWith.filter(
+				(id) => normalizeAccountId(id) !== normalizedTargetId,
+			);
+
+			await stub.fetch(
+				new Request("http://do/share", {
+					method: "PUT",
+					body: JSON.stringify({ sharedWith: meta.sharedWith }),
+				}),
+			);
+
+			// Remove from target's shared columns list
+			const sharedColumnsData = await c.env.ACCOUNTS.get(
+				`shared:${normalizedTargetId}`,
+			);
+			if (sharedColumnsData) {
+				const sharedColumns = JSON.parse(sharedColumnsData) as string[];
+				const updated = sharedColumns.filter((id) => id !== columnId);
+				await c.env.ACCOUNTS.put(
+					`shared:${normalizedTargetId}`,
+					JSON.stringify(updated),
+				);
+			}
+
+			return c.json({ success: true, sharedWith: meta.sharedWith });
+		},
 	);
-
-	await stub.fetch(
-		new Request("http://do/share", {
-			method: "PUT",
-			body: JSON.stringify({ sharedWith: meta.sharedWith }),
-		}),
-	);
-
-	// Remove from target's shared columns list
-	const sharedColumnsData = await c.env.ACCOUNTS.get(
-		`shared:${normalizedTargetId}`,
-	);
-	if (sharedColumnsData) {
-		const sharedColumns = JSON.parse(sharedColumnsData) as string[];
-		const updated = sharedColumns.filter((id) => id !== columnId);
-		await c.env.ACCOUNTS.put(
-			`shared:${normalizedTargetId}`,
-			JSON.stringify(updated),
-		);
-	}
-
-	return c.json({ success: true, sharedWith: meta.sharedWith });
 });
 
 // ============================================
@@ -1440,40 +1632,49 @@ app.post("/api/column/:id/public", async (c) => {
 		return c.json({ error: "Invalid account ID" }, 400);
 	}
 
-		const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
-	const metaResponse = await stub.fetch(new Request("http://do/meta"));
+	return withIdempotentWrite(
+		c,
+		{
+			scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:public:enable`,
+			accountId,
+		},
+		async () => {
+			const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
+			const metaResponse = await stub.fetch(new Request("http://do/meta"));
 
-	if (!metaResponse.ok) {
-		return c.json({ error: "Column not found" }, 404);
-	}
+			if (!metaResponse.ok) {
+				return c.json({ error: "Column not found" }, 404);
+			}
 
-	const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
-	if (!parsedMeta.ok) {
-		return schemaErrorResponse("column_meta", parsedMeta);
-	}
-	const meta = parsedMeta.value;
+			const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
+			if (!parsedMeta.ok) {
+				return schemaErrorResponse("column_meta", parsedMeta);
+			}
+			const meta = parsedMeta.value;
 
-	// Only owner can enable public link
-	if (normalizeAccountId(meta.ownerId) !== normalizeAccountId(accountId)) {
-		return c.json({ error: "Only owner can enable public link" }, 403);
-	}
+			// Only owner can enable public link
+			if (normalizeAccountId(meta.ownerId) !== normalizeAccountId(accountId)) {
+				return c.json({ error: "Only owner can enable public link" }, 403);
+			}
 
-	const publicId = generatePublicId();
+			const publicId = generatePublicId();
 
-	await stub.fetch(
-		new Request("http://do/public", {
-			method: "PUT",
-			body: JSON.stringify({ publicId }),
-		}),
+			await stub.fetch(
+				new Request("http://do/public", {
+					method: "PUT",
+					body: JSON.stringify({ publicId }),
+				}),
+			);
+
+			// Store reverse lookup
+			await c.env.ACCOUNTS.put(`public:${publicId}`, columnId);
+
+			const url = new URL(c.req.url);
+			const publicUrl = `${url.origin}/p/${publicId}`;
+
+			return c.json({ publicId, url: publicUrl });
+		},
 	);
-
-	// Store reverse lookup
-	await c.env.ACCOUNTS.put(`public:${publicId}`, columnId);
-
-	const url = new URL(c.req.url);
-	const publicUrl = `${url.origin}/p/${publicId}`;
-
-	return c.json({ publicId, url: publicUrl });
 });
 
 /**
@@ -1490,37 +1691,46 @@ app.delete("/api/column/:id/public", async (c) => {
 		return c.json({ error: "Invalid account ID" }, 400);
 	}
 
-		const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
-	const metaResponse = await stub.fetch(new Request("http://do/meta"));
+	return withIdempotentWrite(
+		c,
+		{
+			scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:public:disable`,
+			accountId,
+		},
+		async () => {
+			const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
+			const metaResponse = await stub.fetch(new Request("http://do/meta"));
 
-	if (!metaResponse.ok) {
-		return c.json({ error: "Column not found" }, 404);
-	}
+			if (!metaResponse.ok) {
+				return c.json({ error: "Column not found" }, 404);
+			}
 
-	const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
-	if (!parsedMeta.ok) {
-		return schemaErrorResponse("column_meta", parsedMeta);
-	}
-	const meta = parsedMeta.value;
+			const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
+			if (!parsedMeta.ok) {
+				return schemaErrorResponse("column_meta", parsedMeta);
+			}
+			const meta = parsedMeta.value;
 
-	// Only owner can disable public link
-	if (normalizeAccountId(meta.ownerId) !== normalizeAccountId(accountId)) {
-		return c.json({ error: "Only owner can disable public link" }, 403);
-	}
+			// Only owner can disable public link
+			if (normalizeAccountId(meta.ownerId) !== normalizeAccountId(accountId)) {
+				return c.json({ error: "Only owner can disable public link" }, 403);
+			}
 
-	// Delete reverse lookup
-	if (meta.publicId) {
-		await c.env.ACCOUNTS.delete(`public:${meta.publicId}`);
-	}
+			// Delete reverse lookup
+			if (meta.publicId) {
+				await c.env.ACCOUNTS.delete(`public:${meta.publicId}`);
+			}
 
-	await stub.fetch(
-		new Request("http://do/public", {
-			method: "PUT",
-			body: JSON.stringify({ publicId: null }),
-		}),
+			await stub.fetch(
+				new Request("http://do/public", {
+					method: "PUT",
+					body: JSON.stringify({ publicId: null }),
+				}),
+			);
+
+			return c.json({ success: true });
+		},
 	);
-
-	return c.json({ success: true });
 });
 
 /**
