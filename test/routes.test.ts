@@ -1,8 +1,21 @@
-import { SELF } from "cloudflare:test";
+import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 function normalizeAccountId(id: string): string {
 	return id.replace(/\D/g, "");
+}
+
+function toHex(bytes: ArrayBuffer): string {
+	const view = new Uint8Array(bytes);
+	let out = "";
+	for (const b of view) out += b.toString(16).padStart(2, "0");
+	return out;
+}
+
+async function sha256Hex(value: string): Promise<string> {
+	const encoded = new TextEncoder().encode(value);
+	const digest = await crypto.subtle.digest("SHA-256", encoded);
+	return toHex(digest);
 }
 
 async function createAccount(): Promise<string> {
@@ -294,6 +307,87 @@ describe("Worker routes", () => {
 
 		expect(replayedPayload.publicId).toBe(firstPayload.publicId);
 		expect(replayedPayload.url).toBe(firstPayload.url);
+	});
+
+	it("rejects duplicate idempotency key reused with different payload", async () => {
+		const accountId = await createAccount();
+		const normalizedAccountId = normalizeAccountId(accountId);
+		const firstColumnId = await createColumn(accountId);
+		const secondColumnId = await createColumn(accountId);
+		const idempotencyKey = crypto.randomUUID();
+
+		const firstWrite = await SELF.fetch(
+			`http://example.com/api/account/${normalizedAccountId}/hidden`,
+			{
+				method: "PUT",
+				headers: {
+					"Content-Type": "application/json",
+					"X-Idempotency-Key": idempotencyKey,
+				},
+				body: JSON.stringify({ hiddenSharedColumns: [firstColumnId] }),
+			},
+		);
+		expect(firstWrite.ok).toBe(true);
+
+		const secondWrite = await SELF.fetch(
+			`http://example.com/api/account/${normalizedAccountId}/hidden`,
+			{
+				method: "PUT",
+				headers: {
+					"Content-Type": "application/json",
+					"X-Idempotency-Key": idempotencyKey,
+				},
+				body: JSON.stringify({ hiddenSharedColumns: [secondColumnId] }),
+			},
+		);
+		expect(secondWrite.status).toBe(409);
+		expect(await secondWrite.json()).toMatchObject({
+			error: "idempotency_key_conflict",
+		});
+
+		const accountRes = await SELF.fetch(
+			`http://example.com/api/account/${normalizedAccountId}`,
+		);
+		expect(accountRes.ok).toBe(true);
+		const accountPayload = (await accountRes.json()) as {
+			account: { hiddenSharedColumns: string[] };
+		};
+		expect(accountPayload.account.hiddenSharedColumns).toEqual([firstColumnId]);
+	});
+
+	it("returns in-progress when matching idempotent write is pending", async () => {
+		const accountId = await createAccount();
+		const normalizedAccountId = normalizeAccountId(accountId);
+		const columnId = await createColumn(accountId);
+		const idempotencyKey = crypto.randomUUID();
+
+		const path = `/api/column/${columnId}/public`;
+		const scope = `account:${normalizedAccountId}:column:${columnId}:public:enable`;
+		const cacheKey = `idempotency:${scope}:${normalizedAccountId}:${idempotencyKey}`;
+		const fingerprint = await sha256Hex(`POST ${path}\n`);
+
+		await env.ACCOUNTS.put(
+			cacheKey,
+			JSON.stringify({
+				schemaVersion: 1,
+				state: "pending",
+				fingerprint,
+			}),
+			{ expirationTtl: 60 },
+		);
+
+		const response = await SELF.fetch(`http://example.com${path}`, {
+			method: "POST",
+			headers: {
+				"X-Account-ID": accountId,
+				"X-Idempotency-Key": idempotencyKey,
+			},
+		});
+
+		expect(response.status).toBe(409);
+		expect(await response.json()).toMatchObject({
+			error: "idempotency_request_in_progress",
+		});
 	});
 
 	it("returns backup service misconfiguration error when admin backups unavailable", async () => {

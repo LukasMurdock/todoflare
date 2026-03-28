@@ -43,13 +43,29 @@ const COLUMN_ID_PATTERN =
 const IDEMPOTENCY_HEADER = "X-Idempotency-Key";
 const IDEMPOTENCY_KEY_MAX_LENGTH = 128;
 const IDEMPOTENCY_CACHE_TTL_SECONDS = 24 * 60 * 60;
+const IDEMPOTENCY_PENDING_TTL_SECONDS = 5 * 60;
+const IDEMPOTENCY_PENDING_WAIT_MS = 1500;
+const IDEMPOTENCY_PENDING_POLL_MS = 50;
 const IDEMPOTENCY_SCHEMA_VERSION = 1;
 
-interface IdempotencyCacheRecord {
+interface IdempotencyCacheBaseRecord {
 	schemaVersion: number;
+	fingerprint: string;
+}
+
+interface IdempotencyPendingRecord extends IdempotencyCacheBaseRecord {
+	state: "pending";
+}
+
+interface IdempotencyCompletedRecord extends IdempotencyCacheBaseRecord {
+	state: "completed";
 	status: number;
 	body: unknown;
 }
+
+type IdempotencyCacheRecord =
+	| IdempotencyPendingRecord
+	| IdempotencyCompletedRecord;
 
 registerAgentApi(app);
 
@@ -271,29 +287,71 @@ function parseIdempotencyCacheRecord(
 
 	const record = parsed as {
 		schemaVersion?: number;
-		status?: number;
+		state?: unknown;
+		fingerprint?: unknown;
 		body?: unknown;
+		status?: number;
 	};
 
 	if (record.schemaVersion !== IDEMPOTENCY_SCHEMA_VERSION) return null;
-	if (typeof record.status !== "number") return null;
-	if (!("body" in record)) return null;
+	if (typeof record.fingerprint !== "string" || record.fingerprint.length === 0) {
+		return null;
+	}
 
-	return {
-		schemaVersion: record.schemaVersion,
-		status: record.status,
-		body: record.body,
-	};
+	if (record.state === "pending") {
+		return {
+			schemaVersion: record.schemaVersion,
+			state: "pending",
+			fingerprint: record.fingerprint,
+		};
+	}
+
+	if (record.state === "completed") {
+		if (typeof record.status !== "number") return null;
+		if (!("body" in record)) return null;
+
+		return {
+			schemaVersion: record.schemaVersion,
+			state: "completed",
+			fingerprint: record.fingerprint,
+			status: record.status,
+			body: record.body,
+		};
+	}
+
+	return null;
 }
 
-async function loadIdempotentReplayResponse(
+async function loadIdempotencyRecord(
 	env: Bindings,
 	cacheKey: string,
-): Promise<Response | null> {
+): Promise<IdempotencyCacheRecord | null> {
 	const raw = await env.ACCOUNTS.get(cacheKey);
-	const record = parseIdempotencyCacheRecord(raw);
-	if (!record) return null;
+	return parseIdempotencyCacheRecord(raw);
+}
 
+function idempotencyKeyConflictResponse() {
+	return Response.json(
+		{
+			error: "idempotency_key_conflict",
+			message: "This idempotency key was already used for a different request.",
+		},
+		{ status: 409 },
+	);
+}
+
+function idempotencyRequestInProgressResponse() {
+	return Response.json(
+		{
+			error: "idempotency_request_in_progress",
+			message:
+				"A request with this idempotency key is still in progress. Retry shortly.",
+		},
+		{ status: 409 },
+	);
+}
+
+function toIdempotentReplayResponse(record: IdempotencyCompletedRecord): Response {
 	return Response.json(record.body, {
 		status: record.status,
 		headers: {
@@ -302,18 +360,101 @@ async function loadIdempotentReplayResponse(
 	});
 }
 
+function wait(ms: number): Promise<void> {
+	return new Promise((resolve) => {
+		setTimeout(resolve, ms);
+	});
+}
+
+async function waitForPendingIdempotentCompletion(
+	env: Bindings,
+	cacheKey: string,
+	fingerprint: string,
+): Promise<Response | null> {
+	const deadline = Date.now() + IDEMPOTENCY_PENDING_WAIT_MS;
+
+	while (Date.now() < deadline) {
+		await wait(IDEMPOTENCY_PENDING_POLL_MS);
+		const record = await loadIdempotencyRecord(env, cacheKey);
+		if (!record) return null;
+		if (record.fingerprint !== fingerprint) {
+			return idempotencyKeyConflictResponse();
+		}
+		if (record.state === "completed") {
+			return toIdempotentReplayResponse(record);
+		}
+	}
+
+	return idempotencyRequestInProgressResponse();
+}
+
+async function markIdempotencyPending(
+	env: Bindings,
+	cacheKey: string,
+	fingerprint: string,
+): Promise<void> {
+	const record: IdempotencyPendingRecord = {
+		schemaVersion: IDEMPOTENCY_SCHEMA_VERSION,
+		state: "pending",
+		fingerprint,
+	};
+
+	await env.ACCOUNTS.put(cacheKey, JSON.stringify(record), {
+		expirationTtl: IDEMPOTENCY_PENDING_TTL_SECONDS,
+	});
+}
+
+async function clearPendingIdempotencyIfNeeded(
+	env: Bindings,
+	cacheKey: string,
+	fingerprint: string,
+): Promise<void> {
+	const record = await loadIdempotencyRecord(env, cacheKey);
+	if (!record) return;
+	if (record.fingerprint !== fingerprint) return;
+	if (record.state !== "pending") return;
+
+	await env.ACCOUNTS.delete(cacheKey);
+}
+
+async function idempotencyRequestFingerprint(
+	request: Request,
+	requestFingerprintSource?: string,
+): Promise<string> {
+	const url = new URL(request.url);
+	const body =
+		typeof requestFingerprintSource === "string"
+			? requestFingerprintSource
+			: await request
+					.clone()
+					.text()
+					.catch(() => "__BODY_UNAVAILABLE__");
+	const source = `${request.method.toUpperCase()} ${url.pathname}${url.search}\n${body}`;
+
+	return sha256Hex(source);
+}
+
+interface IdempotentWriteOptions {
+	scope: string;
+	accountId?: string | null;
+	requestFingerprintSource?: string;
+}
+
 async function cacheIdempotentResponse(
 	env: Bindings,
 	cacheKey: string,
+	fingerprint: string,
 	response: Response,
-) {
-	if (response.status < 200 || response.status >= 300) return;
+): Promise<boolean> {
+	if (response.status < 200 || response.status >= 300) return false;
 
 	const body = await response.clone().json().catch(() => undefined);
-	if (typeof body === "undefined") return;
+	if (typeof body === "undefined") return false;
 
-	const record: IdempotencyCacheRecord = {
+	const record: IdempotencyCompletedRecord = {
 		schemaVersion: IDEMPOTENCY_SCHEMA_VERSION,
+		state: "completed",
+		fingerprint,
 		status: response.status,
 		body,
 	};
@@ -321,11 +462,13 @@ async function cacheIdempotentResponse(
 	await env.ACCOUNTS.put(cacheKey, JSON.stringify(record), {
 		expirationTtl: IDEMPOTENCY_CACHE_TTL_SECONDS,
 	});
+
+	return true;
 }
 
 async function withIdempotentWrite(
 	c: Context<{ Bindings: Bindings }>,
-	options: { scope: string; accountId?: string | null },
+	options: IdempotentWriteOptions,
 	handler: () => Promise<Response>,
 ): Promise<Response> {
 	const idempotencyKey = parseIdempotencyKey(c.req.header(IDEMPOTENCY_HEADER));
@@ -342,15 +485,51 @@ async function withIdempotentWrite(
 		accountScope,
 		idempotencyKey,
 	);
+	const fingerprint = await idempotencyRequestFingerprint(
+		c.req.raw,
+		options.requestFingerprintSource,
+	);
 
-	const replayResponse = await loadIdempotentReplayResponse(c.env, cacheKey);
-	if (replayResponse) {
-		return replayResponse;
+	const existingRecord = await loadIdempotencyRecord(c.env, cacheKey);
+	if (existingRecord) {
+		if (existingRecord.fingerprint !== fingerprint) {
+			return idempotencyKeyConflictResponse();
+		}
+
+		if (existingRecord.state === "completed") {
+			return toIdempotentReplayResponse(existingRecord);
+		}
+
+		const pendingResolution = await waitForPendingIdempotentCompletion(
+			c.env,
+			cacheKey,
+			fingerprint,
+		);
+		if (pendingResolution) {
+			return pendingResolution;
+		}
 	}
 
-	const response = await handler();
-	await cacheIdempotentResponse(c.env, cacheKey, response);
-	return response;
+	await markIdempotencyPending(c.env, cacheKey, fingerprint);
+
+	try {
+		const response = await handler();
+		const didCache = await cacheIdempotentResponse(
+			c.env,
+			cacheKey,
+			fingerprint,
+			response,
+		);
+
+		if (!didCache) {
+			await clearPendingIdempotencyIfNeeded(c.env, cacheKey, fingerprint);
+		}
+
+		return response;
+	} catch (err) {
+		await clearPendingIdempotencyIfNeeded(c.env, cacheKey, fingerprint);
+		throw err;
+	}
 }
 
 function blockWritesIfReadOnly(c: Context<{ Bindings: Bindings }>): Response | null {
@@ -1083,6 +1262,7 @@ app.post("/api/column", async (c) => {
 				? `account:${normalizedAccountId}:column:create:${requestedColumnId}`
 				: `account:${normalizedAccountId}:column:create`,
 			accountId,
+			requestFingerprintSource: JSON.stringify(body),
 		},
 		async () => {
 			const accountData = await c.env.ACCOUNTS.get(
@@ -1478,6 +1658,7 @@ app.post("/api/column/:id/share", async (c) => {
 		{
 			scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:share:${normalizeAccountId(targetAccountId)}`,
 			accountId,
+			requestFingerprintSource: JSON.stringify({ targetAccountId }),
 		},
 		async () => {
 			// Check target account exists
