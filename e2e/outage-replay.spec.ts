@@ -55,7 +55,12 @@ test.describe("collaborative editing", () => {
 			},
 		);
 
-		await waitForQueueToDrain(ownerPage, ownerId);
+		// Keep one smoke test on the production five-second cadence. The rest of
+		// this matrix uses the deterministic E2E wake trigger.
+		await waitForQueueToDrain(ownerPage, ownerId, {
+			timeout: 15000,
+			wakeReplay: false,
+		});
 
 		await collaboratorPage.reload();
 		await expect(

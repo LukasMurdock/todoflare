@@ -3,18 +3,18 @@
 	"name": "todoflare-prod",
 	"workers_dev": false,
 	"preview_urls": false,
-	"account_id": "440e7b1dda326614729fce463b0d6c33",
-	"compatibility_date": "2025-01-01",
+	"account_id": "8818a1fbe40a0fdc63ec6ab52cb62e3b",
+	"compatibility_date": "2026-01-01",
 	"main": "./src/index.tsx",
 	"assets": {
 		"directory": "./dist",
 		"not_found_handling": "single-page-application",
-		"run_worker_first": ["/api/*", "/p/*"]
+		"run_worker_first": ["/api/*"],
 	},
 	"vars": {
 		"READ_ONLY_MODE": "false",
 		"AUTO_BACKUP_ENABLED": "false",
-		"BACKUP_MAX_COLUMNS": "1000"
+		"BACKUP_MAX_COLUMNS": "1000",
 	},
 	"observability": {
 		"enabled": true,
@@ -22,51 +22,51 @@
 			"enabled": false,
 			"invocation_logs": false,
 			"persist": false,
-			"head_sampling_rate": 0
+			"head_sampling_rate": 0,
 		},
 		"traces": {
 			"enabled": false,
 			"persist": false,
-			"head_sampling_rate": 0
-		}
+			"head_sampling_rate": 0,
+		},
 	},
 	"kv_namespaces": [
 		{
 			"binding": "ACCOUNTS",
-			"id": "cadce14fe3fc42a88073266681de9e54"
+			"id": "b2a26a39720746e2b67d8a07ee1a2d68",
 		},
 		{
 			"binding": "RATE_LIMIT",
-			"id": "6c0a7a262faf42e78eb35d86ca637ec4"
-		}
+			"id": "65b716d806df49e29464a3705db4e7e5",
+		},
 	],
 	"r2_buckets": [
 		{
 			"binding": "BACKUPS",
-			"bucket_name": "todoflare-backups"
-		}
+			"bucket_name": "todoflare-backups",
+		},
 	],
 	"durable_objects": {
 		"bindings": [
 			{
 				"name": "COLUMN_ROOM",
-				"class_name": "ColumnRoomSql"
-			}
-		]
+				"class_name": "ColumnRoomSql",
+			},
+		],
 	},
 	"migrations": [
 		{
 			"tag": "v1",
-			"new_sqlite_classes": ["ColumnRoomSql"]
-		}
+			"new_sqlite_classes": ["ColumnRoomSql"],
+		},
 	],
 	"triggers": {
-		"crons": ["0 * * * *"]
+		"crons": ["0 * * * *"],
 	},
 	"routes": [
 		{
 			"pattern": "todo.tamesystems.org",
-			"custom_domain": true
-		}
-	]
+			"custom_domain": true,
+		},
+	],
 }

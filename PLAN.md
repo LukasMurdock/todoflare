@@ -1,261 +1,176 @@
-## Local-First Account Mode Plan
+# Local-first account mode: current state and decision record
 
-### Decision Log
+Status: current as of 2026-07-19.
 
-- Treat offline account edits as fully allowed and queued for later sync.
-- If access is revoked while offline, drop queued edits and show "access revoked."
+This document records what Todoflare runs today, which parts of the original
+local-first proposal were superseded, and which decisions remain open. It is not
+a promise that historical proposals are active architecture.
 
-### Goal
+## Current production architecture
 
-Make Todoflare truly local-first in account mode while preserving real-time collaboration.
+Todoflare has five explicit client modes:
 
-### End State
+- `guest_local`: browser-only columns stored in localStorage.
+- `account_offline`: an account session backed by local snapshots and outboxes,
+  without usable network or realtime transport.
+- `account_syncing`: online account metadata is hydrating or column connections
+  are being established.
+- `account_realtime`: account metadata and Yjs column connections are active.
+- `public_readonly`: a public link loads one read-only Yjs document without the
+  authenticated account runtime.
 
-- Account mode works offline with durable local state.
-- Edits are never dropped while disconnected.
-- Reconnect performs deterministic catch-up and conflict-safe merge.
-- Realtime presence/cursors still work when online.
-- Existing Cloudflare Durable Objects remain source of truth for shared collaboration.
+The two state planes are intentionally different:
 
-### Architecture
+| Plane | Browser state | Server authority | Conflict/recovery behavior |
+| --- | --- | --- | --- |
+| Account metadata | IndexedDB account snapshot and mutation outbox | Account/index records in KV plus column metadata in Durable Objects | FIFO commands, idempotency keys, retry/backoff, stable terminal error codes |
+| Column content | Yjs document plus IndexedDB Yjs update outbox | SQLite-backed `ColumnRoomSql` Durable Object | Yjs merge, state-vector reconciliation, ordered resend |
+| Presence | In-memory connection projection | Durable Object WebSocket room | Ephemeral; never replayed as durable document state |
+| Guest columns | localStorage with rolling checkpoints | None | Browser-local only |
 
-- Keep Yjs + Durable Object for collaborative rich-text CRDT and presence.
-- Add TanStack DB + RxDB for local-first metadata and mutation/outbox orchestration.
-- Split responsibilities:
-  - Yjs plane: column content CRDT + presence.
-  - TanStack/RxDB plane: account, column order, shares, public-link state, delete/restore state, pending commands.
+The local-first database is a project-owned IndexedDB-backed `PersistedMap` with
+four collections: `accountSnapshot`, `mutationOutbox`, `yjsUpdateOutbox`, and
+`syncState`. It falls back to memory if IndexedDB cannot be opened.
 
-### Software Design Strategy (Complexity-First)
+`SyncProvider` remains the React orchestration root. Command-to-HTTP execution is
+owned by `account-command-executor.ts`; queue retry/idempotency behavior is owned
+by `mutation-queue-service.ts`; protocol constants and codecs are owned by
+`websocket-protocol.ts`. There is no implemented `SyncRuntime` facade.
 
-#### Design goals for this migration
+On the server, Hono route ingress uses Zod/OpenAPI schemas. Persistence record
+parsing is centralized in `persistence-records.ts`, and delete/restore lifecycle
+behavior is owned by named workflow modules. External replay failures use stable
+API error codes so a generic `403` does not imply access revocation.
 
-- Reduce cognitive load in `SyncProvider` by decomposing responsibilities into deep modules.
-- Hide volatile decisions (queue policy, reconnect policy, revocation policy) behind stable interfaces.
-- Preserve conceptual integrity by enforcing one vocabulary and one control flow model.
-- Keep UI code dumb: UI reads projections and dispatches intent; orchestration lives in runtime services.
+## Decision status
 
-#### Design it twice (before locking implementation)
+### Implemented
 
-Candidate A: incremental extraction from `SyncProvider` into utility hooks/services while preserving direct calls.
+- Yjs plus one SQLite-backed Durable Object per collaborative column.
+- Offline account snapshots and durable metadata/Yjs outboxes in IndexedDB.
+- One replayable metadata command envelope with FIFO replay, bounded retry,
+  idempotency keys, and explicit terminal outcomes.
+- Optimistic create, reorder, hide, share, revoke, public-link, delete, and
+  restore commands through the same queue.
+- Offline startup from the latest account snapshot.
+- Access-revocation policy: drop affected metadata and Yjs outbox entries,
+  detach sync, and notify the user.
+- Central WebSocket opcodes/codecs and persisted-record schemas.
+- Runtime validation for external request bodies, paths, queries, and headers.
+- Named delete and restore server workflows with failure-injection coverage.
+- One authoritative verification command: `pnpm verify` locally and in CI.
+- Browser coverage for collaboration, offline restart, outages, revocation, and
+  public rendering. One outage smoke retains the real five-second timer; the
+  remainder use a deterministic E2E replay wake trigger.
 
-- Pros: fastest to ship; minimal initial churn.
-- Cons: tends to create shallow wrappers and indirect coupling; likely to recreate the same monolith in a different shape.
+### Superseded
 
-Candidate B (chosen): explicit runtime facade with module boundaries and command/event flow.
+- **TanStack DB and RxDB:** neither dependency is installed. The active browser
+  store is the custom IndexedDB-backed implementation described above.
+- **`SyncRuntime`, repository, and service-facade hierarchy:** these interfaces
+  were never implemented and were removed. Extraction proceeds by cohesive
+  workflow ownership rather than a generic facade.
+- **Six planned local-first collections:** unused column index/meta collections
+  were removed; only the four collections with production readers remain.
+- **Two private collaboration clients:** the legacy `ColumnRoom` and unused
+  private `useColumnSync` path were removed. Authenticated editing uses the Plate
+  provider and `SyncProvider`; public viewing uses `usePublicColumnSync`.
+- **HTTP status as replay policy:** stable response codes now drive terminal
+  behavior, with status mapping retained only for backward compatibility.
 
-- Pros: higher module depth, stronger ownership boundaries, easier to test and evolve, clearer local-first invariants.
-- Cons: slightly higher upfront design/bootstrapping cost.
+### Deferred work
 
-Decision: use Candidate B architecture, with Candidate A extraction steps only as transitional refactors.
+These are possible follow-up increments, not selected implementations:
 
-#### Decomposition and ownership boundaries
+- Extract column connection lifecycle and access-loss policy from
+  `SyncProvider` into browser-safe modules.
+- Continue extracting server lifecycle workflows one operation at a time,
+  especially share/public-link and successful backup restore.
+- Add deterministic failure injection at every external write boundary for the
+  remaining multi-store operations.
+- Decide whether the custom IndexedDB persistence layer is the long-term store.
+  Do not add RxDB or TanStack DB without a new decision based on measured need.
+- Consider more E2E parallelism only if shared local Worker state remains
+  isolated and the suite stays deterministic.
+- Replace the current `Math.random()` account-number generator with a
+  cryptographically secure generator and add collision/format tests. Because the
+  account number is an authentication secret, unpredictability is a security
+  requirement rather than a cosmetic implementation detail.
 
-- `SyncRuntime` (top-level orchestration facade)
-  - Owns lifecycle (`start`, `stop`), wiring, and cross-module coordination.
-  - Exposes stable API to React context/hook layer.
-- `AuthSessionService`
-  - Owns account identity, persisted session token/account id, and auth refresh behavior.
-- `AccessPolicyService`
-  - Owns authorization state (`allowed`, `revoked`, `unknown`) and revoke decisions.
-  - Single place that enforces the product policy: drop queued edits on revoke.
-- `AccountRepository` (TanStack DB + RxDB backed)
-  - Owns metadata snapshots/projections for account, column index, share/public flags.
-  - UI reads from this only, not directly from transport or fetch calls.
-- `MutationQueueService`
-  - Owns offline command queue, replay, backoff, idempotency, and hard-failure semantics.
-- `CollaborationService` (Yjs + DO transport)
-  - Owns per-column transport lifecycle and Yjs update application.
-  - No account metadata mutation logic.
-- `PresenceService`
-  - Owns ephemeral collaborator presence projection and local presence updates.
-- `NotificationPort`
-  - Owns user-facing toasts/banners so domain modules do not import UI notification libs directly.
+## Resolved product decisions
 
-#### Interface-first contracts (stable boundaries)
+### Account number is the authentication credential
 
-Use interface contracts as the boundary between modules. Internal implementation can evolve freely.
+The generated 16-digit account number intentionally acts as both identifier and
+bearer authentication secret. Possession grants account access; there is no
+separate username/password distinction. Users must protect the number like a
+password.
 
-```ts
-interface SyncRuntime {
-  start(): Promise<void>;
-  stop(): Promise<void>;
-  dispatch(command: SyncCommand): Promise<DispatchResult>;
-  status$(): Observable<SyncStatus>;
-}
+This is inspired by
+[Mullvad's account-number model](https://mullvad.net/en/blog/mullvads-account-numbers-get-longer-and-safer),
+where a generated number serves as both the account's unique token and its
+authentication secret. Todoflare adopts that product principle, not an assertion
+that its threat model or implementation is otherwise identical to Mullvad's.
 
-interface MutationQueueService {
-  enqueue(cmd: AccountEditCommand): Promise<string>;
-  replay(options?: { maxBatch?: number }): Promise<ReplayReport>;
-  dropWhere(
-    predicate: (m: QueuedMutation) => boolean,
-    reason: DropReason,
-  ): Promise<number>;
-  pending$(): Observable<QueuedMutation[]>;
-}
+### Metadata authority is scoped by domain
 
-interface AccessPolicyService {
-  evaluate(ctx: AccessContext): Promise<AccessPolicy>;
-  policy$(): Observable<AccessPolicy>;
-}
-```
+Durable Object metadata is authoritative for column existence, ownership,
+collaborator access, and public-link identity. Account KV records are
+authoritative for account existence, owned-column order, hidden shared columns,
+and trash/restore eligibility. The `shared:*` and `public:*` KV records are
+derived discovery projections.
 
-#### Coupling rules (non-negotiable)
+Lifecycle operations update authoritative state and then reconcile projections
+idempotently. Retrying share or public-link enablement repairs missing KV indexes
+without changing the authoritative collaborator set or rotating an existing
+public ID. Account hydration validates shared-index entries against DO metadata
+and removes entries that no longer grant access.
 
-- UI components depend only on Sync facade/repository APIs.
-- Metadata plane and collaboration plane communicate only through typed events, never shared mutable objects.
-- Transport wire details (op codes, message decoding) stay inside collaboration transport adapters.
-- Queue replay decisions stay in `MutationQueueService` + `AccessPolicyService`, never in UI handlers.
-- No module may write to both Yjs state and metadata store for the same concern.
+## Open product and architecture decisions
 
-#### Deep module guardrails
+- Do read-only agent endpoints need a separately versioned public contract?
+- Is the current IndexedDB schema and migration strategy sufficient for a
+  long-lived production store?
 
-- Prefer one powerful module with a small API over multiple thin pass-through helpers.
-- A module must own at least one hard concern (policy, retries, merge/reconcile, lifecycle), not just rename calls.
-- Avoid "manager" files that only delegate; merge them into owning modules unless they provide clear abstraction.
+Do not resolve these questions implicitly in unrelated changes. Record a new
+decision and its migration/verification plan first.
 
-#### Invariants to encode in design
+## Current invariants and guardrails
 
-- Offline account edits are always accepted locally and queued.
-- Replay is idempotent and deterministic (FIFO by creation time, bounded retry policy).
-- Access revocation cancels replay eligibility for affected columns.
-- On revoke, queued metadata and Yjs updates for that column are dropped, sync is detached, user is notified.
-- Startup is deterministic: online hydrates from server then reconciles; offline hydrates from RxDB snapshot.
+- Valid account edits are accepted locally and queued while offline.
+- Every replayable metadata write carries an idempotency key.
+- Replay is FIFO by creation time; transient failures retry and terminal failures
+  are removed with a typed reason.
+- Yjs owns collaborative content conflict resolution; metadata remains
+  server-authoritative after replay/reconciliation.
+- Delete and revoke tombstones dominate pending edits.
+- Revocation is the only authorization result that triggers column-wide local
+  outbox deletion.
+- Browser-safe contracts must not import Worker or Durable Object modules.
+- Route handlers validate ingress once and delegate lifecycle-sensitive work to
+  named workflows.
+- `pnpm verify:fast` is the development gate; `pnpm verify` is the completion
+  gate and must remain identical to CI.
 
-#### Error handling by design (define errors out where possible)
+## Historical proposal mapping
 
-- Use one command envelope shape with required idempotency key for all replayable mutations.
-- Use one replay path for online recovery to avoid duplicate behavior branches.
-- Use typed terminal reasons (`revoked`, `not_found`, `validation_failed`) to avoid string-matching error logic.
-- Separate transient failure handling (retry) from terminal policy handling (drop and notify).
+The original plan proposed a large facade-oriented migration. Its useful product
+goals were retained—offline writes, durable recovery, explicit modes,
+idempotency, revocation handling, and telemetry—but the proposed dependency and
+class hierarchy was not adopted. The table below is the authoritative mapping:
 
-#### Conceptual integrity and naming
+| Original proposal | Current status |
+| --- | --- |
+| TanStack DB + RxDB metadata plane | Superseded by custom IndexedDB persistence |
+| `SyncRuntime` top-level facade | Not implemented; superseded |
+| `MutationQueueService` | Implemented as `LocalMutationQueueService` |
+| `AccessPolicyService` | Behavior implemented in `SyncProvider`; extraction deferred |
+| `CollaborationService` | Responsibilities split between provider, sync context, protocol module, and Durable Object |
+| Explicit sync modes | Implemented |
+| Durable metadata and Yjs outboxes | Implemented |
+| Revoke drop-and-notify policy | Implemented |
+| Startup from local account snapshot | Implemented |
+| Queue/replay and outage coverage | Implemented |
 
-- Use one domain language everywhere: `command`, `event`, `projection`, `policy`, `replay`, `revoked`.
-- Avoid mixed synonyms (`sync queue`, `pending ops`, `outbox`) in code and docs; choose one canonical term per concept.
-- Keep mode names explicit and globally reused: `guest_local`, `account_offline`, `account_syncing`, `account_realtime`, `public_readonly`.
-
-#### Comments and documentation standard
-
-- Interface comments describe usage contract: ordering, idempotency, failure behavior, and side effects.
-- Rationale comments explain non-obvious decisions (for example, why revoked offline edits are dropped).
-- Do not add implementation-noise comments that restate code.
-- For each deep module, include a short module header comment: purpose, owned invariants, and what it does not own.
-
-#### PR design-review checklist
-
-- [ ] Does this change reduce or preserve overall conceptual complexity?
-- [ ] Is module ownership clear and singular?
-- [ ] Is new behavior exposed through a stable interface, not leaked internals?
-- [ ] Are offline writes routed through the queue (no bypass path)?
-- [ ] Is revoke behavior centralized and tested (`drop + notify`)?
-- [ ] Are transport concerns hidden from UI and repositories?
-- [ ] Are retries/idempotency semantics explicit and covered by tests?
-- [ ] Did we avoid introducing shallow wrappers?
-- [ ] Are interface and rationale comments updated where behavior changed?
-
-### Phased Implementation
-
-#### 1) Add local-first core (TanStack DB + RxDB)
-
-- Add dependencies: `@tanstack/react-db`, `@tanstack/rxdb-db-collection`, `rxdb` (+ storage plugin).
-- Create `src/lib/local-first/rxdb.ts` for DB init and migrations.
-- Create `src/lib/local-first/collections.ts` with:
-  - `account_snapshot`
-  - `column_index`
-  - `column_meta_cache`
-  - `mutation_outbox` (metadata commands)
-  - `yjs_update_outbox` (content updates)
-  - `sync_state`
-- Keep `useSyncContext` public API stable to avoid immediate UI churn.
-
-#### 2) Introduce deterministic mode state machine
-
-- Replace implicit flags in `src/contexts/sync-context.tsx` with explicit states:
-  - `guest_local`
-  - `account_offline`
-  - `account_syncing`
-  - `account_realtime`
-  - `public_readonly`
-- Define transition rules for auth changes, websocket up/down, API health, and DO degradation.
-
-#### 3) Move metadata writes to optimistic local mutations + replay queue
-
-- Wrap operations (create/reorder/hide/share/revoke/public-link/delete/restore) as queued commands.
-- Command envelope:
-  - `idempotencyKey`
-  - `opType`
-  - `entityId`
-  - `payload`
-  - `createdAt`
-  - `attemptCount`
-  - `nextRetryAt`
-- Replay worker behavior:
-  - FIFO by `createdAt`
-  - Exponential backoff + jitter
-  - Remove command on server ack
-  - Surface actionable UI state on hard failure
-
-#### 4) Make Yjs content fully offline-durable
-
-- In `src/lib/collaboration/cloudflare-yjs-provider.ts`:
-  - Persist local Yjs doc updates.
-  - Enqueue unsent updates to `yjs_update_outbox` when disconnected.
-- On reconnect:
-  - Perform state-vector reconciliation.
-  - Flush queued updates in order.
-  - Prune acknowledged updates.
-- Coordinate websocket sync behavior with `src/durable-objects/column-room.ts`.
-
-#### 5) Enforce revoke policy (selected behavior)
-
-- On revoke event (or revoke during replay):
-  - Mark column inaccessible in `column_meta_cache`.
-  - Remove pending metadata commands for that column.
-  - Remove pending `yjs_update_outbox` entries for that column.
-  - Detach active editor sync for that column.
-  - Show toast/banner: "Access revoked. Unsynced changes were discarded."
-
-#### 6) Bootstrapping and conflict rules
-
-- Startup behavior:
-  - Online: hydrate from server, then subscribe realtime.
-  - Offline: hydrate from RxDB snapshot immediately.
-- Conflict policy:
-  - Yjs content: CRDT merge.
-  - Metadata: server-authoritative with idempotency/version checks.
-  - Delete/revoke tombstones dominate pending edits.
-
-#### 7) Rollout and safety
-
-- Staged rollout:
-  1. Internal/dev only
-  2. Small percentage of production accounts
-  3. Full rollout
-- Telemetry:
-  - queue depth
-  - replay latency
-  - revoke-discard count
-  - convergence failures
-
-#### 8) Test plan
-
-- Unit tests:
-  - replay worker ordering/backoff/idempotency
-  - revoke policy dropping queued edits
-- Integration tests:
-  - offline create/edit/reorder/delete then reconnect
-  - multi-tab same-account consistency
-  - shared column revoke while editor offline
-- E2E tests:
-  - network flap during active editing
-  - backend unavailable then recovery
-  - public/shared mode boundaries
-
-### Primary File Touch Points
-
-- `src/contexts/sync-context.tsx`
-- `src/hooks/useColumns.ts`
-- `src/lib/collaboration/cloudflare-yjs-provider.ts`
-- `src/durable-objects/column-room.ts`
-- `src/components/todo/TodoColumn.tsx`
-- `src/lib/local-first/*`
+Future work should update the status sections above in the same change that
+alters architecture or behavior.

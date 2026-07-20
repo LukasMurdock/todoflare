@@ -1,7 +1,5 @@
 import type {
 	AccountSnapshotDoc,
-	ColumnIndexDoc,
-	ColumnMetaCacheDoc,
 	MutationOutboxDoc,
 	SyncStateDoc,
 	YjsUpdateOutboxDoc,
@@ -9,8 +7,6 @@ import type {
 
 export interface LocalFirstCollections {
 	accountSnapshot: Map<string, AccountSnapshotDoc>;
-	columnIndex: Map<string, ColumnIndexDoc>;
-	columnMetaCache: Map<string, ColumnMetaCacheDoc>;
 	mutationOutbox: Map<string, MutationOutboxDoc>;
 	yjsUpdateOutbox: Map<string, YjsUpdateOutboxDoc>;
 	syncState: Map<string, SyncStateDoc>;
@@ -27,8 +23,6 @@ const LOCAL_FIRST_COLLECTION_STORE = "collections";
 
 const COLLECTION_KEYS = [
 	"accountSnapshot",
-	"columnIndex",
-	"columnMetaCache",
 	"mutationOutbox",
 	"yjsUpdateOutbox",
 	"syncState",
@@ -172,8 +166,6 @@ function createInMemoryDb(): LocalFirstDatabase {
 	return {
 		collections: {
 			accountSnapshot: new Map(),
-			columnIndex: new Map(),
-			columnMetaCache: new Map(),
 			mutationOutbox: new Map(),
 			yjsUpdateOutbox: new Map(),
 			syncState: new Map(),
@@ -212,22 +204,6 @@ async function createIndexedDbBackedDb(): Promise<LocalFirstDatabase> {
 			),
 			(entries) => {
 				persistCollection("accountSnapshot", entries);
-			},
-		),
-		columnIndex: new PersistedMap<ColumnIndexDoc>(
-			asCollectionEntries<ColumnIndexDoc>(
-				loadedEntriesByCollection.get("columnIndex") ?? [],
-			),
-			(entries) => {
-				persistCollection("columnIndex", entries);
-			},
-		),
-		columnMetaCache: new PersistedMap<ColumnMetaCacheDoc>(
-			asCollectionEntries<ColumnMetaCacheDoc>(
-				loadedEntriesByCollection.get("columnMetaCache") ?? [],
-			),
-			(entries) => {
-				persistCollection("columnMetaCache", entries);
 			},
 		),
 		mutationOutbox: new PersistedMap<MutationOutboxDoc>(

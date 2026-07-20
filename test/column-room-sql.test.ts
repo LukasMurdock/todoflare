@@ -3,11 +3,14 @@ import { describe, expect, it } from "vitest";
 import * as Y from "yjs";
 import { applyUpdate, encodeStateAsUpdate } from "yjs";
 import type { ColumnMeta } from "../src/types/account";
-
-const WS_OP_SYNC = 0x01;
-const WS_OP_AWARENESS = 0x02;
-const WS_OP_PRESENCE = 0x03;
-const WS_OP_ACCESS_REVOKED = 0x05;
+import {
+	decodeWsFrame,
+	encodeWsFrame,
+	WS_OP_ACCESS_REVOKED,
+	WS_OP_AWARENESS,
+	WS_OP_PRESENCE,
+	WS_OP_SYNC,
+} from "../src/lib/collaboration/websocket-protocol";
 
 function getColumnRoomStub(columnId: string) {
 	const id = env.COLUMN_ROOM.idFromName(columnId);
@@ -28,19 +31,11 @@ function decodeFrame(
 	if (typeof data === "string") {
 		throw new Error("Expected binary WebSocket frame");
 	}
-	const bytes = new Uint8Array(data);
-	return { op: bytes[0] ?? 0, payload: bytes.subarray(1) };
+	return decodeWsFrame(data);
 }
 
 function decodeOp(data: ArrayBuffer | string): number {
 	return decodeFrame(data).op;
-}
-
-function encodeFrame(op: number, payload: Uint8Array = new Uint8Array()): ArrayBuffer {
-	const bytes = new Uint8Array(payload.length + 1);
-	bytes[0] = op;
-	bytes.set(payload, 1);
-	return bytes.buffer;
 }
 
 function acceptWebSocket(ws: WebSocket) {
@@ -384,7 +379,7 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 		docA.getText("t").insert(0, "hello");
 		const update = encodeStateAsUpdate(docA);
 
-		wsA.send(encodeFrame(WS_OP_SYNC, update));
+		wsA.send(encodeWsFrame(WS_OP_SYNC, update));
 
 		const received = await waitForPayloadWithOp(wsB, WS_OP_SYNC, 2000);
 		expect(Array.from(received)).toEqual(Array.from(update));

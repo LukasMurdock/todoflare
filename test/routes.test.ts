@@ -1,5 +1,10 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import {
+	decodeWsFrame,
+	WS_OP_PRESENCE,
+	WS_OP_SYNC,
+} from "../src/lib/collaboration/websocket-protocol";
 
 function normalizeAccountId(id: string): string {
 	return id.replace(/\D/g, "");
@@ -99,8 +104,7 @@ function decodeOpcode(data: ArrayBuffer | string): number {
 	if (typeof data === "string") {
 		throw new Error("Expected binary WebSocket frame");
 	}
-	const bytes = new Uint8Array(data);
-	return bytes[0] ?? 0;
+	return decodeWsFrame(data).op;
 }
 
 function waitForWsMessage(ws: WebSocket, timeoutMs: number): Promise<MessageEvent> {
@@ -149,6 +153,134 @@ describe("Worker routes", () => {
 		expect(await res.json()).toMatchObject({ error: "Account not found" });
 	});
 
+	it("rejects malformed JSON request bodies", async () => {
+		const res = await SELF.fetch("http://example.com/api/column", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: "{",
+		});
+
+		expect(res.status).toBe(400);
+		expect(await res.json()).toMatchObject({
+			error: "invalid_request",
+			code: "invalid_request",
+		});
+	});
+
+	it("rejects wrong array element types", async () => {
+		const res = await SELF.fetch(
+			"http://example.com/api/account/0000000000000000/columns",
+			{
+				method: "PUT",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ columnOrder: [42] }),
+			},
+		);
+
+		expect(res.status).toBe(400);
+		expect(await res.json()).toMatchObject({ error: "invalid_request" });
+	});
+
+	it("rejects oversized column arrays", async () => {
+		const columnOrder = Array.from({ length: 101 }, () => crypto.randomUUID());
+		const res = await SELF.fetch(
+			"http://example.com/api/account/0000000000000000/columns",
+			{
+				method: "PUT",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ columnOrder }),
+			},
+		);
+
+		expect(res.status).toBe(400);
+		expect(await res.json()).toMatchObject({ error: "invalid_request" });
+	});
+
+	it("rejects invalid path, header, and query values", async () => {
+		const invalidPath = await SELF.fetch(
+			"http://example.com/api/account/not-an-account",
+		);
+		expect(invalidPath.status).toBe(400);
+
+		const invalidHeader = await SELF.fetch(
+			`http://example.com/api/column/${crypto.randomUUID()}`,
+			{ headers: { "X-Account-ID": "invalid" } },
+		);
+		expect(invalidHeader.status).toBe(400);
+
+		const invalidQuery = await SELF.fetch(
+			`http://example.com/api/admin/backups/column/${crypto.randomUUID()}?limit=invalid`,
+		);
+		expect(invalidQuery.status).toBe(400);
+	});
+
+	it("rejects malformed account imports", async () => {
+		const accountId = "0000000000000000";
+		const res = await SELF.fetch(
+			`http://example.com/api/account/${accountId}/import`,
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-Account-ID": accountId,
+				},
+				body: JSON.stringify({
+					schemaVersion: 1,
+					exportedAt: 0,
+					account: {},
+					ownedColumns: [],
+				}),
+			},
+		);
+
+		expect(res.status).toBe(400);
+		expect(await res.json()).toMatchObject({ error: "invalid_request" });
+	});
+
+	it("accepts a current account export as an import payload", async () => {
+		const accountId = await createAccount();
+		await createColumn(accountId);
+		const normalizedAccountId = normalizeAccountId(accountId);
+		const exportResponse = await SELF.fetch(
+			`http://example.com/api/account/${normalizedAccountId}/export`,
+			{ headers: { "X-Account-ID": accountId } },
+		);
+		expect(exportResponse.ok).toBe(true);
+		const payload = await exportResponse.json();
+
+		const importResponse = await SELF.fetch(
+			`http://example.com/api/account/${normalizedAccountId}/import`,
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-Account-ID": accountId,
+				},
+				body: JSON.stringify(payload),
+			},
+		);
+
+		expect(importResponse.ok).toBe(true);
+		expect(await importResponse.json()).toMatchObject({
+			success: true,
+			importedColumns: 1,
+		});
+	});
+
+	it("rejects invalid backup restore modes", async () => {
+		const res = await SELF.fetch(
+			`http://example.com/api/admin/backups/column/${crypto.randomUUID()}/restore`,
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ mode: "overwrite" }),
+			},
+		);
+
+		expect(res.status).toBe(400);
+		expect(await res.json()).toMatchObject({ error: "invalid_request" });
+	});
+
 	it("creates a column for an existing account", async () => {
 		const accountId = await createAccount();
 		const columnId = await createColumn(accountId);
@@ -162,6 +294,36 @@ describe("Worker routes", () => {
 		const data = (await metaRes.json()) as { column: { id: string; ownerId: string } };
 		expect(data.column.id).toBe(columnId);
 		expect(data.column.ownerId).toBe(accountId);
+	});
+
+	it("distinguishes not-owner authorization from revoked access", async () => {
+		const ownerId = await createAccount();
+		const collaboratorId = await createAccount();
+		const outsiderId = await createAccount();
+		const columnId = await createColumn(ownerId);
+		await shareColumn(ownerId, columnId, collaboratorId);
+
+		const notOwnerResponse = await SELF.fetch(
+			`http://example.com/api/column/${columnId}`,
+			{
+				method: "DELETE",
+				headers: { "X-Account-ID": collaboratorId },
+			},
+		);
+		expect(notOwnerResponse.status).toBe(403);
+		expect(await notOwnerResponse.json()).toMatchObject({ code: "not_owner" });
+
+		const revokedResponse = await SELF.fetch(
+			`http://example.com/api/column/${columnId}`,
+			{
+				method: "DELETE",
+				headers: { "X-Account-ID": outsiderId },
+			},
+		);
+		expect(revokedResponse.status).toBe(403);
+		expect(await revokedResponse.json()).toMatchObject({
+			code: "access_revoked",
+		});
 	});
 
 	it("creates a column using a client-provided id", async () => {
@@ -309,6 +471,73 @@ describe("Worker routes", () => {
 		expect(replayedPayload.url).toBe(firstPayload.url);
 	});
 
+	it("repairs missing shared and public KV projections from DO metadata", async () => {
+		const ownerId = await createAccount();
+		const collaboratorId = await createAccount();
+		const columnId = await createColumn(ownerId);
+		await shareColumn(ownerId, columnId, collaboratorId);
+
+		const enablePublic = () =>
+			SELF.fetch(`http://example.com/api/column/${columnId}/public`, {
+				method: "POST",
+				headers: { "X-Account-ID": ownerId },
+			});
+		const firstPublicResponse = await enablePublic();
+		expect(firstPublicResponse.ok).toBe(true);
+		const firstPublic = (await firstPublicResponse.json()) as { publicId: string };
+
+		const sharedKey = `shared:${normalizeAccountId(collaboratorId)}`;
+		await env.ACCOUNTS.delete(sharedKey);
+		await env.ACCOUNTS.delete(`public:${firstPublic.publicId}`);
+
+		await shareColumn(ownerId, columnId, collaboratorId);
+		const repairedPublicResponse = await enablePublic();
+		expect(repairedPublicResponse.ok).toBe(true);
+		const repairedPublic = (await repairedPublicResponse.json()) as {
+			publicId: string;
+		};
+
+		expect(repairedPublic.publicId).toBe(firstPublic.publicId);
+		expect(
+			JSON.parse((await env.ACCOUNTS.get(sharedKey)) ?? "[]") as string[],
+		).toContain(columnId);
+		expect(await env.ACCOUNTS.get(`public:${firstPublic.publicId}`)).toBe(
+			columnId,
+		);
+	});
+
+	it("filters and removes a stale shared KV projection on account hydration", async () => {
+		const ownerId = await createAccount();
+		const collaboratorId = await createAccount();
+		const columnId = await createColumn(ownerId);
+		await shareColumn(ownerId, columnId, collaboratorId);
+
+		const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
+		const removeShare = await stub.fetch(
+			new Request("http://do/share", {
+				method: "PUT",
+				body: JSON.stringify({ sharedWith: [] }),
+			}),
+		);
+		expect(removeShare.ok).toBe(true);
+
+		const accountResponse = await SELF.fetch(
+			`http://example.com/api/account/${normalizeAccountId(collaboratorId)}`,
+		);
+		expect(accountResponse.ok).toBe(true);
+		const accountPayload = (await accountResponse.json()) as {
+			sharedColumns: Array<{ id: string }>;
+		};
+		expect(accountPayload.sharedColumns).toEqual([]);
+		expect(
+			JSON.parse(
+				(await env.ACCOUNTS.get(
+					`shared:${normalizeAccountId(collaboratorId)}`,
+				)) ?? "[]",
+			) as string[],
+		).not.toContain(columnId);
+	});
+
 	it("rejects duplicate idempotency key reused with different payload", async () => {
 		const accountId = await createAccount();
 		const normalizedAccountId = normalizeAccountId(accountId);
@@ -434,8 +663,8 @@ describe("WebSocket upgrade routing", () => {
 			const event = await waitForWsMessage(ws, 2000);
 			ops.push(decodeOpcode(event.data));
 		}
-		expect(ops).toContain(0x01);
-		expect(ops).toContain(0x03);
+		expect(ops).toContain(WS_OP_SYNC);
+		expect(ops).toContain(WS_OP_PRESENCE);
 
 		ws.close();
 	});
@@ -471,8 +700,8 @@ describe("WebSocket upgrade routing", () => {
 			const event = await waitForWsMessage(ws, 2000);
 			ops.push(decodeOpcode(event.data));
 		}
-		expect(ops).toContain(0x01);
-		expect(ops).toContain(0x03);
+		expect(ops).toContain(WS_OP_SYNC);
+		expect(ops).toContain(WS_OP_PRESENCE);
 
 		ws.close();
 	});

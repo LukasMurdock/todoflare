@@ -98,20 +98,16 @@ test.describe("collaborative editing", () => {
 		const publicApiResponse = await request.get(`${appUrl}/api/p/${publicId}`);
 		expect(publicApiResponse.ok()).toBeTruthy();
 
-		await ownerPage.goto(publicUrl);
-		if ((await ownerPage.getByText("404 Not Found").count()) > 0) {
-			test.skip(
-				true,
-				"Preview server does not route /p/* through worker runtime; API route is still verified.",
-			);
-		}
+		const publicContext = await browser.newContext();
+		const publicPage = await publicContext.newPage();
+		await publicPage.goto(publicUrl);
+		await expect(publicPage.getByText("Public View")).toBeVisible();
+		await expect(publicPage.getByText(publicText)).toBeVisible({ timeout: 15000 });
+		await expect(publicPage.getByRole("link", { name: "Create your own" })).toBeVisible();
+		await expect(publicPage.getByRole("button", { name: "Add column" })).toHaveCount(0);
+		await expect(publicPage.getByRole("button", { name: "Share column" })).toHaveCount(0);
 
-		await expect(ownerPage.getByText("Public View")).toBeVisible();
-		await expect(ownerPage.getByText(publicText)).toBeVisible();
-		await expect(ownerPage.getByRole("link", { name: "Create your own" })).toBeVisible();
-		await expect(ownerPage.getByRole("button", { name: "Add column" })).toHaveCount(0);
-		await expect(ownerPage.getByRole("button", { name: "Share column" })).toHaveCount(0);
-
+		await publicContext.close();
 		await ownerContext.close();
 	});
 

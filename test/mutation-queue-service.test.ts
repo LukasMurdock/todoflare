@@ -126,8 +126,6 @@ describe("LocalMutationQueueService", () => {
 		const db = {
 			collections: {
 				accountSnapshot: new Map(),
-				columnIndex: new Map(),
-				columnMetaCache: new Map(),
 				mutationOutbox: new Map(),
 				yjsUpdateOutbox: new Map(),
 				syncState: new Map(),

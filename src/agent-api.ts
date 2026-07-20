@@ -20,6 +20,7 @@ type DeletedColumnRecord = {
 const accountIdPathSchema = z.object({
 	accountId: z
 		.string()
+		.refine(validateAccountId, "Invalid account ID")
 		.openapi({
 			param: {
 				name: "accountId",
@@ -32,6 +33,7 @@ const accountIdPathSchema = z.object({
 const columnIdPathSchema = z.object({
 	columnId: z
 		.string()
+		.uuid()
 		.openapi({
 			param: {
 				name: "columnId",
@@ -42,9 +44,12 @@ const columnIdPathSchema = z.object({
 });
 
 const accountHeaderSchema = z.object({
-	"x-account-id": z.string().openapi({
-		example: "4829 1047 3856 2019",
-	}),
+	"x-account-id": z
+		.string()
+		.refine(validateAccountId, "Invalid account ID")
+		.openapi({
+			example: "4829 1047 3856 2019",
+		}),
 });
 
 const errorSchema = z.object({
@@ -201,14 +206,6 @@ async function enforceAgentRateLimit(
 	return { retryAfter: rateLimit.retryAfter ?? 1 };
 }
 
-function extractAccountHeader(header: { "x-account-id": string }) {
-	const accountId = header["x-account-id"];
-	if (!validateAccountId(accountId)) {
-		return { ok: false as const };
-	}
-	return { ok: true as const, accountId };
-}
-
 async function fetchAccount(
 	env: Bindings,
 	accountId: string,
@@ -319,10 +316,9 @@ export function registerAgentApi(app: OpenAPIHono<{ Bindings: Bindings }>) {
 
 		const { accountId } = c.req.valid("param");
 		const header = c.req.valid("header");
-		const headerAccount = extractAccountHeader(header);
-		if (!headerAccount.ok) return c.json({ error: "Invalid account ID" }, 400);
+		const requesterAccountId = header["x-account-id"];
 
-		if (normalizeAccountId(headerAccount.accountId) !== normalizeAccountId(accountId)) {
+		if (normalizeAccountId(requesterAccountId) !== normalizeAccountId(accountId)) {
 			return c.json({ error: "Access denied" }, 403);
 		}
 
@@ -440,10 +436,9 @@ export function registerAgentApi(app: OpenAPIHono<{ Bindings: Bindings }>) {
 
 		const { columnId } = c.req.valid("param");
 		const header = c.req.valid("header");
-		const headerAccount = extractAccountHeader(header);
-		if (!headerAccount.ok) return c.json({ error: "Invalid account ID" }, 400);
+		const requesterAccountId = header["x-account-id"];
 
-		const fetched = await fetchAccount(c.env, headerAccount.accountId);
+		const fetched = await fetchAccount(c.env, requesterAccountId);
 		if (!fetched.ok) return c.json({ error: fetched.error }, fetched.status);
 
 		const { account, normalizedId } = fetched;
@@ -524,10 +519,9 @@ export function registerAgentApi(app: OpenAPIHono<{ Bindings: Bindings }>) {
 
 		const { columnId } = c.req.valid("param");
 		const header = c.req.valid("header");
-		const headerAccount = extractAccountHeader(header);
-		if (!headerAccount.ok) return c.json({ error: "Invalid account ID" }, 400);
+		const requesterAccountId = header["x-account-id"];
 
-		const fetched = await fetchAccount(c.env, headerAccount.accountId);
+		const fetched = await fetchAccount(c.env, requesterAccountId);
 		if (!fetched.ok) return c.json({ error: fetched.error }, fetched.status);
 		const { account, normalizedId } = fetched;
 

@@ -1,5 +1,7 @@
 import { expect, type Page, type Route } from "@playwright/test";
 
+const E2E_REPLAY_WAKE_EVENT = "todoflare:e2e:replay-wake";
+
 async function getSyncQueueDepth(page: Page, accountId: string): Promise<number> {
 	return page.evaluate(async ({ accountIdInput }) => {
 		if (typeof indexedDB === "undefined") {
@@ -98,9 +100,17 @@ export async function waitForQueuedMutations(
 export async function waitForQueueToDrain(
 	page: Page,
 	accountId: string,
-	timeout = 45000,
+	options: { timeout?: number; wakeReplay?: boolean } = {},
 ): Promise<void> {
+	const { timeout = 15000, wakeReplay = true } = options;
 	await expect
-		.poll(() => getSyncQueueDepth(page, accountId), { timeout })
+		.poll(async () => {
+			if (wakeReplay) {
+				await page.evaluate((eventName) => {
+					window.dispatchEvent(new Event(eventName));
+				}, E2E_REPLAY_WAKE_EVENT);
+			}
+			return getSyncQueueDepth(page, accountId);
+		}, { intervals: [25, 50, 100], timeout })
 		.toBe(0);
 }

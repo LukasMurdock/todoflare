@@ -3,7 +3,7 @@ import { createSlateEditor } from "platejs";
 import { KEYS } from "platejs";
 
 import { EditorStatic } from "@/components/ui/editor-static";
-import { usePublicColumnSync } from "@/hooks/useColumnSync";
+import { usePublicColumnSync } from "@/hooks/usePublicColumnSync";
 
 interface PublicViewProps {
 	publicId: string;

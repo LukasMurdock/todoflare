@@ -6,10 +6,17 @@ import { CSS } from "@dnd-kit/utilities";
 import type { Value, TText, NodeEntry, Range } from "platejs";
 import { Plate, usePlateEditor, createPlatePlugin } from "platejs/react";
 import { KEYS } from "platejs";
+import { HeadingRules } from "@platejs/basic-nodes";
 import { H1Plugin, H2Plugin, H3Plugin } from "@platejs/basic-nodes/react";
 import { ListPlugin } from "@platejs/list/react";
-import { toggleList, someList, someTodoList } from "@platejs/list";
-import { AutoformatPlugin, type AutoformatRule } from "@platejs/autoformat";
+import {
+	BulletedListRules,
+	OrderedListRules,
+	TaskListRules,
+	toggleList,
+	someList,
+	someTodoList,
+} from "@platejs/list";
 import { IndentPlugin } from "@platejs/indent/react";
 import { YjsPlugin } from "@platejs/yjs/react";
 
@@ -170,6 +177,7 @@ export function TodoColumn({
 								sharedWith: column.sharedWith || [],
 								publicId: column.publicId ?? null,
 								createdAt: 0,
+								schemaVersion: 1,
 							}}
 						/>
 					)}
@@ -350,73 +358,6 @@ const UrlDecorationPlugin = createPlatePlugin({
 	},
 });
 
-const autoformatRules: AutoformatRule[] = [
-	// Headings
-	{
-		match: "# ",
-		mode: "block",
-		type: KEYS.h1,
-	},
-	{
-		match: "## ",
-		mode: "block",
-		type: KEYS.h2,
-	},
-	{
-		match: "### ",
-		mode: "block",
-		type: KEYS.h3,
-	},
-	// Todo lists (must come before bullet lists to match first)
-	{
-		match: ["- [ ] ", "[] "],
-		mode: "block",
-		type: "list",
-		format: (editor) => {
-			toggleList(editor, { listStyleType: KEYS.listTodo });
-			editor.tf.setNodes({
-				checked: false,
-				listStyleType: KEYS.listTodo,
-			});
-		},
-	},
-	{
-		match: ["- [x] ", "[x] "],
-		mode: "block",
-		type: "list",
-		format: (editor) => {
-			toggleList(editor, { listStyleType: KEYS.listTodo });
-			editor.tf.setNodes({ checked: true, listStyleType: KEYS.listTodo });
-		},
-	},
-	// Bullet lists - trigger on word characters to allow "- [ ]" for todos
-	{
-		match: ["- ", "* "],
-		mode: "block",
-		type: "list",
-		// Trigger on alphanumeric characters instead of space
-		trigger: [
-			..."abcdefghijklmnopqrstuvwxyz",
-			..."ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-			..."0123456789",
-		],
-		insertTrigger: true,
-		format: (editor) => {
-			toggleList(editor, { listStyleType: KEYS.ul });
-		},
-	},
-	// Ordered lists (matches 1. 2. 3. etc)
-	{
-		match: [String.raw`^\d+\.$ `, String.raw`^\d+\)$ `],
-		matchByRegex: true,
-		mode: "block",
-		type: "list",
-		format: (editor) => {
-			toggleList(editor, { listStyleType: KEYS.ol });
-		},
-	},
-];
-
 // Global state for Cmd key - shared across all editors
 let cmdKeyPressed = false;
 const cmdKeyListeners = new Set<() => void>();
@@ -495,10 +436,24 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 
 	const plugins = React.useMemo(() => {
 		const base: any[] = [
-			H1Plugin.withComponent(H1Element),
-			H2Plugin.withComponent(H2Element),
-			H3Plugin.withComponent(H3Element),
+			H1Plugin.configure({
+				inputRules: [HeadingRules.markdown()],
+			}).withComponent(H1Element),
+			H2Plugin.configure({
+				inputRules: [HeadingRules.markdown()],
+			}).withComponent(H2Element),
+			H3Plugin.configure({
+				inputRules: [HeadingRules.markdown()],
+			}).withComponent(H3Element),
 			ListPlugin.configure({
+				inputRules: [
+					BulletedListRules.markdown({ variant: "-" }),
+					BulletedListRules.markdown({ variant: "*" }),
+					OrderedListRules.markdown({ variant: "." }),
+					OrderedListRules.markdown({ variant: ")" }),
+					TaskListRules.markdown({ checked: false }),
+					TaskListRules.markdown({ checked: true }),
+				],
 				inject: {
 					targetPlugins: [...KEYS.heading, KEYS.p],
 				},
@@ -512,12 +467,6 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 				},
 				options: {
 					offset: 16,
-				},
-			}),
-			AutoformatPlugin.configure({
-				options: {
-					enableUndoOnDelete: true,
-					rules: autoformatRules,
 				},
 			}),
 			ListShortcutsPlugin,

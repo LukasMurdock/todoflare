@@ -1,4 +1,4 @@
-import { OpenAPIHono } from "@hono/zod-openapi";
+import { OpenAPIHono, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import type { Account, ColumnMeta } from "./types/account";
 import {
@@ -6,7 +6,6 @@ import {
 	normalizeAccountId,
 	displayAccountId,
 	validateAccountId,
-	generatePublicId,
 } from "./lib/account";
 import {
 	checkRateLimit,
@@ -17,6 +16,22 @@ import {
 } from "./lib/rate-limit";
 import { ColumnRoomSql } from "./durable-objects/column-room";
 import { registerAgentApi } from "./agent-api";
+import type { ApiErrorCode } from "./lib/api/errors";
+import {
+	ACCOUNT_SCHEMA_VERSION,
+	COLUMN_META_SCHEMA_VERSION,
+	parseAccountRecord,
+	parseColumnMetaRecord,
+	parseDeletedColumnRecords,
+	TRASH_RETENTION_MS,
+	type DeletedColumnRecord,
+	type SchemaParseResult,
+} from "./server/persistence-records";
+import type { ColumnLifecycleFailure } from "./server/workflows/column-lifecycle";
+import { deleteColumn } from "./server/workflows/delete-column";
+import { restoreColumn } from "./server/workflows/restore-column";
+import { shareColumn } from "./server/workflows/share-column";
+import { enablePublicColumn } from "./server/workflows/enable-public-column";
 
 // Re-export Durable Objects for Cloudflare
 export { ColumnRoomSql };
@@ -35,9 +50,6 @@ export type Bindings = {
 
 const app = new OpenAPIHono<{ Bindings: Bindings }>();
 
-const ACCOUNT_SCHEMA_VERSION = 1;
-const COLUMN_META_SCHEMA_VERSION = 1;
-const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const COLUMN_ID_PATTERN =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const IDEMPOTENCY_HEADER = "X-Idempotency-Key";
@@ -78,20 +90,13 @@ app.doc("/openapi.json", {
 	},
 });
 
-type SchemaParseErrorCode =
-	| "invalid_json"
-	| "unsupported_schema_version"
-	| "invalid_shape";
-
-type SchemaParseResult<T> =
-	| { ok: true; value: T }
-	| {
-			ok: false;
-			code: SchemaParseErrorCode;
-			message: string;
-			foundVersion?: number;
-			expectedVersion: number;
-	  };
+function apiErrorResponse(
+	code: ApiErrorCode,
+	message: string,
+	status: number,
+): Response {
+	return Response.json({ error: message, code }, { status });
+}
 
 function schemaErrorResponse(
 	kind: "account" | "column_meta",
@@ -126,116 +131,6 @@ function durableObjectUnavailableResponse() {
 	);
 }
 
-function parseAccountRecord(raw: string): SchemaParseResult<Account> {
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(raw);
-	} catch {
-		return {
-			ok: false,
-			code: "invalid_json",
-			message: "Account record is invalid JSON",
-			expectedVersion: ACCOUNT_SCHEMA_VERSION,
-		};
-	}
-
-	if (!parsed || typeof parsed !== "object") {
-		return {
-			ok: false,
-			code: "invalid_shape",
-			message: "Account record has invalid shape",
-			expectedVersion: ACCOUNT_SCHEMA_VERSION,
-		};
-	}
-
-	const obj = parsed as Partial<Account> & { schemaVersion?: number };
-	const foundVersion = obj.schemaVersion ?? ACCOUNT_SCHEMA_VERSION;
-	if (foundVersion !== ACCOUNT_SCHEMA_VERSION) {
-		return {
-			ok: false,
-			code: "unsupported_schema_version",
-			message: "Account schema version is not supported",
-			foundVersion,
-			expectedVersion: ACCOUNT_SCHEMA_VERSION,
-		};
-	}
-
-	if (
-		typeof obj.id !== "string" ||
-		!Array.isArray(obj.columnOrder) ||
-		!Array.isArray(obj.hiddenSharedColumns) ||
-		typeof obj.createdAt !== "number"
-	) {
-		return {
-			ok: false,
-			code: "invalid_shape",
-			message: "Account record missing required fields",
-			expectedVersion: ACCOUNT_SCHEMA_VERSION,
-		};
-	}
-
-	return {
-		ok: true,
-		value: {
-			schemaVersion: ACCOUNT_SCHEMA_VERSION,
-			id: obj.id,
-			columnOrder: obj.columnOrder,
-			hiddenSharedColumns: obj.hiddenSharedColumns,
-			createdAt: obj.createdAt,
-		},
-	};
-}
-
-function parseColumnMetaRecord(raw: unknown): SchemaParseResult<ColumnMeta> {
-	if (!raw || typeof raw !== "object") {
-		return {
-			ok: false,
-			code: "invalid_shape",
-			message: "Column metadata has invalid shape",
-			expectedVersion: COLUMN_META_SCHEMA_VERSION,
-		};
-	}
-
-	const obj = raw as Partial<ColumnMeta> & { schemaVersion?: number };
-	const foundVersion = obj.schemaVersion ?? COLUMN_META_SCHEMA_VERSION;
-	if (foundVersion !== COLUMN_META_SCHEMA_VERSION) {
-		return {
-			ok: false,
-			code: "unsupported_schema_version",
-			message: "Column metadata schema version is not supported",
-			foundVersion,
-			expectedVersion: COLUMN_META_SCHEMA_VERSION,
-		};
-	}
-
-	if (
-		typeof obj.id !== "string" ||
-		typeof obj.ownerId !== "string" ||
-		!Array.isArray(obj.sharedWith) ||
-		!(typeof obj.publicId === "string" || obj.publicId === null) ||
-		typeof obj.createdAt !== "number"
-	) {
-		return {
-			ok: false,
-			code: "invalid_shape",
-			message: "Column metadata missing required fields",
-			expectedVersion: COLUMN_META_SCHEMA_VERSION,
-		};
-	}
-
-	return {
-		ok: true,
-		value: {
-			schemaVersion: COLUMN_META_SCHEMA_VERSION,
-			id: obj.id,
-			ownerId: obj.ownerId,
-			sharedWith: obj.sharedWith,
-			publicId: obj.publicId,
-			createdAt: obj.createdAt,
-		},
-	};
-}
-
 function shouldSkipRateLimit(c: Context<{ Bindings: Bindings }>): boolean {
 	if (c.env.RATE_LIMIT_DISABLED === "true" || c.env.RATE_LIMIT_DISABLED === "1") {
 		return true;
@@ -249,18 +144,15 @@ function isReadOnlyMode(c: Context<{ Bindings: Bindings }>): boolean {
 	return c.env.READ_ONLY_MODE === "true" || c.env.READ_ONLY_MODE === "1";
 }
 
-function validateColumnId(columnId: string): boolean {
-	return COLUMN_ID_PATTERN.test(columnId);
-}
-
 function parseIdempotencyKey(value: string | null | undefined): string | null {
 	if (!value) return null;
-
-	const key = value.trim();
-	if (!key) return null;
-	if (key.length > IDEMPOTENCY_KEY_MAX_LENGTH) return null;
-
-	return key;
+	const parsed = z
+		.string()
+		.trim()
+		.min(1)
+		.max(IDEMPOTENCY_KEY_MAX_LENGTH)
+		.safeParse(value);
+	return parsed.success ? parsed.data : null;
 }
 
 function idempotencyCacheKey(
@@ -334,6 +226,7 @@ function idempotencyKeyConflictResponse() {
 	return Response.json(
 		{
 			error: "idempotency_key_conflict",
+			code: "idempotency_conflict",
 			message: "This idempotency key was already used for a different request.",
 		},
 		{ status: 409 },
@@ -344,6 +237,7 @@ function idempotencyRequestInProgressResponse() {
 	return Response.json(
 		{
 			error: "idempotency_request_in_progress",
+			code: "idempotency_in_progress",
 			message:
 				"A request with this idempotency key is still in progress. Retry shortly.",
 		},
@@ -538,6 +432,7 @@ function blockWritesIfReadOnly(c: Context<{ Bindings: Bindings }>): Response | n
 	return c.json(
 		{
 			error: "read_only_mode",
+			code: "read_only_mode",
 			message:
 				"Writes are temporarily disabled while we protect data. Please try again later.",
 		},
@@ -554,9 +449,12 @@ function requireBackupAdmin(c: Context<{ Bindings: Bindings }>): Response | null
 		return c.json({ error: "backup_auth_not_configured" }, 503);
 	}
 
-	const authHeader = c.req.header("Authorization") ?? "";
-	const token = authHeader.startsWith("Bearer ")
-		? authHeader.slice("Bearer ".length)
+	const parsedAuthHeader = z
+		.string()
+		.regex(/^Bearer .+$/)
+		.safeParse(c.req.header("Authorization"));
+	const token = parsedAuthHeader.success
+		? parsedAuthHeader.data.slice("Bearer ".length)
 		: null;
 
 	if (!token || token !== c.env.BACKUP_ADMIN_TOKEN) {
@@ -612,30 +510,166 @@ type AccountExportPayload = {
 	}>;
 };
 
-type DeletedColumnRecord = {
-	columnId: string;
-	deletedAt: number;
-};
+const accountIdValueSchema = z
+	.string()
+	.refine(validateAccountId, "Invalid account ID");
+const columnIdValueSchema = z
+	.string()
+	.regex(COLUMN_ID_PATTERN, "Invalid column ID");
+const publicIdValueSchema = z
+	.string()
+	.regex(/^[0-9A-Za-z]{8}$/, "Invalid public ID");
+const yjsBytesSchema = z.array(z.number().int().min(0).max(255)).nullable();
+const columnMetaInputSchema = z
+	.object({
+		schemaVersion: z.literal(COLUMN_META_SCHEMA_VERSION),
+		id: columnIdValueSchema,
+		ownerId: accountIdValueSchema,
+		sharedWith: z.array(accountIdValueSchema).max(100),
+		publicId: publicIdValueSchema.nullable(),
+		createdAt: z.number().finite().nonnegative(),
+	})
+	.strict();
+const accountInputSchema = z
+	.object({
+		schemaVersion: z.literal(ACCOUNT_SCHEMA_VERSION),
+		id: accountIdValueSchema,
+		columnOrder: z.array(columnIdValueSchema).max(100),
+		hiddenSharedColumns: z.array(columnIdValueSchema).max(100),
+		createdAt: z.number().finite().nonnegative(),
+	})
+	.strict();
 
-function parseDeletedColumnRecords(raw: string | null): DeletedColumnRecord[] {
-	if (!raw) return [];
+const accountPathSchema = z.object({ id: accountIdValueSchema }).strict();
+const columnPathSchema = z.object({ id: columnIdValueSchema }).strict();
+const publicPathSchema = z.object({ publicId: publicIdValueSchema }).strict();
+const columnSharePathSchema = z
+	.object({ id: columnIdValueSchema, targetId: accountIdValueSchema })
+	.strict();
+const accountHeaderSchema = z.object({ accountId: accountIdValueSchema }).strict();
+const optionalAccountHeaderSchema = z
+	.object({ accountId: accountIdValueSchema.optional() })
+	.strict();
+const columnSocketQuerySchema = z
+	.object({ accountId: accountIdValueSchema })
+	.strict();
+const backupListQuerySchema = z
+	.object({ limit: z.coerce.number().int().min(1).max(100).default(20) })
+	.strict();
 
-	try {
-		const parsed = JSON.parse(raw) as unknown;
-		if (!Array.isArray(parsed)) return [];
-
-		return parsed
-			.filter(
-				(item): item is DeletedColumnRecord =>
-					!!item &&
-					typeof item === "object" &&
-					typeof (item as { columnId?: unknown }).columnId === "string" &&
-					typeof (item as { deletedAt?: unknown }).deletedAt === "number",
+const columnOrderBodySchema = z
+	.object({ columnOrder: z.array(columnIdValueSchema).max(100) })
+	.strict();
+const hiddenColumnsBodySchema = z
+	.object({ hiddenSharedColumns: z.array(columnIdValueSchema).max(100) })
+	.strict();
+const createColumnBodySchema = z
+	.object({
+		accountId: accountIdValueSchema,
+		columnId: columnIdValueSchema.optional(),
+	})
+	.strict();
+const shareColumnBodySchema = z
+	.object({ targetAccountId: accountIdValueSchema })
+	.strict();
+const accountImportBodySchema = z
+	.object({
+		schemaVersion: z.literal(1),
+		exportedAt: z.number().finite().nonnegative(),
+		account: accountInputSchema,
+		ownedColumns: z
+			.array(
+				z
+					.object({ meta: columnMetaInputSchema, yjs: yjsBytesSchema })
+					.strict(),
 			)
-			.map((item) => ({ columnId: item.columnId, deletedAt: item.deletedAt }));
-	} catch {
-		return [];
+			.max(100),
+	})
+	.strict();
+const backupRestoreBodySchema = z
+	.object({
+		key: z.string().min(1).max(1024).optional(),
+		mode: z.enum(["clone", "in_place"]).optional(),
+	})
+	.strict();
+
+type RequestValidationResult<T> =
+	| { ok: true; data: T }
+	| { ok: false; response: Response };
+
+function invalidRequestResponse(
+	c: Context<{ Bindings: Bindings }>,
+	error: z.ZodError,
+): Response {
+	return c.json(
+		{
+			error: "invalid_request",
+			code: "invalid_request",
+			issues: error.issues.map((issue) => ({
+				path: issue.path.join("."),
+				message: issue.message,
+			})),
+		},
+		400,
+	);
+}
+
+function validateRequestInput<TSchema extends z.ZodType>(
+	c: Context<{ Bindings: Bindings }>,
+	schema: TSchema,
+	input: unknown,
+): RequestValidationResult<z.output<TSchema>> {
+	const parsed = schema.safeParse(input);
+	if (!parsed.success) {
+		return { ok: false, response: invalidRequestResponse(c, parsed.error) };
 	}
+	return { ok: true, data: parsed.data };
+}
+
+function columnOwnerError(
+	meta: ColumnMeta,
+	accountId: string,
+	message: string,
+): Response {
+	const normalizedAccountId = normalizeAccountId(accountId);
+	const stillHasAccess = meta.sharedWith.some(
+		(sharedAccountId) =>
+			normalizeAccountId(sharedAccountId) === normalizedAccountId,
+	);
+	return apiErrorResponse(
+		stillHasAccess ? "not_owner" : "access_revoked",
+		message,
+		403,
+	);
+}
+
+function columnLifecycleFailureResponse(
+	failure: ColumnLifecycleFailure,
+	accountId: string,
+): Response {
+	switch (failure.kind) {
+		case "api":
+			return apiErrorResponse(failure.code, failure.message, failure.status);
+		case "schema":
+			return schemaErrorResponse(failure.record, failure.result);
+		case "owner":
+			return columnOwnerError(failure.meta, accountId, failure.message);
+	}
+}
+
+async function validateJsonBody<TSchema extends z.ZodType>(
+	c: Context<{ Bindings: Bindings }>,
+	schema: TSchema,
+	options?: { optional?: boolean },
+): Promise<RequestValidationResult<z.output<TSchema>>> {
+	let input: unknown;
+	try {
+		const raw = await c.req.raw.clone().text();
+		input = options?.optional && raw.trim() === "" ? {} : JSON.parse(raw);
+	} catch {
+		return validateRequestInput(c, schema, undefined);
+	}
+	return validateRequestInput(c, schema, input);
 }
 
 async function restoreColumnFromBackupPayload(
@@ -891,7 +925,7 @@ app.post("/api/account", async (c) => {
 
 		if (!rateLimit.allowed) {
 			return c.json(
-				{ error: "rate_limited", retryAfter: rateLimit.retryAfter },
+				{ error: "rate_limited", code: "rate_limited", retryAfter: rateLimit.retryAfter },
 				429,
 			);
 		}
@@ -918,11 +952,11 @@ app.post("/api/account", async (c) => {
  * Rate limited: 20 per IP per minute
  */
 app.get("/api/account/:id", async (c) => {
-	const accountId = c.req.param("id");
-
-	if (!validateAccountId(accountId)) {
-		return c.json({ error: "Invalid account ID" }, 400);
-	}
+	const request = validateRequestInput(c, accountPathSchema, {
+		id: c.req.param("id"),
+	});
+	if (!request.ok) return request.response;
+	const accountId = request.data.id;
 
 	if (!shouldSkipRateLimit(c)) {
 		const ip = getClientIP(c.req.raw);
@@ -934,7 +968,7 @@ app.get("/api/account/:id", async (c) => {
 
 		if (!rateLimit.allowed) {
 			return c.json(
-				{ error: "rate_limited", retryAfter: rateLimit.retryAfter },
+				{ error: "rate_limited", code: "rate_limited", retryAfter: rateLimit.retryAfter },
 				429,
 			);
 		}
@@ -944,7 +978,7 @@ app.get("/api/account/:id", async (c) => {
 	const accountData = await c.env.ACCOUNTS.get(`account:${normalizedId}`);
 
 	if (!accountData) {
-		return c.json({ error: "Account not found" }, 404);
+		return apiErrorResponse("not_found", "Account not found", 404);
 	}
 
 	const parsedAccount = parseAccountRecord(accountData);
@@ -963,6 +997,7 @@ app.get("/api/account/:id", async (c) => {
 
 	// Fetch metadata for shared columns
 	const sharedColumns: ColumnMeta[] = [];
+	const reconciledSharedColumnIds: string[] = [];
 	for (const columnId of sharedColumnIds) {
 		const stub = c.env.COLUMN_ROOM.get(
 			c.env.COLUMN_ROOM.idFromName(columnId),
@@ -972,18 +1007,38 @@ app.get("/api/account/:id", async (c) => {
 			if (response.ok) {
 				const parsedMeta = parseColumnMetaRecord(await response.json());
 				if (parsedMeta.ok) {
-					sharedColumns.push(parsedMeta.value);
+					const stillShared = parsedMeta.value.sharedWith.some(
+						(id) => normalizeAccountId(id) === normalizedId,
+					);
+					if (stillShared) {
+						sharedColumns.push(parsedMeta.value);
+						reconciledSharedColumnIds.push(columnId);
+					}
+				} else {
+					reconciledSharedColumnIds.push(columnId);
 				}
+			} else if (response.status !== 404) {
+				reconciledSharedColumnIds.push(columnId);
 			}
 		} catch (err) {
 			if (isDurableObjectDurationError(err)) {
 				console.warn("Skipping shared column metadata due to DO duration limit", {
 					columnId,
 				});
+				reconciledSharedColumnIds.push(columnId);
 				continue;
 			}
 			throw err;
 		}
+	}
+	if (
+		!isReadOnlyMode(c) &&
+		JSON.stringify(reconciledSharedColumnIds) !== JSON.stringify(sharedColumnIds)
+	) {
+		await c.env.ACCOUNTS.put(
+			`shared:${normalizedId}`,
+			JSON.stringify(reconciledSharedColumnIds),
+		);
 	}
 
 	const now = Date.now();
@@ -1008,11 +1063,13 @@ app.put("/api/account/:id/columns", async (c) => {
 	const readOnlyResponse = blockWritesIfReadOnly(c);
 	if (readOnlyResponse) return readOnlyResponse;
 
-	const accountId = c.req.param("id");
-
-	if (!validateAccountId(accountId)) {
-		return c.json({ error: "Invalid account ID" }, 400);
-	}
+	const request = validateRequestInput(c, accountPathSchema, {
+		id: c.req.param("id"),
+	});
+	if (!request.ok) return request.response;
+	const body = await validateJsonBody(c, columnOrderBodySchema);
+	if (!body.ok) return body.response;
+	const accountId = request.data.id;
 
 	return withIdempotentWrite(
 		c,
@@ -1022,7 +1079,7 @@ app.put("/api/account/:id/columns", async (c) => {
 			const accountData = await c.env.ACCOUNTS.get(`account:${normalizedId}`);
 
 			if (!accountData) {
-				return c.json({ error: "Account not found" }, 404);
+				return apiErrorResponse("not_found", "Account not found", 404);
 			}
 
 			const parsedAccount = parseAccountRecord(accountData);
@@ -1030,9 +1087,7 @@ app.put("/api/account/:id/columns", async (c) => {
 				return schemaErrorResponse("account", parsedAccount);
 			}
 			const account = parsedAccount.value;
-			const { columnOrder } = await c.req.json<{ columnOrder: string[] }>();
-
-			account.columnOrder = columnOrder;
+			account.columnOrder = body.data.columnOrder;
 			await c.env.ACCOUNTS.put(`account:${normalizedId}`, JSON.stringify(account));
 
 			return c.json({ success: true });
@@ -1047,11 +1102,13 @@ app.put("/api/account/:id/hidden", async (c) => {
 	const readOnlyResponse = blockWritesIfReadOnly(c);
 	if (readOnlyResponse) return readOnlyResponse;
 
-	const accountId = c.req.param("id");
-
-	if (!validateAccountId(accountId)) {
-		return c.json({ error: "Invalid account ID" }, 400);
-	}
+	const request = validateRequestInput(c, accountPathSchema, {
+		id: c.req.param("id"),
+	});
+	if (!request.ok) return request.response;
+	const body = await validateJsonBody(c, hiddenColumnsBodySchema);
+	if (!body.ok) return body.response;
+	const accountId = request.data.id;
 
 	return withIdempotentWrite(
 		c,
@@ -1061,7 +1118,7 @@ app.put("/api/account/:id/hidden", async (c) => {
 			const accountData = await c.env.ACCOUNTS.get(`account:${normalizedId}`);
 
 			if (!accountData) {
-				return c.json({ error: "Account not found" }, 404);
+				return apiErrorResponse("not_found", "Account not found", 404);
 			}
 
 			const parsedAccount = parseAccountRecord(accountData);
@@ -1069,11 +1126,7 @@ app.put("/api/account/:id/hidden", async (c) => {
 				return schemaErrorResponse("account", parsedAccount);
 			}
 			const account = parsedAccount.value;
-			const { hiddenSharedColumns } = await c.req.json<{
-				hiddenSharedColumns: string[];
-			}>();
-
-			account.hiddenSharedColumns = hiddenSharedColumns;
+			account.hiddenSharedColumns = body.data.hiddenSharedColumns;
 			await c.env.ACCOUNTS.put(`account:${normalizedId}`, JSON.stringify(account));
 
 			return c.json({ success: true });
@@ -1085,23 +1138,27 @@ app.put("/api/account/:id/hidden", async (c) => {
  * Export account-owned columns as JSON (self-serve)
  */
 app.get("/api/account/:id/export", async (c) => {
-	const accountIdParam = c.req.param("id");
-	const requesterAccountId = c.req.header("X-Account-ID");
-
-	if (!requesterAccountId || !validateAccountId(requesterAccountId)) {
-		return c.json({ error: "Invalid account ID" }, 400);
-	}
+	const path = validateRequestInput(c, accountPathSchema, {
+		id: c.req.param("id"),
+	});
+	if (!path.ok) return path.response;
+	const headers = validateRequestInput(c, accountHeaderSchema, {
+		accountId: c.req.header("X-Account-ID"),
+	});
+	if (!headers.ok) return headers.response;
+	const accountIdParam = path.data.id;
+	const requesterAccountId = headers.data.accountId;
 
 	if (
 		normalizeAccountId(requesterAccountId) !== normalizeAccountId(accountIdParam)
 	) {
-		return c.json({ error: "Access denied" }, 403);
+		return apiErrorResponse("access_revoked", "Access denied", 403);
 	}
 
 	const normalizedId = normalizeAccountId(accountIdParam);
 	const accountData = await c.env.ACCOUNTS.get(`account:${normalizedId}`);
 	if (!accountData) {
-		return c.json({ error: "Account not found" }, 404);
+		return apiErrorResponse("not_found", "Account not found", 404);
 	}
 
 	const parsedAccount = parseAccountRecord(accountData);
@@ -1151,34 +1208,33 @@ app.post("/api/account/:id/import", async (c) => {
 	const readOnlyResponse = blockWritesIfReadOnly(c);
 	if (readOnlyResponse) return readOnlyResponse;
 
-	const accountIdParam = c.req.param("id");
-	const requesterAccountId = c.req.header("X-Account-ID");
-
-	if (!requesterAccountId || !validateAccountId(requesterAccountId)) {
-		return c.json({ error: "Invalid account ID" }, 400);
-	}
+	const path = validateRequestInput(c, accountPathSchema, {
+		id: c.req.param("id"),
+	});
+	if (!path.ok) return path.response;
+	const headers = validateRequestInput(c, accountHeaderSchema, {
+		accountId: c.req.header("X-Account-ID"),
+	});
+	if (!headers.ok) return headers.response;
+	const body = await validateJsonBody(c, accountImportBodySchema);
+	if (!body.ok) return body.response;
+	const accountIdParam = path.data.id;
+	const requesterAccountId = headers.data.accountId;
 
 	if (
 		normalizeAccountId(requesterAccountId) !== normalizeAccountId(accountIdParam)
 	) {
-		return c.json({ error: "Access denied" }, 403);
+		return apiErrorResponse("access_revoked", "Access denied", 403);
 	}
 
 	return withIdempotentWrite(
 		c,
 		{ scope: `account:${normalizeAccountId(accountIdParam)}:import`, accountId: requesterAccountId },
 		async () => {
-			const body = await c.req
-				.json<AccountExportPayload>()
-				.catch(() => null as AccountExportPayload | null);
-			if (!body || body.schemaVersion !== 1 || !Array.isArray(body.ownedColumns)) {
-				return c.json({ error: "Invalid import payload" }, 400);
-			}
-
 			const normalizedId = normalizeAccountId(accountIdParam);
 			const accountData = await c.env.ACCOUNTS.get(`account:${normalizedId}`);
 			if (!accountData) {
-				return c.json({ error: "Account not found" }, 404);
+				return apiErrorResponse("not_found", "Account not found", 404);
 			}
 
 			const parsedAccount = parseAccountRecord(accountData);
@@ -1189,7 +1245,7 @@ app.post("/api/account/:id/import", async (c) => {
 			const account = parsedAccount.value;
 			const importedColumnIds: string[] = [];
 
-			for (const column of body.ownedColumns) {
+			for (const column of body.data.ownedColumns) {
 				const parsedMeta = parseColumnMetaRecord(column.meta);
 				if (!parsedMeta.ok) continue;
 
@@ -1241,17 +1297,10 @@ app.post("/api/column", async (c) => {
 	const readOnlyResponse = blockWritesIfReadOnly(c);
 	if (readOnlyResponse) return readOnlyResponse;
 
-	const body = await c.req.json<{ accountId?: string; columnId?: string }>();
-	const accountId = body.accountId;
-	const requestedColumnId = body.columnId;
-
-	if (!accountId || !validateAccountId(accountId)) {
-		return c.json({ error: "Invalid account ID" }, 400);
-	}
-
-	if (requestedColumnId && !validateColumnId(requestedColumnId)) {
-		return c.json({ error: "Invalid column ID" }, 400);
-	}
+	const body = await validateJsonBody(c, createColumnBodySchema);
+	if (!body.ok) return body.response;
+	const accountId = body.data.accountId;
+	const requestedColumnId = body.data.columnId;
 
 	const normalizedAccountId = normalizeAccountId(accountId);
 
@@ -1262,7 +1311,7 @@ app.post("/api/column", async (c) => {
 				? `account:${normalizedAccountId}:column:create:${requestedColumnId}`
 				: `account:${normalizedAccountId}:column:create`,
 			accountId,
-			requestFingerprintSource: JSON.stringify(body),
+			requestFingerprintSource: JSON.stringify(body.data),
 		},
 		async () => {
 			const accountData = await c.env.ACCOUNTS.get(
@@ -1270,7 +1319,7 @@ app.post("/api/column", async (c) => {
 			);
 
 			if (!accountData) {
-				return c.json({ error: "Account not found" }, 404);
+				return apiErrorResponse("not_found", "Account not found", 404);
 			}
 
 			const parsedAccount = parseAccountRecord(accountData);
@@ -1316,7 +1365,11 @@ app.post("/api/column", async (c) => {
 
 				if (!alreadyInOrder) {
 					if (account.columnOrder.length >= 100) {
-						return c.json({ error: "Column limit reached (100)" }, 400);
+						return apiErrorResponse(
+							"invalid_request",
+							"Column limit reached (100)",
+							400,
+						);
 					}
 
 					account.columnOrder.push(columnId);
@@ -1331,7 +1384,11 @@ app.post("/api/column", async (c) => {
 
 			// Check column limit (100 per account)
 			if (!alreadyInOrder && account.columnOrder.length >= 100) {
-				return c.json({ error: "Column limit reached (100)" }, 400);
+				return apiErrorResponse(
+					"invalid_request",
+					"Column limit reached (100)",
+					400,
+				);
 			}
 
 			const meta: ColumnMeta = {
@@ -1390,12 +1447,14 @@ app.delete("/api/column/:id", async (c) => {
 	const readOnlyResponse = blockWritesIfReadOnly(c);
 	if (readOnlyResponse) return readOnlyResponse;
 
-	const columnId = c.req.param("id");
-	const accountId = c.req.header("X-Account-ID");
-
-	if (!accountId || !validateAccountId(accountId)) {
-		return c.json({ error: "Invalid account ID" }, 400);
-	}
+	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
+	if (!path.ok) return path.response;
+	const headers = validateRequestInput(c, accountHeaderSchema, {
+		accountId: c.req.header("X-Account-ID"),
+	});
+	if (!headers.ok) return headers.response;
+	const columnId = path.data.id;
+	const accountId = headers.data.accountId;
 
 	return withIdempotentWrite(
 		c,
@@ -1404,94 +1463,10 @@ app.delete("/api/column/:id", async (c) => {
 			accountId,
 		},
 		async () => {
-			const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
-			const metaResponse = await stub.fetch(new Request("http://do/meta"));
-
-			if (!metaResponse.ok) {
-				return c.json({ error: "Column not found" }, 404);
-			}
-
-			const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
-			if (!parsedMeta.ok) {
-				return schemaErrorResponse("column_meta", parsedMeta);
-			}
-			const meta = parsedMeta.value;
-
-			// Only owner can delete
-			if (normalizeAccountId(meta.ownerId) !== normalizeAccountId(accountId)) {
-				return c.json({ error: "Only owner can delete" }, 403);
-			}
-
-			// Remove from owner's column order
-			const normalizedOwnerId = normalizeAccountId(meta.ownerId);
-			const ownerData = await c.env.ACCOUNTS.get(`account:${normalizedOwnerId}`);
-			if (ownerData) {
-				const parsedOwner = parseAccountRecord(ownerData);
-				if (!parsedOwner.ok) {
-					return schemaErrorResponse("account", parsedOwner);
-				}
-				const ownerAccount = parsedOwner.value;
-				ownerAccount.columnOrder = ownerAccount.columnOrder.filter(
-					(id) => id !== columnId,
-				);
-				await c.env.ACCOUNTS.put(
-					`account:${normalizedOwnerId}`,
-					JSON.stringify(ownerAccount),
-				);
-			}
-
-			// Remove from shared accounts' lists
-			for (const sharedAccountId of meta.sharedWith) {
-				const normalizedSharedId = normalizeAccountId(sharedAccountId);
-				const sharedColumnsData = await c.env.ACCOUNTS.get(
-					`shared:${normalizedSharedId}`,
-				);
-				if (sharedColumnsData) {
-					const sharedColumns = JSON.parse(sharedColumnsData) as string[];
-					const updated = sharedColumns.filter((id) => id !== columnId);
-					await c.env.ACCOUNTS.put(
-						`shared:${normalizedSharedId}`,
-						JSON.stringify(updated),
-					);
-				}
-			}
-
-			// Remove public mapping if present
-			if (meta.publicId) {
-				await c.env.ACCOUNTS.delete(`public:${meta.publicId}`);
-			}
-
-			// Revoke all shares/public access on the column itself
-			await stub.fetch(
-				new Request("http://do/share", {
-					method: "PUT",
-					body: JSON.stringify({ sharedWith: [] }),
-				}),
-			);
-			await stub.fetch(
-				new Request("http://do/public", {
-					method: "PUT",
-					body: JSON.stringify({ publicId: null }),
-				}),
-			);
-
-			// Add to owner's garbage can (30-day retention)
-			const trashKey = `trash:${normalizedOwnerId}`;
-			const trashRaw = await c.env.ACCOUNTS.get(trashKey);
-			const trash = parseDeletedColumnRecords(trashRaw).filter(
-				(entry) => Date.now() - entry.deletedAt < TRASH_RETENTION_MS,
-			);
-			const updatedTrash = [
-				{ columnId, deletedAt: Date.now() },
-				...trash.filter((entry) => entry.columnId !== columnId),
-			];
-			await c.env.ACCOUNTS.put(trashKey, JSON.stringify(updatedTrash));
-
-			return c.json({
-				success: true,
-				trashed: true,
-				deleteAfter: Date.now() + TRASH_RETENTION_MS,
-			});
+			const result = await deleteColumn({ env: c.env, columnId, accountId });
+			return result.ok
+				? c.json(result.value)
+				: columnLifecycleFailureResponse(result.failure, accountId);
 		},
 	);
 });
@@ -1503,12 +1478,14 @@ app.post("/api/column/:id/restore", async (c) => {
 	const readOnlyResponse = blockWritesIfReadOnly(c);
 	if (readOnlyResponse) return readOnlyResponse;
 
-	const columnId = c.req.param("id");
-	const accountId = c.req.header("X-Account-ID");
-
-	if (!accountId || !validateAccountId(accountId)) {
-		return c.json({ error: "Invalid account ID" }, 400);
-	}
+	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
+	if (!path.ok) return path.response;
+	const headers = validateRequestInput(c, accountHeaderSchema, {
+		accountId: c.req.header("X-Account-ID"),
+	});
+	if (!headers.ok) return headers.response;
+	const columnId = path.data.id;
+	const accountId = headers.data.accountId;
 
 	return withIdempotentWrite(
 		c,
@@ -1517,58 +1494,10 @@ app.post("/api/column/:id/restore", async (c) => {
 			accountId,
 		},
 		async () => {
-			const normalizedAccountId = normalizeAccountId(accountId);
-			const accountData = await c.env.ACCOUNTS.get(`account:${normalizedAccountId}`);
-			if (!accountData) {
-				return c.json({ error: "Account not found" }, 404);
-			}
-
-			const parsedAccount = parseAccountRecord(accountData);
-			if (!parsedAccount.ok) {
-				return schemaErrorResponse("account", parsedAccount);
-			}
-			const account = parsedAccount.value;
-
-			const trashKey = `trash:${normalizedAccountId}`;
-			const trashRaw = await c.env.ACCOUNTS.get(trashKey);
-			const trash = parseDeletedColumnRecords(trashRaw);
-			const entry = trash.find((item) => item.columnId === columnId);
-			if (!entry) {
-				return c.json({ error: "Column not in garbage can" }, 404);
-			}
-
-			if (Date.now() - entry.deletedAt >= TRASH_RETENTION_MS) {
-				return c.json({ error: "Column expired" }, 410);
-			}
-
-			const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
-			const metaResponse = await stub.fetch(new Request("http://do/meta"));
-			if (!metaResponse.ok) {
-				return c.json({ error: "Column not found" }, 404);
-			}
-
-			const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
-			if (!parsedMeta.ok) {
-				return schemaErrorResponse("column_meta", parsedMeta);
-			}
-			const meta = parsedMeta.value;
-
-			if (normalizeAccountId(meta.ownerId) !== normalizedAccountId) {
-				return c.json({ error: "Only owner can restore" }, 403);
-			}
-
-			if (!account.columnOrder.includes(columnId)) {
-				account.columnOrder.push(columnId);
-				await c.env.ACCOUNTS.put(
-					`account:${normalizedAccountId}`,
-					JSON.stringify(account),
-				);
-			}
-
-			const updatedTrash = trash.filter((item) => item.columnId !== columnId);
-			await c.env.ACCOUNTS.put(trashKey, JSON.stringify(updatedTrash));
-
-			return c.json({ success: true, column: meta });
+			const result = await restoreColumn({ env: c.env, columnId, accountId });
+			return result.ok
+				? c.json(result.value)
+				: columnLifecycleFailureResponse(result.failure, accountId);
 		},
 	);
 });
@@ -1577,14 +1506,20 @@ app.post("/api/column/:id/restore", async (c) => {
  * Get column metadata
  */
 app.get("/api/column/:id", async (c) => {
-	const columnId = c.req.param("id");
-	const accountId = c.req.header("X-Account-ID");
+	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
+	if (!path.ok) return path.response;
+	const headers = validateRequestInput(c, optionalAccountHeaderSchema, {
+		accountId: c.req.header("X-Account-ID"),
+	});
+	if (!headers.ok) return headers.response;
+	const columnId = path.data.id;
+	const accountId = headers.data.accountId;
 
 		const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
 	const metaResponse = await stub.fetch(new Request("http://do/meta"));
 
 	if (!metaResponse.ok) {
-		return c.json({ error: "Column not found" }, 404);
+		return apiErrorResponse("not_found", "Column not found", 404);
 	}
 
 	const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
@@ -1594,7 +1529,7 @@ app.get("/api/column/:id", async (c) => {
 	const meta = parsedMeta.value;
 
 	// Check access
-	if (accountId && validateAccountId(accountId)) {
+	if (accountId) {
 		const normalizedAccountId = normalizeAccountId(accountId);
 		const isOwner =
 			normalizeAccountId(meta.ownerId) === normalizedAccountId;
@@ -1603,10 +1538,10 @@ app.get("/api/column/:id", async (c) => {
 		);
 
 		if (!isOwner && !isShared) {
-			return c.json({ error: "Access denied" }, 403);
+			return apiErrorResponse("access_revoked", "Access denied", 403);
 		}
 	} else {
-		return c.json({ error: "Access denied" }, 403);
+		return apiErrorResponse("access_revoked", "Access denied", 403);
 	}
 
 	return c.json({ column: meta });
@@ -1616,12 +1551,13 @@ app.get("/api/column/:id", async (c) => {
  * WebSocket connection for column sync
  */
 app.get("/api/column/:id/ws", async (c) => {
-	const columnId = c.req.param("id");
-	const accountId = c.req.query("accountId");
-
-	if (!accountId || !validateAccountId(accountId)) {
-		return c.json({ error: "Invalid account ID" }, 400);
-	}
+	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
+	if (!path.ok) return path.response;
+	const query = validateRequestInput(c, columnSocketQuerySchema, {
+		accountId: c.req.query("accountId"),
+	});
+	if (!query.ok) return query.response;
+	const columnId = path.data.id;
 
 	const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
 
@@ -1641,17 +1577,17 @@ app.post("/api/column/:id/share", async (c) => {
 	const readOnlyResponse = blockWritesIfReadOnly(c);
 	if (readOnlyResponse) return readOnlyResponse;
 
-	const columnId = c.req.param("id");
-	const accountId = c.req.header("X-Account-ID");
-	const { targetAccountId } = await c.req.json<{ targetAccountId: string }>();
-
-	if (!accountId || !validateAccountId(accountId)) {
-		return c.json({ error: "Invalid account ID" }, 400);
-	}
-
-	if (!validateAccountId(targetAccountId)) {
-		return c.json({ error: "Invalid target account ID" }, 400);
-	}
+	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
+	if (!path.ok) return path.response;
+	const headers = validateRequestInput(c, accountHeaderSchema, {
+		accountId: c.req.header("X-Account-ID"),
+	});
+	if (!headers.ok) return headers.response;
+	const body = await validateJsonBody(c, shareColumnBodySchema);
+	if (!body.ok) return body.response;
+	const columnId = path.data.id;
+	const accountId = headers.data.accountId;
+	const targetAccountId = body.data.targetAccountId;
 
 	return withIdempotentWrite(
 		c,
@@ -1661,65 +1597,15 @@ app.post("/api/column/:id/share", async (c) => {
 			requestFingerprintSource: JSON.stringify({ targetAccountId }),
 		},
 		async () => {
-			// Check target account exists
-			const normalizedTargetId = normalizeAccountId(targetAccountId);
-			const targetData = await c.env.ACCOUNTS.get(`account:${normalizedTargetId}`);
-			if (!targetData) {
-				return c.json({ error: "Target account not found" }, 404);
-			}
-			const parsedTarget = parseAccountRecord(targetData);
-			if (!parsedTarget.ok) {
-				return schemaErrorResponse("account", parsedTarget);
-			}
-
-			const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
-			const metaResponse = await stub.fetch(new Request("http://do/meta"));
-
-			if (!metaResponse.ok) {
-				return c.json({ error: "Column not found" }, 404);
-			}
-
-			const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
-			if (!parsedMeta.ok) {
-				return schemaErrorResponse("column_meta", parsedMeta);
-			}
-			const meta = parsedMeta.value;
-
-			// Only owner can share
-			if (normalizeAccountId(meta.ownerId) !== normalizeAccountId(accountId)) {
-				return c.json({ error: "Only owner can share" }, 403);
-			}
-
-			// Add to sharedWith
-			const formattedTargetId = displayAccountId(targetAccountId);
-			if (!meta.sharedWith.includes(formattedTargetId)) {
-				meta.sharedWith.push(formattedTargetId);
-
-				await stub.fetch(
-					new Request("http://do/share", {
-						method: "PUT",
-						body: JSON.stringify({ sharedWith: meta.sharedWith }),
-					}),
-				);
-
-				// Add to target's shared columns list
-				const sharedColumnsData = await c.env.ACCOUNTS.get(
-					`shared:${normalizedTargetId}`,
-				);
-				const sharedColumns: string[] = sharedColumnsData
-					? JSON.parse(sharedColumnsData)
-					: [];
-
-				if (!sharedColumns.includes(columnId)) {
-					sharedColumns.push(columnId);
-					await c.env.ACCOUNTS.put(
-						`shared:${normalizedTargetId}`,
-						JSON.stringify(sharedColumns),
-					);
-				}
-			}
-
-			return c.json({ success: true, sharedWith: meta.sharedWith });
+			const result = await shareColumn({
+				env: c.env,
+				columnId,
+				accountId,
+				targetAccountId,
+			});
+			return result.ok
+				? c.json(result.value)
+				: columnLifecycleFailureResponse(result.failure, accountId);
 		},
 	);
 });
@@ -1731,13 +1617,18 @@ app.delete("/api/column/:id/share/:targetId", async (c) => {
 	const readOnlyResponse = blockWritesIfReadOnly(c);
 	if (readOnlyResponse) return readOnlyResponse;
 
-	const columnId = c.req.param("id");
-	const targetAccountId = c.req.param("targetId");
-	const accountId = c.req.header("X-Account-ID");
-
-	if (!accountId || !validateAccountId(accountId)) {
-		return c.json({ error: "Invalid account ID" }, 400);
-	}
+	const path = validateRequestInput(c, columnSharePathSchema, {
+		id: c.req.param("id"),
+		targetId: c.req.param("targetId"),
+	});
+	if (!path.ok) return path.response;
+	const headers = validateRequestInput(c, accountHeaderSchema, {
+		accountId: c.req.header("X-Account-ID"),
+	});
+	if (!headers.ok) return headers.response;
+	const columnId = path.data.id;
+	const targetAccountId = path.data.targetId;
+	const accountId = headers.data.accountId;
 
 	return withIdempotentWrite(
 		c,
@@ -1750,7 +1641,7 @@ app.delete("/api/column/:id/share/:targetId", async (c) => {
 			const metaResponse = await stub.fetch(new Request("http://do/meta"));
 
 			if (!metaResponse.ok) {
-				return c.json({ error: "Column not found" }, 404);
+				return apiErrorResponse("not_found", "Column not found", 404);
 			}
 
 			const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
@@ -1761,7 +1652,11 @@ app.delete("/api/column/:id/share/:targetId", async (c) => {
 
 			// Only owner can revoke
 			if (normalizeAccountId(meta.ownerId) !== normalizeAccountId(accountId)) {
-				return c.json({ error: "Only owner can revoke sharing" }, 403);
+				return columnOwnerError(
+					meta,
+					accountId,
+					"Only owner can revoke sharing",
+				);
 			}
 
 			// Remove from sharedWith
@@ -1806,12 +1701,14 @@ app.post("/api/column/:id/public", async (c) => {
 	const readOnlyResponse = blockWritesIfReadOnly(c);
 	if (readOnlyResponse) return readOnlyResponse;
 
-	const columnId = c.req.param("id");
-	const accountId = c.req.header("X-Account-ID");
-
-	if (!accountId || !validateAccountId(accountId)) {
-		return c.json({ error: "Invalid account ID" }, 400);
-	}
+	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
+	if (!path.ok) return path.response;
+	const headers = validateRequestInput(c, accountHeaderSchema, {
+		accountId: c.req.header("X-Account-ID"),
+	});
+	if (!headers.ok) return headers.response;
+	const columnId = path.data.id;
+	const accountId = headers.data.accountId;
 
 	return withIdempotentWrite(
 		c,
@@ -1820,40 +1717,19 @@ app.post("/api/column/:id/public", async (c) => {
 			accountId,
 		},
 		async () => {
-			const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
-			const metaResponse = await stub.fetch(new Request("http://do/meta"));
-
-			if (!metaResponse.ok) {
-				return c.json({ error: "Column not found" }, 404);
+			const result = await enablePublicColumn({
+				env: c.env,
+				columnId,
+				accountId,
+			});
+			if (!result.ok) {
+				return columnLifecycleFailureResponse(result.failure, accountId);
 			}
-
-			const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
-			if (!parsedMeta.ok) {
-				return schemaErrorResponse("column_meta", parsedMeta);
-			}
-			const meta = parsedMeta.value;
-
-			// Only owner can enable public link
-			if (normalizeAccountId(meta.ownerId) !== normalizeAccountId(accountId)) {
-				return c.json({ error: "Only owner can enable public link" }, 403);
-			}
-
-			const publicId = generatePublicId();
-
-			await stub.fetch(
-				new Request("http://do/public", {
-					method: "PUT",
-					body: JSON.stringify({ publicId }),
-				}),
-			);
-
-			// Store reverse lookup
-			await c.env.ACCOUNTS.put(`public:${publicId}`, columnId);
 
 			const url = new URL(c.req.url);
-			const publicUrl = `${url.origin}/p/${publicId}`;
+			const publicUrl = `${url.origin}/p/${result.value.publicId}`;
 
-			return c.json({ publicId, url: publicUrl });
+			return c.json({ publicId: result.value.publicId, url: publicUrl });
 		},
 	);
 });
@@ -1865,12 +1741,14 @@ app.delete("/api/column/:id/public", async (c) => {
 	const readOnlyResponse = blockWritesIfReadOnly(c);
 	if (readOnlyResponse) return readOnlyResponse;
 
-	const columnId = c.req.param("id");
-	const accountId = c.req.header("X-Account-ID");
-
-	if (!accountId || !validateAccountId(accountId)) {
-		return c.json({ error: "Invalid account ID" }, 400);
-	}
+	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
+	if (!path.ok) return path.response;
+	const headers = validateRequestInput(c, accountHeaderSchema, {
+		accountId: c.req.header("X-Account-ID"),
+	});
+	if (!headers.ok) return headers.response;
+	const columnId = path.data.id;
+	const accountId = headers.data.accountId;
 
 	return withIdempotentWrite(
 		c,
@@ -1883,7 +1761,7 @@ app.delete("/api/column/:id/public", async (c) => {
 			const metaResponse = await stub.fetch(new Request("http://do/meta"));
 
 			if (!metaResponse.ok) {
-				return c.json({ error: "Column not found" }, 404);
+				return apiErrorResponse("not_found", "Column not found", 404);
 			}
 
 			const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
@@ -1894,7 +1772,11 @@ app.delete("/api/column/:id/public", async (c) => {
 
 			// Only owner can disable public link
 			if (normalizeAccountId(meta.ownerId) !== normalizeAccountId(accountId)) {
-				return c.json({ error: "Only owner can disable public link" }, 403);
+				return columnOwnerError(
+					meta,
+					accountId,
+					"Only owner can disable public link",
+				);
 			}
 
 			// Delete reverse lookup
@@ -1918,7 +1800,11 @@ app.delete("/api/column/:id/public", async (c) => {
  * Get public column metadata
  */
 app.get("/api/p/:publicId", async (c) => {
-	const publicId = c.req.param("publicId");
+	const request = validateRequestInput(c, publicPathSchema, {
+		publicId: c.req.param("publicId"),
+	});
+	if (!request.ok) return request.response;
+	const publicId = request.data.publicId;
 
 	if (!shouldSkipRateLimit(c)) {
 		const rateLimit = await checkRateLimit(
@@ -1929,7 +1815,7 @@ app.get("/api/p/:publicId", async (c) => {
 
 		if (!rateLimit.allowed) {
 			return c.json(
-				{ error: "rate_limited", retryAfter: rateLimit.retryAfter },
+				{ error: "rate_limited", code: "rate_limited", retryAfter: rateLimit.retryAfter },
 				429,
 			);
 		}
@@ -1944,7 +1830,7 @@ app.get("/api/p/:publicId", async (c) => {
 	const metaResponse = await stub.fetch(new Request("http://do/meta"));
 
 	if (!metaResponse.ok) {
-		return c.json({ error: "Column not found" }, 404);
+		return apiErrorResponse("not_found", "Column not found", 404);
 	}
 
 	const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
@@ -1965,7 +1851,11 @@ app.get("/api/p/:publicId", async (c) => {
  * WebSocket connection for public column view
  */
 app.get("/api/p/:publicId/ws", async (c) => {
-	const publicId = c.req.param("publicId");
+	const request = validateRequestInput(c, publicPathSchema, {
+		publicId: c.req.param("publicId"),
+	});
+	if (!request.ok) return request.response;
+	const publicId = request.data.publicId;
 
 	const columnId = await c.env.ACCOUNTS.get(`public:${publicId}`);
 	if (!columnId) {
@@ -1982,18 +1872,18 @@ app.get("/api/p/:publicId/ws", async (c) => {
  * Restore all owned columns for an account from latest backups
  */
 app.post("/api/admin/backups/account/:id/restore", async (c) => {
+	const request = validateRequestInput(c, accountPathSchema, {
+		id: c.req.param("id"),
+	});
+	if (!request.ok) return request.response;
 	const authError = requireBackupAdmin(c);
 	if (authError) return authError;
-
-	const accountId = c.req.param("id");
-	if (!validateAccountId(accountId)) {
-		return c.json({ error: "Invalid account ID" }, 400);
-	}
+	const accountId = request.data.id;
 
 	const normalizedId = normalizeAccountId(accountId);
 	const accountData = await c.env.ACCOUNTS.get(`account:${normalizedId}`);
 	if (!accountData) {
-		return c.json({ error: "Account not found" }, 404);
+		return apiErrorResponse("not_found", "Account not found", 404);
 	}
 
 	const parsedAccount = parseAccountRecord(accountData);
@@ -2063,11 +1953,16 @@ app.post("/api/admin/backups/account/:id/restore", async (c) => {
  * List available backups for a column
  */
 app.get("/api/admin/backups/column/:id", async (c) => {
+	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
+	if (!path.ok) return path.response;
+	const query = validateRequestInput(c, backupListQuerySchema, {
+		limit: c.req.query("limit"),
+	});
+	if (!query.ok) return query.response;
 	const authError = requireBackupAdmin(c);
 	if (authError) return authError;
-
-	const columnId = c.req.param("id");
-	const limit = Math.min(Number(c.req.query("limit") ?? "20") || 20, 100);
+	const columnId = path.data.id;
+	const limit = query.data.limit;
 	const prefix = `columns/${columnId}/`;
 
 	const listed = await c.env.BACKUPS!.list({
@@ -2094,10 +1989,13 @@ app.get("/api/admin/backups/column/:id", async (c) => {
  * Create a backup snapshot for a column
  */
 app.post("/api/admin/backups/column/:id", async (c) => {
+	const request = validateRequestInput(c, columnPathSchema, {
+		id: c.req.param("id"),
+	});
+	if (!request.ok) return request.response;
 	const authError = requireBackupAdmin(c);
 	if (authError) return authError;
-
-	const columnId = c.req.param("id");
+	const columnId = request.data.id;
 	try {
 		const { key, snapshotAt, checksum } = await createColumnBackupSnapshot(
 			c.env,
@@ -2107,7 +2005,7 @@ app.post("/api/admin/backups/column/:id", async (c) => {
 		return c.json({ success: true, key, snapshotAt, checksum });
 	} catch (error) {
 		if (error instanceof Error && error.message === "column_not_found") {
-			return c.json({ error: "Column not found" }, 404);
+			return apiErrorResponse("not_found", "Column not found", 404);
 		}
 
 		return c.json({ error: "backup_failed" }, 500);
@@ -2118,17 +2016,18 @@ app.post("/api/admin/backups/column/:id", async (c) => {
  * Restore a column from backup snapshot
  */
 app.post("/api/admin/backups/column/:id/restore", async (c) => {
+	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
+	if (!path.ok) return path.response;
+	const body = await validateJsonBody(c, backupRestoreBodySchema, {
+		optional: true,
+	});
+	if (!body.ok) return body.response;
 	const authError = requireBackupAdmin(c);
 	if (authError) return authError;
+	const columnId = path.data.id;
+	const mode = body.data.mode ?? "clone";
 
-	const columnId = c.req.param("id");
-	const body = await c.req
-		.json<{ key?: string; mode?: "clone" | "in_place" }>()
-		.catch(() => ({}) as { key?: string; mode?: "clone" | "in_place" });
-
-	const mode = body.mode === "in_place" ? "in_place" : "clone";
-
-	let key = body.key;
+	let key = body.data.key;
 	if (!key) {
 		const listed = await c.env.BACKUPS!.list({
 			prefix: `columns/${columnId}/`,
