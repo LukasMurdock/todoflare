@@ -41,7 +41,6 @@ export function AccountBadge() {
 		isRealtimeDegraded,
 		syncMode,
 		syncStateSummary,
-		pendingSendDropSummary,
 		yjsOutboxSummary,
 		logout,
 		resetSyncTelemetry,
@@ -96,10 +95,7 @@ export function AccountBadge() {
 		public_readonly: "Public readonly",
 	}[syncMode];
 
-	const totalPendingDrops =
-		pendingSendDropSummary.syncDrops + pendingSendDropSummary.awarenessDrops;
 	const hasSyncTelemetry =
-		totalPendingDrops > 0 ||
 		syncStateSummary.lastReplayLatencyMs !== null ||
 		syncStateSummary.revokeDiscardCount > 0 ||
 		syncStateSummary.convergenceFailureCount > 0;
@@ -168,11 +164,6 @@ export function AccountBadge() {
 					pending: count,
 				})),
 				remainingColumns: remainingYjsOutboxColumns,
-			},
-			pendingSendDrops: {
-				syncDrops: pendingSendDropSummary.syncDrops,
-				awarenessDrops: pendingSendDropSummary.awarenessDrops,
-				affectedColumns: pendingSendDropSummary.affectedColumns,
 			},
 		};
 	};
@@ -374,14 +365,6 @@ export function AccountBadge() {
 								</p>
 							) : null}
 						</>
-					) : null}
-					{totalPendingDrops > 0 ? (
-						<p className="text-muted-foreground">
-							Dropped queued messages: {pendingSendDropSummary.syncDrops} sync, {" "}
-							{pendingSendDropSummary.awarenessDrops} awareness across {" "}
-							{pendingSendDropSummary.affectedColumns} column
-							{pendingSendDropSummary.affectedColumns === 1 ? "" : "s"}
-						</p>
 					) : null}
 					{isRealtimeDegraded ? (
 						<p className="text-muted-foreground">

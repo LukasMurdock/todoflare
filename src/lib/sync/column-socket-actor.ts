@@ -1,0 +1,131 @@
+import { fromCallback } from "xstate";
+import { decodeWsMessage } from "../collaboration/websocket-protocol";
+import type { SyncMessage } from "../../types/account";
+
+export interface ColumnSocketLike {
+	binaryType: string;
+	readyState: number;
+	onopen: (() => void) | null;
+	onmessage: ((event: { data: unknown }) => void) | null;
+	onclose:
+		| ((event: { code?: number; reason?: string; wasClean?: boolean }) => void)
+		| null;
+	onerror: (() => void) | null;
+	send(data: ArrayBuffer): void;
+	close(): void;
+}
+
+export interface ColumnSocketFrame {
+	data: ArrayBuffer;
+	outboxId?: string;
+}
+
+export type ColumnSocketCommand = {
+	type: "SEND_FRAME";
+	frame: ColumnSocketFrame;
+};
+
+export type ColumnSocketEvent =
+	| { type: "SOCKET_OPENED" }
+	| {
+			type: "SOCKET_CLOSED";
+			code: number;
+			reason: string;
+			wasClean: boolean;
+	  }
+	| { type: "SOCKET_MESSAGE"; message: SyncMessage }
+	| { type: "OUTBOX_REPLAYED" }
+	| { type: "ACCESS_REVOKED" }
+	| { type: "COLUMN_DELETED" };
+
+export interface ColumnSocketInput {
+	url: string;
+	createSocket: (url: string) => ColumnSocketLike;
+	loadReplayFrames: () => ColumnSocketFrame[];
+	onFrameWritten: (frame: ColumnSocketFrame) => void;
+}
+
+async function decodeSocketData(data: unknown): Promise<SyncMessage | null> {
+	if (data instanceof ArrayBuffer) {
+		return decodeWsMessage(data);
+	}
+
+	if (typeof Blob !== "undefined" && data instanceof Blob) {
+		return decodeWsMessage(await data.arrayBuffer());
+	}
+
+	return null;
+}
+
+export const columnSocketActor = fromCallback<
+	ColumnSocketCommand,
+	ColumnSocketInput
+>(({ input, receive, sendBack }) => {
+	const socket = input.createSocket(input.url);
+	socket.binaryType = "arraybuffer";
+
+	const writeFrame = (frame: ColumnSocketFrame) => {
+		if (socket.readyState !== 1) return false;
+		try {
+			socket.send(frame.data);
+			input.onFrameWritten(frame);
+			return true;
+		} catch {
+			return false;
+		}
+	};
+
+	receive((event) => {
+		if (event.type === "SEND_FRAME") {
+			writeFrame(event.frame);
+		}
+	});
+
+	socket.onopen = () => {
+		sendBack({ type: "SOCKET_OPENED" });
+		for (const frame of input.loadReplayFrames()) {
+			writeFrame(frame);
+		}
+		sendBack({ type: "OUTBOX_REPLAYED" });
+	};
+
+	socket.onmessage = (event) => {
+		void decodeSocketData(event.data)
+			.then((message) => {
+				if (!message) return;
+				if (message.type === "access-revoked") {
+					sendBack({ type: "ACCESS_REVOKED" });
+					return;
+				}
+				if (message.type === "column-deleted") {
+					sendBack({ type: "COLUMN_DELETED" });
+					return;
+				}
+				sendBack({ type: "SOCKET_MESSAGE", message });
+			})
+			.catch((error: unknown) => {
+				console.error("Error handling WebSocket message:", error);
+			});
+	};
+
+	socket.onclose = (event) => {
+		sendBack({
+			type: "SOCKET_CLOSED",
+			code: event.code ?? 0,
+			reason: event.reason ?? "",
+			wasClean: event.wasClean ?? false,
+		});
+	};
+
+	socket.onerror = () => {
+		// Browsers dispatch close after an error; close owns retry behavior.
+	};
+
+	return () => {
+		socket.onopen = null;
+		socket.onmessage = null;
+		socket.onclose = null;
+		socket.onerror = null;
+		socket.close();
+	};
+});

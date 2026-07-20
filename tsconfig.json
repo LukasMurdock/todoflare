@@ -13,5 +13,5 @@
 		},
 		"skipLibCheck": true
 	},
-	"exclude": ["test", "e2e"]
+	"exclude": ["test", "e2e", "repos"]
 }

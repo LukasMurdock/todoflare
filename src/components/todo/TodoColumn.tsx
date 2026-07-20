@@ -416,8 +416,7 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 	const {
 		accountId,
 		account,
-		connectToColumn,
-		disconnectFromColumn,
+		subscribeToColumn,
 		onColumnMessage,
 		sendUpdate,
 		sendAwareness,
@@ -425,14 +424,6 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 
 	const isSyncedMode = !!accountId && !!account;
 	const [isYjsReady, setIsYjsReady] = React.useState(() => !isSyncedMode);
-
-	// Deterministic connection: make sure at least one column WS is opened
-	// while an editor is mounted. SyncContext ref-counting prevents flapping.
-	React.useEffect(() => {
-		if (!isSyncedMode) return;
-		connectToColumn(column.id);
-		return () => disconnectFromColumn(column.id);
-	}, [isSyncedMode, connectToColumn, disconnectFromColumn, column.id]);
 
 	const plugins = React.useMemo(() => {
 		const base: any[] = [
@@ -486,8 +477,7 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 								options: {
 									columnId: column.id,
 									transport: {
-										connectToColumn,
-										disconnectFromColumn,
+										subscribeToColumn,
 										onColumnMessage,
 										sendUpdate,
 										sendAwareness,
@@ -511,8 +501,7 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 		isSyncedMode,
 		accountId,
 		column.id,
-		connectToColumn,
-		disconnectFromColumn,
+		subscribeToColumn,
 		onColumnMessage,
 		sendUpdate,
 		sendAwareness,

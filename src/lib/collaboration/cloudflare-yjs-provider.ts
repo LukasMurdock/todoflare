@@ -6,8 +6,7 @@ import type { Awareness } from "y-protocols/awareness";
 import type { SyncMessage } from "@/types/account";
 
 export type ColumnSyncTransport = {
-	connectToColumn: (columnId: string) => void;
-	disconnectFromColumn: (columnId: string) => void;
+	subscribeToColumn: (columnId: string) => () => void;
 	onColumnMessage: (
 		columnId: string,
 		cb: (message: SyncMessage) => void,
@@ -35,7 +34,8 @@ class CloudflareProvider implements UnifiedProvider {
 	private readonly onError?: (error: Error) => void;
 	private readonly onSyncChange?: (isSynced: boolean) => void;
 
-	private unsubscribe?: () => void;
+	private unsubscribeMessages?: () => void;
+	private unsubscribeColumn?: () => void;
 	private docUpdateHandler?: (update: Uint8Array, origin: unknown) => void;
 	private awarenessUpdateHandler?: (
 		update: { added: number[]; updated: number[]; removed: number[] },
@@ -64,16 +64,16 @@ class CloudflareProvider implements UnifiedProvider {
 	connect() {
 		if (this.isConnected) return;
 		this.isConnected = true;
-
-
 		try {
-			this.options.transport.connectToColumn(this.options.columnId);
+			this.unsubscribeColumn = this.options.transport.subscribeToColumn(
+				this.options.columnId,
+			);
 			this.onConnect?.();
 		} catch (err) {
 			this.onError?.(err instanceof Error ? err : new Error(String(err)));
 		}
 
-		this.unsubscribe = this.options.transport.onColumnMessage(
+		this.unsubscribeMessages = this.options.transport.onColumnMessage(
 			this.options.columnId,
 			(message) => {
 				try {
@@ -142,9 +142,9 @@ class CloudflareProvider implements UnifiedProvider {
 		}
 
 		try {
-			this.unsubscribe?.();
+			this.unsubscribeMessages?.();
 		} finally {
-			this.unsubscribe = undefined;
+			this.unsubscribeMessages = undefined;
 		}
 
 		if (this.docUpdateHandler) {
@@ -157,11 +157,8 @@ class CloudflareProvider implements UnifiedProvider {
 			this.awarenessUpdateHandler = undefined;
 		}
 
-		try {
-			this.options.transport.disconnectFromColumn(this.options.columnId);
-		} catch {
-			// ignore
-		}
+		this.unsubscribeColumn?.();
+		this.unsubscribeColumn = undefined;
 
 		this.onDisconnect?.();
 	}

@@ -9,7 +9,9 @@ dist
 .dev.vars*
 
 # IDE
-.vscode
+!.vscode/
+.vscode/*
+!.vscode/settings.json
 .idea
 
 # OS

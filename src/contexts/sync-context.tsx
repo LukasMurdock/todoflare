@@ -41,20 +41,20 @@ import {
 	upsertSharedWithByColumn,
 } from "@/lib/sync/replay-state";
 import {
-	flushBufferedColumnMessages,
-	queueOrSendColumnMessage,
-	type BufferedColumnSend,
-} from "@/lib/sync/column-send-buffer";
-import {
 	LocalYjsUpdateOutbox,
 	createLocalFirstYjsOutboxStorage,
+	type YjsOutboxKind,
 } from "@/lib/sync/yjs-update-outbox";
 import {
-	decodeWsMessage,
 	encodeWsFrame,
 	WS_OP_AWARENESS,
 	WS_OP_SYNC,
 } from "@/lib/collaboration/websocket-protocol";
+import { ColumnSessionManager } from "@/lib/sync/column-session-manager";
+import type {
+	ColumnSocketFrame,
+	ColumnSocketLike,
+} from "@/lib/sync/column-socket-actor";
 import type { LocalFirstDatabase } from "@/lib/local-first/database";
 import type {
 	Account,
@@ -78,23 +78,15 @@ import {
 const ACCOUNT_STORAGE_KEY = "todoflare-account";
 const QUEUE_RESULT_CACHE_TTL_MS = 5 * 60 * 1000;
 const QUEUE_RESULT_CACHE_PRUNE_INTERVAL_MS = 60 * 1000;
-const MAX_PENDING_COLUMN_SENDS = 512;
-const PENDING_SEND_DROP_LOG_COOLDOWN_MS = 5000;
 const YJS_AWARENESS_REPLAY_MAX_AGE_MS = 30_000;
 const ACCESS_LOSS_NOTICE_COOLDOWN_MS = 2000;
 
-function encodeOutboundMessage(message: PendingColumnSend): ArrayBuffer {
-	const op = message.kind === "sync" ? WS_OP_SYNC : WS_OP_AWARENESS;
-	return encodeWsFrame(op, message.payload);
-}
-
-function flushPendingSends(
-	conn: ColumnConnection,
-	options?: { onSent?: (message: PendingColumnSend) => void },
-) {
-	void flushBufferedColumnMessages(conn, encodeOutboundMessage, {
-		onSent: options?.onSent,
-	});
+function encodeOutboundUpdate(
+	kind: YjsOutboxKind,
+	update: Uint8Array,
+): ArrayBuffer {
+	const op = kind === "sync" ? WS_OP_SYNC : WS_OP_AWARENESS;
+	return encodeWsFrame(op, update);
 }
 
 function hasTerminalFailureForCommand(
@@ -116,59 +108,9 @@ function pruneExpiredQueueResults<T>(
 	}
 }
 
-type PendingColumnSend = BufferedColumnSend & {
-	outboxId?: string;
-};
-
-interface ColumnConnection {
-	ws: WebSocket | null;
-	status: ConnectionStatus;
-	hasEverConnected: boolean;
-	presence: PresenceUser[];
-	reconnectTimeout: number | null;
-	reconnectAttempts: number;
-	shouldReconnect: boolean;
-	nonce: number;
-	pendingSends: PendingColumnSend[];
-	refCount: number;
-}
-
-function deriveOverallConnectionStatus(
-	connections: Iterable<ColumnConnection>,
-): ConnectionStatus {
-	const list = Array.from(connections);
-	if (list.length === 0) {
-		return "offline";
-	}
-
-	const hasConnected = list.some((c) => c.status === "connected");
-	if (hasConnected) {
-		return "connected";
-	}
-
-	const hasConnecting = list.some((c) => c.status === "connecting");
-	if (hasConnecting) {
-		return "connecting";
-	}
-
-	return "offline";
-}
-
 interface CachedQueueResult<T> {
 	value: T;
 	storedAt: number;
-}
-
-interface PendingSendDropStats {
-	syncDrops: number;
-	awarenessDrops: number;
-	lastLoggedAt: number;
-}
-
-interface PendingSendDropSummary {
-	syncDrops: number;
-	awarenessDrops: number;
-	affectedColumns: number;
 }
 
 interface YjsOutboxSummary {
@@ -185,32 +127,6 @@ interface SyncStateSummary {
 	lastReplayLatencyMs: number | null;
 	revokeDiscardCount: number;
 	convergenceFailureCount: number;
-}
-
-function emptyPendingSendDropSummary(): PendingSendDropSummary {
-	return {
-		syncDrops: 0,
-		awarenessDrops: 0,
-		affectedColumns: 0,
-	};
-}
-
-function summarizePendingSendDrops(
-	statsByColumn: Map<string, PendingSendDropStats>,
-): PendingSendDropSummary {
-	let syncDrops = 0;
-	let awarenessDrops = 0;
-
-	for (const stats of statsByColumn.values()) {
-		syncDrops += stats.syncDrops;
-		awarenessDrops += stats.awarenessDrops;
-	}
-
-	return {
-		syncDrops,
-		awarenessDrops,
-		affectedColumns: statsByColumn.size,
-	};
 }
 
 function emptyYjsOutboxSummary(): YjsOutboxSummary {
@@ -258,14 +174,12 @@ interface SyncContextValue {
 	isRealtimeDegraded: boolean;
 	syncMode: SyncMode;
 	syncStateSummary: SyncStateSummary;
-	pendingSendDropSummary: PendingSendDropSummary;
 	yjsOutboxSummary: YjsOutboxSummary;
 
 	// Account operations
 	createAccount: () => Promise<Account | null>;
 	loginWithAccountId: (id: string) => Promise<boolean>;
 	logout: () => void;
-	resetPendingSendDropSummary: () => void;
 	resetSyncTelemetry: () => void;
 
 	// Shared columns
@@ -275,9 +189,7 @@ interface SyncContextValue {
 	publicLinksByColumn: Record<string, PublicLinkResponse | null>;
 
 	// Column connections
-	connectToColumn: (columnId: string) => void;
-	disconnectFromColumn: (columnId: string) => void;
-	getColumnStatus: (columnId: string) => ConnectionStatus;
+	subscribeToColumn: (columnId: string) => () => void;
 	getColumnPresence: (columnId: string) => PresenceUser[];
 
 	// Column operations (via API)
@@ -352,8 +264,6 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 	const [hydratedSyncStateDocId, setHydratedSyncStateDocId] = useState<
 		string | null
 	>(null);
-	const [pendingSendDropSummary, setPendingSendDropSummary] =
-		useState<PendingSendDropSummary>(emptyPendingSendDropSummary);
 	const [yjsOutboxSummary, setYjsOutboxSummary] = useState<YjsOutboxSummary>(
 		emptyYjsOutboxSummary,
 	);
@@ -362,18 +272,20 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		return navigator.onLine;
 	});
 
-	// Column WebSocket connections
-	const columnConnections = useRef<Map<string, ColumnConnection>>(new Map());
+	const columnSessionManagerRef = useRef<{
+		accountId: string;
+		manager: ColumnSessionManager;
+	} | null>(null);
 	const messageCallbacks = useRef<
 		Map<string, Set<(message: SyncMessage) => void>>
 	>(new Map());
 	const accountIdRef = useRef<string | null>(accountId);
 	const accountProjectionRevisionRef = useRef(0);
 	const accountHydrationGenerationRef = useRef(0);
-	const pendingSendDropsByColumnRef = useRef<
-		Map<string, PendingSendDropStats>
-	>(new Map());
 	const recentAccessLossNoticesRef = useRef<Map<string, number>>(new Map());
+	const accessLossSourcesRef = useRef<
+		Map<string, "websocket" | "replay">
+	>(new Map());
 	const createColumnResultsByQueueIdRef = useRef<
 		Map<string, CachedQueueResult<ColumnMeta>>
 	>(
@@ -752,9 +664,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 
 	useEffect(() => {
 		accountIdRef.current = accountId;
-		pendingSendDropsByColumnRef.current.clear();
 		recentAccessLossNoticesRef.current.clear();
-		setPendingSendDropSummary(emptyPendingSendDropSummary());
 		refreshYjsOutboxSummary();
 		createColumnResultsByQueueIdRef.current.clear();
 		publicLinkResultsByQueueIdRef.current.clear();
@@ -805,125 +715,15 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		});
 	}, []);
 
-	const acknowledgeYjsOutboxMessage = useCallback(
-		(message: PendingColumnSend) => {
-			if (!message.outboxId) return;
-			yjsOutbox.acknowledge([message.outboxId]);
-			refreshYjsOutboxSummary();
-		},
-		[refreshYjsOutboxSummary, yjsOutbox],
-	);
-
-	const loadYjsReplayIntoPending = useCallback(
-		(columnId: string, conn: ColumnConnection) => {
-			if (!accountId) return;
-
-			const replayable = yjsOutbox.getReplayableForColumn(accountId, columnId, {
-				awarenessMaxAgeMs: YJS_AWARENESS_REPLAY_MAX_AGE_MS,
-			});
-			if (replayable.length === 0) {
-				refreshYjsOutboxSummary();
-				return;
-			}
-
-			const existingOutboxIds = new Set(
-				conn.pendingSends
-					.map((message) => message.outboxId)
-					.filter((id): id is string => typeof id === "string"),
-			);
-
-			for (const entry of replayable) {
-				if (existingOutboxIds.has(entry.id)) continue;
-
-				conn.pendingSends.push({
-					kind: entry.kind,
-					payload: new Uint8Array(entry.updateBytes),
-					outboxId: entry.id,
-				});
-				existingOutboxIds.add(entry.id);
-			}
-
-			refreshYjsOutboxSummary();
-		},
-		[accountId, refreshYjsOutboxSummary, yjsOutbox],
-	);
-
-	const resetPendingSendDropSummary = useCallback(() => {
-		pendingSendDropsByColumnRef.current.clear();
-		setPendingSendDropSummary(emptyPendingSendDropSummary());
-	}, []);
-
 	const resetSyncTelemetry = useCallback(() => {
-		resetPendingSendDropSummary();
 		setLastReplayLatencyMs(null);
 		setRevokeDiscardCount(0);
 		setConvergenceFailureCount(0);
-	}, [resetPendingSendDropSummary]);
-
-	const recordPendingSendDrop = useCallback(
-		(
-			columnId: string,
-			kind: PendingColumnSend["kind"],
-			pendingCount: number,
-		) => {
-			const now = Date.now();
-			const stats = pendingSendDropsByColumnRef.current.get(columnId) ?? {
-				syncDrops: 0,
-				awarenessDrops: 0,
-				lastLoggedAt: 0,
-			};
-
-			if (kind === "sync") {
-				stats.syncDrops += 1;
-			} else {
-				stats.awarenessDrops += 1;
-			}
-
-			const shouldLog =
-				kind === "sync" ||
-				now - stats.lastLoggedAt >= PENDING_SEND_DROP_LOG_COOLDOWN_MS;
-			if (shouldLog) {
-				stats.lastLoggedAt = now;
-				console.warn("Dropped pending column message due to backlog cap", {
-					columnId,
-					kind,
-					pendingCount,
-					maxPending: MAX_PENDING_COLUMN_SENDS,
-					syncDrops: stats.syncDrops,
-					awarenessDrops: stats.awarenessDrops,
-				});
-			}
-
-			pendingSendDropsByColumnRef.current.set(columnId, stats);
-			setPendingSendDropSummary(
-				summarizePendingSendDrops(pendingSendDropsByColumnRef.current),
-			);
-		},
-		[],
-	);
+	}, []);
 
 	const detachColumnSync = useCallback((columnId: string) => {
-		const conn = columnConnections.current.get(columnId);
-		if (!conn) return;
-
-		conn.shouldReconnect = false;
-		conn.nonce += 1;
-		if (conn.reconnectTimeout) {
-			clearTimeout(conn.reconnectTimeout);
-		}
-		if (conn.ws) {
-			conn.ws.close();
-		}
-
-		columnConnections.current.delete(columnId);
-		pendingSendDropsByColumnRef.current.delete(columnId);
-		setPendingSendDropSummary(
-			summarizePendingSendDrops(pendingSendDropsByColumnRef.current),
-		);
+		columnSessionManagerRef.current?.manager.detachColumn(columnId);
 		messageCallbacks.current.delete(columnId);
-		setConnectionStatus(
-			deriveOverallConnectionStatus(columnConnections.current.values()),
-		);
 	}, []);
 
 	const applyColumnAccessLossPolicy = useCallback(
@@ -973,8 +773,6 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 				};
 			});
 
-			detachColumnSync(columnId);
-
 			const discardedCount = droppedMutationCount + droppedYjsCount;
 			if (reason === "revoked" && discardedCount > 0) {
 				setRevokeDiscardCount((prev) => prev + discardedCount);
@@ -1005,12 +803,87 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		},
 		[
 			accountId,
-			detachColumnSync,
 			mutationQueue,
 			refreshYjsOutboxSummary,
 			yjsOutbox,
 		],
 	);
+
+	const ensureColumnSessionManager = useCallback(() => {
+		if (!accountId) return null;
+		const existing = columnSessionManagerRef.current;
+		if (existing?.accountId === accountId) return existing.manager;
+
+		existing?.manager.stop();
+		const manager = new ColumnSessionManager({
+			accountId,
+			networkOnline: isNetworkOnline,
+			realtimeEnabled: !isRealtimeDegraded,
+			onStatusChange: setConnectionStatus,
+			dependencies: {
+				createSocket: (url) =>
+					new WebSocket(url) as unknown as ColumnSocketLike,
+				getSocketUrl: (activeAccountId, columnId) => {
+					const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+					return `${protocol}//${window.location.host}/api/column/${columnId}/ws?accountId=${normalizeAccountId(activeAccountId)}`;
+				},
+				persistUpdate: (activeAccountId, columnId, kind, update) => {
+					const outboxId = yjsOutbox.enqueue({
+						accountId: activeAccountId,
+						columnId,
+						kind,
+						payload: update,
+					});
+					refreshYjsOutboxSummary();
+					return outboxId;
+				},
+				loadReplayFrames: (activeAccountId, columnId) => {
+					const frames = yjsOutbox
+						.getReplayableForColumn(activeAccountId, columnId, {
+							awarenessMaxAgeMs: YJS_AWARENESS_REPLAY_MAX_AGE_MS,
+						})
+						.map((entry): ColumnSocketFrame => ({
+							data: encodeOutboundUpdate(
+								entry.kind,
+								new Uint8Array(entry.updateBytes),
+							),
+							outboxId: entry.id,
+						}));
+					refreshYjsOutboxSummary();
+					return frames;
+				},
+				onFrameWritten: (frame) => {
+					if (!frame.outboxId) return;
+					yjsOutbox.removeAfterSocketWrite([frame.outboxId]);
+					refreshYjsOutboxSummary();
+				},
+				onMessage: (columnId, message) => {
+					if (message.type === "error") {
+						toast.error(message.message);
+					}
+					for (const callback of messageCallbacks.current.get(columnId) ?? []) {
+						callback(message);
+					}
+				},
+				onTerminate: async (columnId, reason) => {
+					const source = accessLossSourcesRef.current.get(columnId) ?? "websocket";
+					accessLossSourcesRef.current.delete(columnId);
+					await applyColumnAccessLossPolicy(columnId, reason, source);
+				},
+				encodeUpdate: encodeOutboundUpdate,
+			},
+		});
+
+		columnSessionManagerRef.current = { accountId, manager };
+		return manager;
+	}, [
+		accountId,
+		applyColumnAccessLossPolicy,
+		isNetworkOnline,
+		isRealtimeDegraded,
+		refreshYjsOutboxSummary,
+		yjsOutbox,
+	]);
 
 	const enqueueAccountCommand = useCallback(
 		async <T extends AccountCommandType>(
@@ -1090,7 +963,13 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		}
 
 		for (const revokedColumnId of reconciliation.accessLostColumnIds) {
-			await applyColumnAccessLossPolicy(revokedColumnId, "revoked", "replay");
+			accessLossSourcesRef.current.set(revokedColumnId, "replay");
+			const manager = ensureColumnSessionManager();
+			if (manager) {
+				manager.terminateColumn(revokedColumnId, "revoked");
+			} else {
+				await applyColumnAccessLossPolicy(revokedColumnId, "revoked", "replay");
+			}
 		}
 
 		if (reconciliation.nonAccessLossFailureCount > 0) {
@@ -1104,6 +983,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 	}, [
 		accountId,
 		applyColumnAccessLossPolicy,
+		ensureColumnSessionManager,
 		isNetworkOnline,
 		isRealtimeDegraded,
 		mutationQueue,
@@ -1118,26 +998,6 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			enableE2eWake: import.meta.env.VITE_E2E_REPLAY_CONTROL === "true",
 		});
 	}, [accountId, isNetworkOnline, isRealtimeDegraded, replayMutationQueue]);
-
-	// Update overall connection status based on column connections
-	const updateConnectionStatus = useCallback(() => {
-		const connections = Array.from(columnConnections.current.values());
-		if (connections.length === 0) {
-			setConnectionStatus("offline");
-			return;
-		}
-
-		const hasConnected = connections.some((c) => c.status === "connected");
-		const hasConnecting = connections.some((c) => c.status === "connecting");
-
-		if (hasConnected) {
-			setConnectionStatus("connected");
-		} else if (hasConnecting) {
-			setConnectionStatus("connecting");
-		} else {
-			setConnectionStatus("offline");
-		}
-	}, []);
 
 	// Fetch account data
 	const fetchAccount = useCallback(async (id: string) => {
@@ -1300,354 +1160,65 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 
 	// Logout
 	const logout = useCallback(() => {
-		// Disconnect all columns
-		for (const columnId of columnConnections.current.keys()) {
-			const conn = columnConnections.current.get(columnId);
-			if (conn?.ws) {
-				conn.ws.close();
-			}
-			if (conn?.reconnectTimeout) {
-				clearTimeout(conn.reconnectTimeout);
-			}
-		}
-		columnConnections.current.clear();
+		columnSessionManagerRef.current?.manager.stop();
+		columnSessionManagerRef.current = null;
 		resetSyncTelemetry();
 		recentAccessLossNoticesRef.current.clear();
+		accessLossSourcesRef.current.clear();
 
 		setAccountId(null);
 		setAccount(null);
 		setSharedColumns([]);
 		setDeletedColumns([]);
 		localStorage.removeItem(ACCOUNT_STORAGE_KEY);
-		updateConnectionStatus();
-	}, [resetSyncTelemetry, updateConnectionStatus]);
+		setConnectionStatus("offline");
+	}, [resetSyncTelemetry]);
 
-	// Connect to a column's WebSocket
-	const connectToColumn = useCallback(
+	const subscribeToColumn = useCallback(
 		(columnId: string) => {
-			if (!accountId) return;
-			if (isRealtimeDegraded) return;
-
-			const existing = columnConnections.current.get(columnId);
-			if (existing && existing.status !== "offline") {
-				existing.refCount += 1;
-				return; // Already connected or connecting
-			}
-
-			const connect = () => {
-				const conn: ColumnConnection = columnConnections.current.get(columnId) || {
-					ws: null,
-					status: "connecting" as ConnectionStatus,
-					hasEverConnected: false,
-					presence: [],
-					reconnectTimeout: null,
-					reconnectAttempts: 0,
-					shouldReconnect: true,
-					nonce: 0,
-					pendingSends: [],
-					refCount: 0,
-				};
-
-				conn.status = "connecting";
-				conn.shouldReconnect = true;
-				conn.refCount = Math.max(conn.refCount, 1);
-				conn.nonce += 1;
-				const nonce = conn.nonce;
-				columnConnections.current.set(columnId, conn);
-				updateConnectionStatus();
-
-				const wsProtocol =
-					window.location.protocol === "https:" ? "wss:" : "ws:";
-				const wsUrl = `${wsProtocol}//${window.location.host}/api/column/${columnId}/ws?accountId=${normalizeAccountId(accountId)}`;
-
-				const ws = new WebSocket(wsUrl);
-				ws.binaryType = "arraybuffer";
-				conn.ws = ws;
-
-				ws.onopen = () => {
-					const active = columnConnections.current.get(columnId);
-					if (!active || active.nonce !== nonce || active !== conn) {
-						ws.close();
-						return;
-					}
-
-					conn.status = "connected";
-					conn.hasEverConnected = true;
-					conn.reconnectAttempts = 0;
-
-					// Rehydrate persistent Yjs outbox entries for this column.
-					loadYjsReplayIntoPending(columnId, conn);
-
-					// Flush any queued sends from before connect.
-					flushPendingSends(conn, {
-						onSent: acknowledgeYjsOutboxMessage,
-					});
-
-					updateConnectionStatus();
-				};
-
-				ws.onmessage = async (event) => {
-					const active = columnConnections.current.get(columnId);
-					if (!active || active.nonce !== nonce || active !== conn) {
-						return;
-					}
-
-					try {
-						let decodedMessage: SyncMessage | null = null;
-
-						if (event.data instanceof ArrayBuffer) {
-							decodedMessage = decodeWsMessage(event.data);
-						} else if (event.data instanceof Blob) {
-							const buffer = await event.data.arrayBuffer();
-							decodedMessage = decodeWsMessage(buffer);
-						} else {
-							return;
-						}
-
-						if (!decodedMessage) return;
-
-						// Handle presence updates internally
-						if (decodedMessage.type === "presence") {
-							conn.presence = decodedMessage.users;
-						}
-
-						// Handle special messages with toasts
-						if (decodedMessage.type === "column-deleted") {
-							await applyColumnAccessLossPolicy(
-								columnId,
-								"column_deleted",
-								"websocket",
-							);
-							return;
-						} else if (decodedMessage.type === "access-revoked") {
-							await applyColumnAccessLossPolicy(
-								columnId,
-								"revoked",
-								"websocket",
-							);
-							return;
-						} else if (decodedMessage.type === "error") {
-							toast.error(decodedMessage.message);
-						}
-
-						// Notify callbacks
-						const callbacks = messageCallbacks.current.get(columnId);
-						if (callbacks) {
-							for (const callback of callbacks) {
-								callback(decodedMessage);
-							}
-						}
-					} catch (err) {
-						console.error("Error handling WebSocket message:", err);
-					}
-				};
-
-				ws.onclose = () => {
-					const active = columnConnections.current.get(columnId);
-					if (!active || active.nonce !== nonce || active !== conn) {
-						return;
-					}
-
-					conn.status = "offline";
-					conn.ws = null;
-					conn.pendingSends = [];
-					updateConnectionStatus();
-
-					if (!conn.shouldReconnect || conn.refCount <= 0) return;
-
-					// Reconnect with exponential backoff
-					const delay = Math.min(
-						1000 * Math.pow(2, conn.reconnectAttempts),
-						30000,
-					);
-					conn.reconnectAttempts++;
-					if (!conn.hasEverConnected && conn.reconnectAttempts >= 3) {
-						markRealtimeDegraded(
-							"Realtime connection failed repeatedly. Switched to local-only mode.",
-						);
-						return;
-					}
-					conn.reconnectTimeout = window.setTimeout(connect, delay);
-				};
-
-				ws.onerror = () => {
-					// onclose will be called after onerror
-				};
-			};
-
-			connect();
+			return ensureColumnSessionManager()?.subscribeToColumn(columnId) ?? (() => {});
 		},
-		[
-			acknowledgeYjsOutboxMessage,
-			accountId,
-			applyColumnAccessLossPolicy,
-			isRealtimeDegraded,
-			loadYjsReplayIntoPending,
-			markRealtimeDegraded,
-			updateConnectionStatus,
-		],
+		[ensureColumnSessionManager],
+	);
+
+	const getColumnPresence = useCallback((columnId: string): PresenceUser[] => {
+		return (
+			columnSessionManagerRef.current?.manager.getColumnPresence(columnId) ?? []
+		);
+	}, []);
+
+	const sendUpdate = useCallback(
+		(columnId: string, update: Uint8Array) => {
+			ensureColumnSessionManager()?.sendSync(columnId, update);
+		},
+		[ensureColumnSessionManager],
+	);
+
+	const sendAwareness = useCallback(
+		(columnId: string, update: Uint8Array) => {
+			ensureColumnSessionManager()?.sendAwareness(columnId, update);
+		},
+		[ensureColumnSessionManager],
 	);
 
 	useEffect(() => {
-		if (!isRealtimeDegraded) return;
+		columnSessionManagerRef.current?.manager.setNetworkOnline(isNetworkOnline);
+	}, [isNetworkOnline]);
 
-		for (const conn of columnConnections.current.values()) {
-			conn.shouldReconnect = false;
-			if (conn.reconnectTimeout) {
-				clearTimeout(conn.reconnectTimeout);
-			}
-			if (conn.ws) {
-				conn.ws.close();
-			}
-		}
-		columnConnections.current.clear();
-		updateConnectionStatus();
-	}, [isRealtimeDegraded, updateConnectionStatus]);
+	useEffect(() => {
+		columnSessionManagerRef.current?.manager.setRealtimeEnabled(
+			!isRealtimeDegraded,
+		);
+	}, [isRealtimeDegraded]);
 
-	// Disconnect from a column
-	const disconnectFromColumn = useCallback(
-		(columnId: string) => {
-				const conn = columnConnections.current.get(columnId);
-				if (conn) {
-					conn.refCount = Math.max(0, conn.refCount - 1);
-					if (conn.refCount > 0) return;
-
-					conn.shouldReconnect = false;
-					conn.nonce += 1;
-					if (conn.ws) {
-						conn.ws.close();
-					}
-					if (conn.reconnectTimeout) {
-						clearTimeout(conn.reconnectTimeout);
-					}
-					columnConnections.current.delete(columnId);
-					pendingSendDropsByColumnRef.current.delete(columnId);
-					setPendingSendDropSummary(
-						summarizePendingSendDrops(pendingSendDropsByColumnRef.current),
-					);
-					messageCallbacks.current.delete(columnId);
-					updateConnectionStatus();
-				}
-
-		},
-		[updateConnectionStatus],
-	);
-
-	// Get column connection status
-	const getColumnStatus = useCallback((columnId: string): ConnectionStatus => {
-		return columnConnections.current.get(columnId)?.status || "offline";
-	}, []);
-
-	// Get column presence
-	const getColumnPresence = useCallback(
-		(columnId: string): PresenceUser[] => {
-			return columnConnections.current.get(columnId)?.presence || [];
-		},
-		[],
-	);
-
-	// Send update to column
-	const sendUpdate = useCallback((columnId: string, update: Uint8Array) => {
-		let conn = columnConnections.current.get(columnId);
-		if (!conn) {
-			conn = {
-				ws: null,
-				status: "offline",
-				hasEverConnected: false,
-				presence: [],
-				reconnectTimeout: null,
-				reconnectAttempts: 0,
-				shouldReconnect: true,
-				nonce: 0,
-				pendingSends: [],
-				refCount: 0,
-			};
-			columnConnections.current.set(columnId, conn);
-		}
-
-		const outboxId = accountId
-			? yjsOutbox.enqueue({
-					accountId,
-					columnId,
-					kind: "sync",
-					payload: update,
-			  })
-			: undefined;
-		if (outboxId) {
-			refreshYjsOutboxSummary();
-		}
-
-		const message: PendingColumnSend = {
-			kind: "sync",
-			payload: update,
-			outboxId,
+	useEffect(() => {
+		return () => {
+			const current = columnSessionManagerRef.current;
+			if (!current || current.accountId !== accountId) return;
+			current.manager.stop();
+			columnSessionManagerRef.current = null;
 		};
-		queueOrSendColumnMessage(conn, message, encodeOutboundMessage, {
-			maxPendingMessages: MAX_PENDING_COLUMN_SENDS,
-			dropPolicy: "drop_awareness_first",
-			onSent: acknowledgeYjsOutboxMessage,
-			onDrop: ({ droppedMessage, pendingCount }) => {
-				recordPendingSendDrop(columnId, droppedMessage.kind, pendingCount);
-			},
-		});
-	}, [
-		accountId,
-		acknowledgeYjsOutboxMessage,
-		recordPendingSendDrop,
-		refreshYjsOutboxSummary,
-		yjsOutbox,
-	]);
-
-	const sendAwareness = useCallback((columnId: string, update: Uint8Array) => {
-		let conn = columnConnections.current.get(columnId);
-		if (!conn) {
-			conn = {
-				ws: null,
-				status: "offline",
-				hasEverConnected: false,
-				presence: [],
-				reconnectTimeout: null,
-				reconnectAttempts: 0,
-				shouldReconnect: true,
-				nonce: 0,
-				pendingSends: [],
-				refCount: 0,
-			};
-			columnConnections.current.set(columnId, conn);
-		}
-
-		const outboxId = accountId
-			? yjsOutbox.enqueue({
-					accountId,
-					columnId,
-					kind: "awareness",
-					payload: update,
-			  })
-			: undefined;
-		if (outboxId) {
-			refreshYjsOutboxSummary();
-		}
-
-		const message: PendingColumnSend = {
-			kind: "awareness",
-			payload: update,
-			outboxId,
-		};
-		queueOrSendColumnMessage(conn, message, encodeOutboundMessage, {
-			maxPendingMessages: MAX_PENDING_COLUMN_SENDS,
-			dropPolicy: "drop_awareness_first",
-			onSent: acknowledgeYjsOutboxMessage,
-			onDrop: ({ droppedMessage, pendingCount }) => {
-				recordPendingSendDrop(columnId, droppedMessage.kind, pendingCount);
-			},
-		});
-	}, [
-		accountId,
-		acknowledgeYjsOutboxMessage,
-		recordPendingSendDrop,
-		refreshYjsOutboxSummary,
-		yjsOutbox,
-	]);
+	}, [accountId]);
 
 	// Subscribe to column messages
 	const onColumnMessage = useCallback(
@@ -1694,7 +1265,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			const report = await replayMutationQueue();
 
 			if (hasTerminalFailureForCommand(report, queueId)) {
-				disconnectFromColumn(columnId);
+				detachColumnSync(columnId);
 				setAccount((prev) => {
 					if (!prev) return prev;
 					return {
@@ -1718,7 +1289,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 
 			return provisionalColumn;
 		} catch (err) {
-			disconnectFromColumn(columnId);
+			detachColumnSync(columnId);
 			setAccount((prev) => {
 				if (!prev) return prev;
 				return {
@@ -1738,7 +1309,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		}
 	}, [
 		accountId,
-		disconnectFromColumn,
+		detachColumnSync,
 		enqueueAccountCommand,
 		fetchAccount,
 		markRealtimeDegraded,
@@ -1750,7 +1321,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		async (columnId: string) => {
 			if (!accountId) return false;
 
-			disconnectFromColumn(columnId);
+			detachColumnSync(columnId);
 			const deletedAt = Date.now();
 			setAccount((prev) => {
 				if (!prev) return prev;
@@ -1782,7 +1353,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		},
 		[
 			accountId,
-			disconnectFromColumn,
+			detachColumnSync,
 			enqueueAccountCommand,
 			fetchAccount,
 			replayMutationQueue,
@@ -2051,20 +1622,16 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		isRealtimeDegraded,
 		syncMode,
 		syncStateSummary,
-		pendingSendDropSummary,
 		yjsOutboxSummary,
 		createAccount,
 		loginWithAccountId,
 		logout,
-		resetPendingSendDropSummary,
 		resetSyncTelemetry,
 		sharedColumns,
 		deletedColumns,
 		sharedWithByColumn,
 		publicLinksByColumn,
-		connectToColumn,
-		disconnectFromColumn,
-		getColumnStatus,
+		subscribeToColumn,
 		getColumnPresence,
 		createColumn,
 		deleteColumn,

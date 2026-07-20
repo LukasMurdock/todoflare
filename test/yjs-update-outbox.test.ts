@@ -126,14 +126,14 @@ describe("LocalYjsUpdateOutbox", () => {
 		});
 	});
 
-	it("acknowledges and removes sent entries", () => {
+	it("removes entries after a successful socket write", () => {
 		const storage = createMemoryYjsOutboxStorage([
 			makeEntry({ id: "entry-1", createdAt: 100 }),
 			makeEntry({ id: "entry-2", createdAt: 200 }),
 		]);
 		const outbox = new LocalYjsUpdateOutbox({ storage });
 
-		const removed = outbox.acknowledge(["entry-1"]);
+		const removed = outbox.removeAfterSocketWrite(["entry-1"]);
 
 		expect(removed).toBe(1);
 		expect(outbox.pendingCountForColumn("1111 1111 1111 1111", "col-1")).toBe(

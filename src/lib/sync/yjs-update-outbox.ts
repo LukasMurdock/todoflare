@@ -202,7 +202,13 @@ export class LocalYjsUpdateOutbox {
 		return cloneEntries(replayable.sort(byCreatedAt));
 	}
 
-	acknowledge(entryIds: string[]): number {
+	/**
+	 * Removes entries after WebSocket.send() accepts their frames.
+	 *
+	 * This is intentionally best-effort delivery, not a server acknowledgement.
+	 * Yjs updates are idempotent, but the current wire protocol has no ACK frame.
+	 */
+	removeAfterSocketWrite(entryIds: string[]): number {
 		const ids = new Set(entryIds);
 		if (ids.size === 0) return 0;
 
