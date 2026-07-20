@@ -74,6 +74,23 @@ vendored source under `repos/xstate/`; it is not a replacement for that source.
   actor.
 - Account replay is scoped by the immutable command `entityId`, accepts an
   `AbortSignal`, and is independent of realtime WebSocket policy.
+- Keep hydration and replay retry schedules in distinct named states. Hydration
+  backoff must never read a mutation queue deadline, and rate-limited responses
+  must preserve the server-provided retry delay.
+- Handle network events at the machine boundary so every lifecycle state records
+  connectivity changes. States that invoke online work may add transitions to
+  cancel or pause that work, but must not be the only network event handlers.
+- Treat account API projections as an authoritative runtime-validated boundary.
+  Retained sharing and public-link metadata belongs only to local snapshots.
+- Persisting a command is its acceptance boundary. Waiting for convergence must
+  be bounded; a settlement timeout must not turn an already-durable command into
+  a reported write failure.
+- Command settlement is keyed by the persisted `queueId`. A lifecycle-wide
+  stable state is not proof that a particular command was acknowledged. Return
+  `acknowledged`, `queued`, `terminal`, `signed_out`, or `timed_out` explicitly.
+- Observe each `ReplayReport` once at the actor adapter boundary for telemetry
+  and notifications. Do not attach report-wide side effects to every command
+  submitter waiting on the same replay cycle.
 - Add transition and projection invariants to
   `test/account-convergence-machine.test.ts` and
   `test/account-projection.test.ts` when changing this lifecycle.

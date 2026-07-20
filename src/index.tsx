@@ -41,6 +41,7 @@ import { enablePublicColumn } from "./server/workflows/enable-public-column";
 import { purgeExpiredTrashedColumns } from "./server/workflows/purge-expired-trashed-columns";
 import { revokeColumnShare } from "./server/workflows/revoke-column-share";
 import { disablePublicColumn } from "./server/workflows/disable-public-column";
+import { mapWithConcurrency } from "./server/bounded-concurrency";
 import { cloneColumnSnapshot } from "./server/workflows/clone-column-snapshot";
 import {
 	restoreColumnBackup,
@@ -73,6 +74,32 @@ const IDEMPOTENCY_PENDING_TTL_SECONDS = 5 * 60;
 const IDEMPOTENCY_PENDING_WAIT_MS = 1500;
 const IDEMPOTENCY_PENDING_POLL_MS = 50;
 const IDEMPOTENCY_SCHEMA_VERSION = 1;
+const ACCOUNT_METADATA_CONCURRENCY = 6;
+
+type ColumnMetadataFetchResult =
+	| { columnId: string; response: Response }
+	| { columnId: string; error: unknown };
+
+async function fetchColumnMetadataBatch(
+	columnRooms: DurableObjectNamespace,
+	columnIds: readonly string[],
+): Promise<ColumnMetadataFetchResult[]> {
+	return mapWithConcurrency(
+		columnIds,
+		ACCOUNT_METADATA_CONCURRENCY,
+		async (columnId) => {
+			const stub = columnRooms.get(columnRooms.idFromName(columnId));
+			try {
+				return {
+					columnId,
+					response: await stub.fetch(new Request("http://do/meta")),
+				};
+			} catch (error) {
+				return { columnId, error };
+			}
+		},
+	);
+}
 
 interface IdempotencyCacheBaseRecord {
 	schemaVersion: number;
@@ -903,35 +930,34 @@ app.get("/api/account/:id", async (c) => {
 	// Fetch authoritative metadata for owned columns so account convergence can
 	// confirm sharing and public-link state rather than retaining client effects.
 	const ownedColumns: ColumnMeta[] = [];
-	for (const columnId of account.columnOrder) {
-		const stub = c.env.COLUMN_ROOM.get(
-			c.env.COLUMN_ROOM.idFromName(columnId),
-		);
-		try {
-			const response = await stub.fetch(new Request("http://do/meta"));
-			if (response.status === 404) continue;
-			if (!response.ok) {
-				return apiErrorResponse(
-					"durable_object_unavailable",
-					"Failed to load owned column metadata",
-					503,
-				);
-			}
-			const parsedMeta = parseColumnMetaRecord(await response.json());
-			if (!parsedMeta.ok) {
-				return schemaErrorResponse("column_meta", parsedMeta);
-			}
-			ownedColumns.push(parsedMeta.value);
-		} catch (err) {
-			if (isDurableObjectDurationError(err)) {
+	const ownedMetadataResults = await fetchColumnMetadataBatch(
+		c.env.COLUMN_ROOM,
+		account.columnOrder,
+	);
+	for (const result of ownedMetadataResults) {
+		if ("error" in result) {
+			if (isDurableObjectDurationError(result.error)) {
 				return apiErrorResponse(
 					"durable_object_unavailable",
 					"Owned column metadata is temporarily unavailable",
 					503,
 				);
 			}
-			throw err;
+			throw result.error;
 		}
+		if (result.response.status === 404) continue;
+		if (!result.response.ok) {
+			return apiErrorResponse(
+				"durable_object_unavailable",
+				"Failed to load owned column metadata",
+				503,
+			);
+		}
+		const parsedMeta = parseColumnMetaRecord(await result.response.json());
+		if (!parsedMeta.ok) {
+			return schemaErrorResponse("column_meta", parsedMeta);
+		}
+		ownedColumns.push(parsedMeta.value);
 	}
 
 	// Get shared columns (columns where this account is in sharedWith)
@@ -947,35 +973,35 @@ app.get("/api/account/:id", async (c) => {
 	// Fetch metadata for shared columns
 	const sharedColumns: ColumnMeta[] = [];
 	const reconciledSharedColumnIds: string[] = [];
-	for (const columnId of sharedColumnIds) {
-		const stub = c.env.COLUMN_ROOM.get(
-			c.env.COLUMN_ROOM.idFromName(columnId),
-		);
-		try {
-			const response = await stub.fetch(new Request("http://do/meta"));
-			if (response.ok) {
-				const parsedMeta = parseColumnMetaRecord(await response.json());
+	const sharedMetadataResults = await fetchColumnMetadataBatch(
+		c.env.COLUMN_ROOM,
+		sharedColumnIds,
+	);
+	for (const result of sharedMetadataResults) {
+		if ("response" in result) {
+			if (result.response.ok) {
+				const parsedMeta = parseColumnMetaRecord(await result.response.json());
 				if (parsedMeta.ok) {
 					const stillShared = hasColumnAccess(parsedMeta.value, accountId);
 					if (stillShared) {
 						sharedColumns.push(parsedMeta.value);
-						reconciledSharedColumnIds.push(columnId);
+						reconciledSharedColumnIds.push(result.columnId);
 					}
 				} else {
-					reconciledSharedColumnIds.push(columnId);
+					reconciledSharedColumnIds.push(result.columnId);
 				}
-			} else if (response.status !== 404) {
-				reconciledSharedColumnIds.push(columnId);
+			} else if (result.response.status !== 404) {
+				reconciledSharedColumnIds.push(result.columnId);
 			}
-		} catch (err) {
-			if (isDurableObjectDurationError(err)) {
+		} else {
+			if (isDurableObjectDurationError(result.error)) {
 				console.warn("Skipping shared column metadata due to DO duration limit", {
-					columnId,
+					columnId: result.columnId,
 				});
-				reconciledSharedColumnIds.push(columnId);
+				reconciledSharedColumnIds.push(result.columnId);
 				continue;
 			}
-			throw err;
+			throw result.error;
 		}
 	}
 	if (

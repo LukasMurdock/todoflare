@@ -14,16 +14,10 @@ import { deriveSyncMode, type SyncMode } from "@/lib/sync/mode-machine";
 import { getLocalFirstDb } from "@/lib/local-first/database";
 import type { AccountSnapshotDoc } from "@/lib/local-first/collections";
 import {
-	type ReplayReport,
-} from "@/lib/sync/contracts";
-import {
 	createLocalFirstMutationQueueStorage,
 	LocalMutationQueueService,
 } from "@/lib/sync/mutation-queue-service";
-import {
-	columnIdForAccountCommand,
-	summarizeReplayReport,
-} from "@/lib/sync/account-command-reconciliation";
+import { columnIdForAccountCommand } from "@/lib/sync/account-command-reconciliation";
 import {
 	LOCAL_COLUMNS_STORAGE_KEY,
 	parseLocalColumns,
@@ -44,19 +38,21 @@ import type {
 	ColumnSocketFrame,
 	ColumnSocketLike,
 } from "@/lib/sync/column-socket-actor";
-import {
-	AccountConvergenceFailure,
-	type AccountConvergenceDependencies,
-} from "@/lib/sync/account-convergence-machine";
+import type { AccountConvergenceDependencies } from "@/lib/sync/account-convergence-machine";
 import {
 	accountConvergenceErrorMessage,
 	useAccountCommandSubmission,
 	useAccountConvergence,
 } from "@/hooks/use-account-convergence";
 import {
-	projectionFromServer,
-	type AccountProjection,
-} from "@/lib/sync/account-projection";
+	useSyncTelemetry,
+	type SyncStateSummary,
+} from "@/hooks/use-sync-telemetry";
+import { projectionFromLocalSnapshot } from "@/lib/sync/account-projection";
+import {
+	createAccountProjection,
+	fetchAccountProjection,
+} from "@/lib/sync/account-api-client";
 import type { LocalFirstDatabase } from "@/lib/local-first/database";
 import type {
 	Account,
@@ -65,8 +61,6 @@ import type {
 	ConnectionStatus,
 	PresenceUser,
 	SyncMessage,
-	GetAccountResponse,
-	CreateAccountResponse,
 	PublicLinkResponse,
 	AccountExportPayload,
 } from "@/types/account";
@@ -89,28 +83,10 @@ function encodeOutboundUpdate(
 	return encodeWsFrame(op, update);
 }
 
-function hasTerminalFailureForCommand(
-	report: ReplayReport | null,
-	queueId: string | null,
-): boolean {
-	if (!report || !queueId) return false;
-	return report.terminalFailures.some((failure) => failure.queueId === queueId);
-}
-
 interface YjsOutboxSummary {
 	totalPending: number;
 	activeColumns: number;
 	columnPending: Record<string, number>;
-}
-
-interface SyncStateSummary {
-	queueDepth: number;
-	yjsQueueDepth: number;
-	lastServerHydrationAt: number | null;
-	lastReplayAt: number | null;
-	lastReplayLatencyMs: number | null;
-	revokeDiscardCount: number;
-	convergenceFailureCount: number;
 }
 
 function emptyYjsOutboxSummary(): YjsOutboxSummary {
@@ -139,11 +115,6 @@ function summarizeYjsOutbox(
 
 function accountSnapshotDocId(accountId: string): string {
 	return `account:${normalizeAccountId(accountId)}`;
-}
-
-function syncStateDocId(accountId: string | null): string {
-	if (!accountId) return "sync:guest";
-	return `sync:${normalizeAccountId(accountId)}`;
 }
 
 interface SyncContextValue {
@@ -224,18 +195,6 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		}
 	}
 	const [operationError, setError] = useState<string | null>(null);
-	const [lastServerHydrationAt, setLastServerHydrationAt] = useState<
-		number | null
-	>(null);
-	const [lastReplayAt, setLastReplayAt] = useState<number | null>(null);
-	const [lastReplayLatencyMs, setLastReplayLatencyMs] = useState<number | null>(
-		null,
-	);
-	const [revokeDiscardCount, setRevokeDiscardCount] = useState(0);
-	const [convergenceFailureCount, setConvergenceFailureCount] = useState(0);
-	const [hydratedSyncStateDocId, setHydratedSyncStateDocId] = useState<
-		string | null
-	>(null);
 	const [yjsOutboxSummary, setYjsOutboxSummary] = useState<YjsOutboxSummary>(
 		emptyYjsOutboxSummary,
 	);
@@ -346,105 +305,6 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		[ensureLocalFirstDb],
 	);
 
-	const loadSyncStateFromLocalStore = useCallback(
-		async (id: string | null) => {
-			try {
-				const db = await ensureLocalFirstDb();
-				const snapshot = db.collections.syncState.get(syncStateDocId(id));
-				if (!snapshot) return null;
-
-				return {
-					lastServerHydrationAt: snapshot.lastServerHydrationAt,
-					lastReplayAt: snapshot.lastReplayAt,
-					lastReplayLatencyMs: snapshot.lastReplayLatencyMs ?? null,
-					revokeDiscardCount: snapshot.revokeDiscardCount ?? 0,
-					convergenceFailureCount: snapshot.convergenceFailureCount ?? 0,
-				};
-			} catch (err) {
-				console.error("Failed to load sync state from local store:", err);
-				return null;
-			}
-		},
-		[ensureLocalFirstDb],
-	);
-
-	const persistSyncStateToLocalStore = useCallback(
-		async (params: {
-			accountIdValue: string | null;
-			mode: SyncMode;
-			queueDepth: number;
-			yjsQueueDepth: number;
-			lastServerHydrationAtValue: number | null;
-			lastReplayAtValue: number | null;
-			lastReplayLatencyMsValue: number | null;
-			revokeDiscardCountValue: number;
-			convergenceFailureCountValue: number;
-		}) => {
-			try {
-				const db = await ensureLocalFirstDb();
-				const docId = syncStateDocId(params.accountIdValue);
-				db.collections.syncState.set(docId, {
-					id: docId,
-					accountId: params.accountIdValue,
-					mode: params.mode,
-					queueDepth: params.queueDepth,
-					yjsQueueDepth: params.yjsQueueDepth,
-					lastServerHydrationAt: params.lastServerHydrationAtValue,
-					lastReplayAt: params.lastReplayAtValue,
-					lastReplayLatencyMs: params.lastReplayLatencyMsValue,
-					revokeDiscardCount: params.revokeDiscardCountValue,
-					convergenceFailureCount: params.convergenceFailureCountValue,
-					updatedAt: Date.now(),
-				});
-			} catch (err) {
-				console.error("Failed to persist sync state to local store:", err);
-			}
-		},
-		[ensureLocalFirstDb],
-	);
-
-	const fetchProjection = useCallback(
-		async (
-			id: string,
-			signal: AbortSignal,
-			scope: "auth" | "hydrate",
-		): Promise<AccountProjection> => {
-			if (!validateAccountId(id)) {
-				throw new AccountConvergenceFailure(
-					{ scope: "auth", kind: "invalid" },
-					"Invalid account ID format",
-				);
-			}
-			const response = await fetch(`/api/account/${normalizeAccountId(id)}`, {
-				signal,
-			});
-			if (response.status === 404) {
-				throw new AccountConvergenceFailure(
-					{ scope: "auth", kind: "not_found" },
-					"Account not found",
-				);
-			}
-			if (response.status === 429) {
-				throw new AccountConvergenceFailure(
-					{ scope: "hydrate", kind: "rate_limited" },
-					"Account request was rate limited",
-				);
-			}
-			if (!response.ok) {
-				throw new AccountConvergenceFailure(
-					{ scope: "hydrate", kind: "server" },
-					`Failed to ${scope === "auth" ? "authenticate" : "hydrate"} account`,
-				);
-			}
-			return projectionFromServer(
-				(await response.json()) as GetAccountResponse,
-				undefined,
-				window.location.origin,
-			);
-		},
-		[],
-	);
-
 	const accountConvergenceDependencies = useMemo<AccountConvergenceDependencies>(
 		() => ({
 			loadLocal: async (id) => {
@@ -455,43 +315,12 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 					accountSnapshotDocId(id),
 				) as AccountSnapshotDoc | undefined;
 				if (!snapshot) return null;
-				return projectionFromServer(
-					{
-						account: snapshot.account,
-						sharedColumns: snapshot.sharedColumns ?? [],
-						deletedColumns: snapshot.deletedColumns ?? [],
-					},
-					{
-						sharedWithByColumn: snapshot.sharedWithByColumn ?? {},
-						publicLinksByColumn: snapshot.publicLinksByColumn ?? {},
-					},
-				);
+				return projectionFromLocalSnapshot(snapshot);
 			},
-			fetchServer: (id, signal) => fetchProjection(id, signal, "hydrate"),
-			login: (id, signal) => fetchProjection(id, signal, "auth"),
-			createAccount: async (signal) => {
-				const response = await fetch("/api/account", { method: "POST", signal });
-				if (response.status === 429) {
-					throw new AccountConvergenceFailure(
-						{ scope: "hydrate", kind: "rate_limited" },
-						"Account creation was rate limited",
-					);
-				}
-				if (!response.ok) {
-					throw new AccountConvergenceFailure(
-						{ scope: "hydrate", kind: "server" },
-						"Failed to create account",
-					);
-				}
-				const { account: created } =
-					(await response.json()) as CreateAccountResponse;
-				return projectionFromServer({
-					account: created,
-					ownedColumns: [],
-					sharedColumns: [],
-					deletedColumns: [],
-				});
-			},
+			fetchServer: (id, signal) =>
+				fetchAccountProjection(id, signal, "hydrate"),
+			login: (id, signal) => fetchAccountProjection(id, signal, "auth"),
+			createAccount: createAccountProjection,
 			replay: (id, signal) =>
 				mutationQueue.replay({ accountId: id, signal, maxBatch: 50 }),
 			getPending: (id) => mutationQueue.getPending(id),
@@ -520,7 +349,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 				}
 			},
 		}),
-		[ensureDurableQueueStorage, fetchProjection, mutationQueue],
+		[ensureDurableQueueStorage, mutationQueue],
 	);
 	const accountConvergence = useAccountConvergence(accountConvergenceDependencies, {
 		networkOnline: isNetworkOnline,
@@ -549,22 +378,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 	const isLoading = accountConvergence.isLoading;
 	const error =
 		accountConvergenceErrorMessage(accountConvergence.error) ?? operationError;
-	const handleAccountReplay = useCallback(
-		(report: ReplayReport, latencyMs: number) => {
-			if (report.attempted > 0) setLastReplayLatencyMs(latencyMs);
-			if (summarizeReplayReport(report).nonAccessLossFailureCount > 0) {
-				setConvergenceFailureCount((value) => value + 1);
-				toast.error("Some offline changes could not be synced");
-			}
-		},
-		[],
-	);
 	const { submitAccountCommand, waitForStableConvergence } =
-		useAccountCommandSubmission(
-			accountConvergenceActor,
-			mutationQueue,
-			handleAccountReplay,
-		);
+		useAccountCommandSubmission(accountConvergenceActor, mutationQueue);
 
 	const refreshYjsOutboxSummary = useCallback(() => {
 		if (!accountId) {
@@ -588,113 +403,26 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		isNetworkOnline,
 		connectionStatus,
 	});
-	const activeSyncStateDocId = syncStateDocId(accountId);
-
-	const syncStateSummary: SyncStateSummary = {
+	const {
+		summary: syncStateSummary,
+		lastServerHydrationAt,
+		recordRevokeDiscard,
+		resetSyncTelemetry,
+	} = useSyncTelemetry({
+		accountId,
+		mode: syncMode,
 		queueDepth: mutationQueueDepth,
 		yjsQueueDepth: yjsOutboxSummary.totalPending,
-		lastServerHydrationAt,
-		lastReplayAt,
-		lastReplayLatencyMs,
-		revokeDiscardCount,
-		convergenceFailureCount,
-	};
-
-	useEffect(() => {
-		const replayAt = accountConvergence.lastReplayAt;
-		if (replayAt === null) return;
-		setLastReplayAt((current) =>
-			current === null ? replayAt : Math.max(current, replayAt),
-		);
-		setLastReplayLatencyMs((current) => current ?? 0);
-	}, [accountConvergence.lastReplayAt]);
-
-	useEffect(() => {
-		const convergedAt = accountConvergence.lastConvergedAt;
-		if (convergedAt === null) return;
-		setLastServerHydrationAt((current) =>
-			current === null ? convergedAt : Math.max(current, convergedAt),
-		);
-	}, [accountConvergence.lastConvergedAt]);
+		convergedAt: accountConvergence.lastConvergedAt,
+		replayAt: accountConvergence.lastReplayAt,
+		replayDurationMs: accountConvergence.lastReplayDurationMs,
+		replayReport: accountConvergence.lastReplayReport,
+		ensureLocalFirstDb,
+	});
 
 	useEffect(() => {
 		setError(null);
 	}, [accountId]);
-
-	useEffect(() => {
-		let cancelled = false;
-		setHydratedSyncStateDocId(null);
-		setLastServerHydrationAt(null);
-		setLastReplayAt(null);
-		setLastReplayLatencyMs(null);
-		setRevokeDiscardCount(0);
-		setConvergenceFailureCount(0);
-
-		void (async () => {
-			const snapshot = await loadSyncStateFromLocalStore(accountId);
-			if (cancelled) return;
-
-			setLastServerHydrationAt((prev) => {
-				const loaded = snapshot?.lastServerHydrationAt ?? null;
-				if (loaded === null) return prev;
-				if (prev === null) return loaded;
-				return Math.max(prev, loaded);
-			});
-			setLastReplayAt((prev) => {
-				const loaded = snapshot?.lastReplayAt ?? null;
-				if (loaded === null) return prev;
-				if (prev === null) return loaded;
-				return Math.max(prev, loaded);
-			});
-			setLastReplayLatencyMs((prev) => {
-				const loaded = snapshot?.lastReplayLatencyMs ?? null;
-				if (prev !== null) return prev;
-				return loaded;
-			});
-			setRevokeDiscardCount((prev) => {
-				const loaded = snapshot?.revokeDiscardCount ?? 0;
-				return Math.max(prev, loaded);
-			});
-			setConvergenceFailureCount((prev) => {
-				const loaded = snapshot?.convergenceFailureCount ?? 0;
-				return Math.max(prev, loaded);
-			});
-			setHydratedSyncStateDocId(activeSyncStateDocId);
-		})();
-
-		return () => {
-			cancelled = true;
-		};
-	}, [accountId, activeSyncStateDocId, loadSyncStateFromLocalStore]);
-
-	useEffect(() => {
-		if (hydratedSyncStateDocId !== activeSyncStateDocId) return;
-
-		void persistSyncStateToLocalStore({
-			accountIdValue: accountId,
-			mode: syncMode,
-			queueDepth: mutationQueueDepth,
-			yjsQueueDepth: yjsOutboxSummary.totalPending,
-			lastServerHydrationAtValue: lastServerHydrationAt,
-			lastReplayAtValue: lastReplayAt,
-			lastReplayLatencyMsValue: lastReplayLatencyMs,
-			revokeDiscardCountValue: revokeDiscardCount,
-			convergenceFailureCountValue: convergenceFailureCount,
-		});
-	}, [
-		activeSyncStateDocId,
-		accountId,
-		convergenceFailureCount,
-		hydratedSyncStateDocId,
-		lastReplayAt,
-		lastReplayLatencyMs,
-		lastServerHydrationAt,
-		mutationQueueDepth,
-		persistSyncStateToLocalStore,
-		revokeDiscardCount,
-		syncMode,
-		yjsOutboxSummary.totalPending,
-	]);
 
 	useEffect(() => {
 		const onOnline = () => {
@@ -744,12 +472,6 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		refreshYjsOutboxSummary();
 	}, [accountId, refreshYjsOutboxSummary]);
 
-	const resetSyncTelemetry = useCallback(() => {
-		setLastReplayLatencyMs(null);
-		setRevokeDiscardCount(0);
-		setConvergenceFailureCount(0);
-	}, []);
-
 	const detachColumnSync = useCallback((columnId: string) => {
 		columnSessionManagerRef.current?.manager.detachColumn(columnId);
 		messageCallbacks.current.delete(columnId);
@@ -779,7 +501,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 
 			const discardedCount = droppedMutationCount + droppedYjsCount;
 			if (reason === "revoked" && discardedCount > 0) {
-				setRevokeDiscardCount((prev) => prev + discardedCount);
+				recordRevokeDiscard(discardedCount);
 			}
 			const noticeKey = `${reason}:${columnId}`;
 			const now = Date.now();
@@ -809,6 +531,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			accountConvergenceActor,
 			accountId,
 			mutationQueue,
+			recordRevokeDiscard,
 			refreshYjsOutboxSummary,
 			yjsOutbox,
 		],
@@ -1059,12 +782,12 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		};
 
 		try {
-			const { queueId, report } = await submitAccountCommand(
+			const { outcome } = await submitAccountCommand(
 				"column.create",
 				{ columnId },
 			);
 
-			if (hasTerminalFailureForCommand(report, queueId)) {
+			if (outcome === "terminal") {
 				detachColumnSync(columnId);
 				return null;
 			}
@@ -1086,11 +809,11 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			detachColumnSync(columnId);
 
 			try {
-				const { queueId, report } = await submitAccountCommand(
+				const { outcome } = await submitAccountCommand(
 					"column.delete",
 					{ columnId },
 				);
-				if (hasTerminalFailureForCommand(report, queueId)) {
+				if (outcome === "terminal") {
 					return false;
 				}
 				return true;
@@ -1107,11 +830,11 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			if (!accountId) return false;
 
 			try {
-				const { queueId, report } = await submitAccountCommand(
+				const { outcome } = await submitAccountCommand(
 					"column.restore",
 					{ columnId },
 				);
-				if (hasTerminalFailureForCommand(report, queueId)) {
+				if (outcome === "terminal") {
 					return false;
 				}
 				return true;
@@ -1130,11 +853,11 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			if (!validateAccountId(targetAccountId)) return false;
 
 			try {
-				const { queueId, report } = await submitAccountCommand(
+				const { outcome } = await submitAccountCommand(
 					"column.share",
 					{ columnId, targetAccountId },
 				);
-				if (hasTerminalFailureForCommand(report, queueId)) {
+				if (outcome === "terminal") {
 					return false;
 				}
 				return true;
@@ -1153,11 +876,11 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			if (!validateAccountId(targetAccountId)) return false;
 
 			try {
-				const { queueId, report } = await submitAccountCommand(
+				const { outcome } = await submitAccountCommand(
 					"column.revoke",
 					{ columnId, targetAccountId },
 				);
-				if (hasTerminalFailureForCommand(report, queueId)) {
+				if (outcome === "terminal") {
 					return false;
 				}
 				return true;
@@ -1175,11 +898,11 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			if (!accountId) return null;
 
 			try {
-				const { queueId, report } = await submitAccountCommand(
+				const { outcome } = await submitAccountCommand(
 					"column.public.enable",
 					{ columnId },
 				);
-				if (hasTerminalFailureForCommand(report, queueId)) {
+				if (outcome === "terminal") {
 					return null;
 				}
 
@@ -1201,11 +924,11 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			if (!accountId) return false;
 
 			try {
-				const { queueId, report } = await submitAccountCommand(
+				const { outcome } = await submitAccountCommand(
 					"column.public.disable",
 					{ columnId },
 				);
-				if (hasTerminalFailureForCommand(report, queueId)) {
+				if (outcome === "terminal") {
 					return false;
 				}
 				return true;

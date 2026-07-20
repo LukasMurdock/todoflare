@@ -10,18 +10,24 @@ import { summarizeReplayReport } from "./account-command-reconciliation";
 import type { QueuedMutation, ReplayReport } from "./contracts";
 
 export type AccountConvergenceError =
-	| { scope: "auth"; kind: "invalid" | "not_found" }
-	| { scope: "hydrate"; kind: "offline" | "rate_limited" | "server" }
+	| { scope: "auth"; kind: "invalid" | "not_found" | "server" }
+	| { scope: "hydrate"; kind: "rate_limited" | "server" }
 	| { scope: "replay"; kind: "retryable" | "terminal" }
 	| { scope: "access"; kind: "revoked"; columnId: string };
 
 export class AccountConvergenceFailure extends Error {
 	readonly convergenceError: AccountConvergenceError;
+	readonly retryAfterMs: number | null;
 
-	constructor(error: AccountConvergenceError, message: string) {
+	constructor(
+		error: AccountConvergenceError,
+		message: string,
+		retryAfterMs: number | null = null,
+	) {
 		super(message);
 		this.name = "AccountConvergenceFailure";
 		this.convergenceError = error;
+		this.retryAfterMs = retryAfterMs;
 	}
 }
 
@@ -32,12 +38,16 @@ export interface AccountConvergenceContext {
 	queueDepth: number;
 	lastConvergedAt: number | null;
 	lastReplayAt: number | null;
+	replayStartedAt: number | null;
+	lastReplayDurationMs: number | null;
 	error: AccountConvergenceError | null;
 	networkOnline: boolean;
-	retryAt: number | null;
+	hydrationRetryAt: number | null;
+	replayRetryAt: number | null;
+	hydrationFailureCount: number;
+	replayFailureCount: number;
 	lastReplayReport: ReplayReport | null;
 	accessLostColumnIds: string[];
-	retryKind: "hydrate" | "replay";
 	authCandidate: string | null;
 }
 
@@ -101,10 +111,10 @@ export function createAccountConvergenceMachine(
 	const now = dependencies.now ?? Date.now;
 
 	const queueState = (accountId: string | null) => {
-		if (!accountId) return { queueDepth: 0, retryAt: null };
+		if (!accountId) return { queueDepth: 0, replayRetryAt: null };
 		return {
 			queueDepth: dependencies.getPending(accountId).length,
-			retryAt: dependencies.getNextRetryAt(accountId),
+			replayRetryAt: dependencies.getNextRetryAt(accountId),
 		};
 	};
 
@@ -129,6 +139,8 @@ export function createAccountConvergenceMachine(
 				  }
 				| { type: "installServerProjection"; params: AccountProjection }
 				| { type: "recordReplay"; params: ReplayReport }
+				| { type: "markReplayStarted" }
+				| { type: "recordReplayFailure" }
 				| { type: "recordHydrationFailure"; params: unknown }
 				| { type: "recordAuthFailure"; params: unknown };
 		},
@@ -157,13 +169,15 @@ export function createAccountConvergenceMachine(
 			),
 		},
 		delays: {
-			nextRetryDelay: ({ context }) =>
-				Math.max(0, (context.retryAt ?? now() + 5_000) - now()),
+			hydrationRetryDelay: ({ context }) =>
+				Math.max(0, (context.hydrationRetryAt ?? now() + 5_000) - now()),
+			replayRetryDelay: ({ context }) =>
+				Math.max(0, (context.replayRetryAt ?? now() + 5_000) - now()),
 		},
 		guards: {
 			isOnline: ({ context }) => context.networkOnline,
+			isOffline: ({ context }) => !context.networkOnline,
 			hasAccountSession: ({ context }) => context.accountId !== null,
-			retryHydration: ({ context }) => context.retryKind === "hydrate",
 			hasPending: ({ context }) => context.queueDepth > 0,
 			replayHadAttempts: ({ context }) =>
 				(context.lastReplayReport?.attempted ?? 0) > 0,
@@ -183,8 +197,12 @@ export function createAccountConvergenceMachine(
 					projection: null,
 					error: null,
 					lastReplayReport: null,
+					replayStartedAt: null,
+					lastReplayDurationMs: null,
 					accessLostColumnIds: [],
-					retryKind: "hydrate" as const,
+					hydrationRetryAt: null,
+					hydrationFailureCount: 0,
+					replayFailureCount: 0,
 					...queueState(event.accountId),
 				};
 			}),
@@ -203,7 +221,11 @@ export function createAccountConvergenceMachine(
 					authCandidate: null,
 					error: null,
 					accessLostColumnIds: [],
-					retryKind: "hydrate" as const,
+					replayStartedAt: null,
+					lastReplayDurationMs: null,
+					hydrationRetryAt: null,
+					hydrationFailureCount: 0,
+					replayFailureCount: 0,
 					...queueState(accountId),
 				};
 				},
@@ -239,16 +261,42 @@ export function createAccountConvergenceMachine(
 					projection: projectPending(base, context.accountId),
 					accessLostColumnIds,
 					error: retainedError,
+					hydrationRetryAt: null,
+					hydrationFailureCount: 0,
 					...queueState(context.accountId),
 				};
 				},
 			),
+			markReplayStarted: assign({ replayStartedAt: () => now() }),
 			recordReplay: assign(({ context }, report: ReplayReport) => {
+				const finishedAt = now();
 				return {
 					lastReplayReport: report,
-					lastReplayAt: now(),
-					retryKind: "replay" as const,
+					lastReplayAt: finishedAt,
+					lastReplayDurationMs:
+						context.replayStartedAt === null
+							? null
+							: Math.max(0, finishedAt - context.replayStartedAt),
+					replayStartedAt: null,
+					replayFailureCount: 0,
 					...queueState(context.accountId),
+				};
+			}),
+			recordReplayFailure: assign(({ context }) => {
+				const failureCount = context.replayFailureCount + 1;
+				const queue = queueState(context.accountId);
+				const fallbackRetryAt =
+					now() +
+					Math.min(30_000, 5_000 * 2 ** Math.max(0, failureCount - 1));
+				return {
+					error: { scope: "replay", kind: "retryable" } as const,
+					...queue,
+					replayFailureCount: failureCount,
+					replayStartedAt: null,
+					replayRetryAt:
+						queue.replayRetryAt !== null && queue.replayRetryAt > now()
+							? queue.replayRetryAt
+							: fallbackRetryAt,
 				};
 			}),
 			applyReplayReport: assign(({ context }) => {
@@ -332,17 +380,29 @@ export function createAccountConvergenceMachine(
 						? context.error
 						: null,
 			}),
-			recordHydrationFailure: assign((_, error) => ({
-				error: failureFromUnknown(error, {
+			recordHydrationFailure: assign(({ context }, error) => {
+				const failureCount = context.hydrationFailureCount + 1;
+				const retryAfterMs =
+					error instanceof AccountConvergenceFailure
+						? error.retryAfterMs
+						: null;
+				const fallbackDelay = Math.min(
+					30_000,
+					5_000 * 2 ** Math.max(0, failureCount - 1),
+				);
+				return {
+					error: failureFromUnknown(error, {
 					scope: "hydrate",
 					kind: "server",
-				}),
-				retryKind: "hydrate" as const,
-			})),
+					}),
+					hydrationFailureCount: failureCount,
+					hydrationRetryAt: now() + (retryAfterMs ?? fallbackDelay),
+				};
+			}),
 			recordAuthFailure: assign((_, error) => ({
 				error: failureFromUnknown(error, {
 					scope: "auth",
-					kind: "not_found",
+					kind: "server",
 				}),
 			})),
 			clearSession: assign(() => {
@@ -352,12 +412,16 @@ export function createAccountConvergenceMachine(
 					serverBase: null,
 					projection: null,
 					queueDepth: 0,
-					retryAt: null,
+					hydrationRetryAt: null,
+					replayRetryAt: null,
+					hydrationFailureCount: 0,
+					replayFailureCount: 0,
 					lastConvergedAt: null,
 					lastReplayAt: null,
+					replayStartedAt: null,
+					lastReplayDurationMs: null,
 					lastReplayReport: null,
 					accessLostColumnIds: [],
-					retryKind: "hydrate" as const,
 					authCandidate: null,
 				};
 			}),
@@ -371,17 +435,23 @@ export function createAccountConvergenceMachine(
 			queueDepth: 0,
 			lastConvergedAt: null,
 			lastReplayAt: null,
+			replayStartedAt: null,
+			lastReplayDurationMs: null,
 			error: null,
 			networkOnline: input.networkOnline,
-			retryAt: null,
+			hydrationRetryAt: null,
+			replayRetryAt: null,
+			hydrationFailureCount: 0,
+			replayFailureCount: 0,
 			lastReplayReport: null,
 			accessLostColumnIds: [],
-			retryKind: "hydrate",
 			authCandidate: null,
 		}),
 		initial: "signedOut",
 		on: {
 			LOGOUT: { target: ".signingOut", actions: "clearError" },
+			NETWORK_ONLINE: { actions: "setOnline" },
+			NETWORK_OFFLINE: { actions: "setOffline" },
 			ACCESS_REVOKED: { actions: "removeRevokedColumn" },
 			COLUMN_DELETED: { actions: "removeDeletedColumn" },
 		},
@@ -501,7 +571,7 @@ export function createAccountConvergenceMachine(
 							target: "notFound",
 						},
 						{
-							target: "retryScheduled",
+							target: "retryScheduled.hydration",
 							actions: {
 								type: "recordHydrationFailure",
 								params: ({ event }) => event.error,
@@ -521,6 +591,7 @@ export function createAccountConvergenceMachine(
 				},
 			},
 			replaying: {
+				entry: "markReplayStarted",
 				invoke: {
 					src: "replay",
 					input: ({ context }) => ({ accountId: accountIdOrThrow(context) }),
@@ -532,11 +603,8 @@ export function createAccountConvergenceMachine(
 						},
 					},
 					onError: {
-						target: "retryScheduled",
-						actions: assign({
-							error: { scope: "replay", kind: "retryable" } as const,
-							retryKind: "replay" as const,
-						}),
+						target: "retryScheduled.replay",
+						actions: "recordReplayFailure",
 					},
 				},
 				on: {
@@ -553,11 +621,15 @@ export function createAccountConvergenceMachine(
 						columnIds: context.accessLostColumnIds,
 					}),
 					onDone: [
+						{ guard: "isOffline", target: "readyOffline" },
 						{ guard: "replayHadAttempts", target: "confirmingServer" },
-						{ guard: "hasPending", target: "retryScheduled" },
+						{ guard: "hasPending", target: "retryScheduled.replay" },
 						{ target: "ready", actions: "markConverged" },
 					],
-					onError: { target: "confirmingServer" },
+					onError: [
+						{ guard: "isOffline", target: "readyOffline" },
+						{ target: "confirmingServer" },
+					],
 				},
 			},
 			confirmingServer: {
@@ -577,7 +649,7 @@ export function createAccountConvergenceMachine(
 							target: "notFound",
 						},
 						{
-							target: "retryScheduled",
+							target: "retryScheduled.hydration",
 							actions: {
 								type: "recordHydrationFailure",
 								params: ({ event }) => event.error,
@@ -592,16 +664,23 @@ export function createAccountConvergenceMachine(
 			},
 			postConvergence: {
 				always: [
-					{ guard: "hasPending", target: "retryScheduled" },
+					{ guard: "hasPending", target: "retryScheduled.replay" },
 					{ target: "ready", actions: "markConverged" },
 				],
 			},
 			retryScheduled: {
-				after: {
-					nextRetryDelay: [
-						{ guard: "retryHydration", target: "hydratingServer" },
-						{ target: "replaying" },
-					],
+				initial: "hydration",
+				states: {
+					hydration: {
+						after: {
+							hydrationRetryDelay: "#accountConvergence.hydratingServer",
+						},
+					},
+					replay: {
+						after: {
+							replayRetryDelay: "#accountConvergence.replaying",
+						},
+					},
 				},
 				on: {
 					NETWORK_OFFLINE: { target: "readyOffline", actions: "setOffline" },

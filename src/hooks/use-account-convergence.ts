@@ -19,15 +19,121 @@ type AccountConvergenceMachine = ReturnType<
 	typeof createAccountConvergenceMachine
 >;
 export type AccountConvergenceActor = ActorRefFrom<AccountConvergenceMachine>;
+export const COMMAND_SETTLEMENT_TIMEOUT_MS = 15_000;
+export type AccountCommandOutcome =
+	| "acknowledged"
+	| "queued"
+	| "terminal"
+	| "signed_out"
+	| "timed_out";
+
+function isStableConvergenceSnapshot(
+	snapshot: ReturnType<AccountConvergenceActor["getSnapshot"]>,
+): boolean {
+	return (
+		snapshot.matches("ready") ||
+		snapshot.matches("readyOffline") ||
+		snapshot.matches("retryScheduled") ||
+		snapshot.matches("signedOut")
+	);
+}
+
+function reportOutcomeForQueue(
+	report: ReplayReport | null,
+	queueId: string,
+): "acknowledged" | "terminal" | null {
+	if (!report) return null;
+	if (report.terminalFailures.some((failure) => failure.queueId === queueId)) {
+		return "terminal";
+	}
+	return report.ackedCommands.some((command) => command.queueId === queueId)
+		? "acknowledged"
+		: null;
+}
+
+export async function persistAccountCommand<T extends AccountCommandType>(
+	actor: AccountConvergenceActor,
+	mutationQueue: LocalMutationQueueService,
+	opType: T,
+	payload: AccountCommandPayloadMap[NoInfer<T>],
+	timeout = COMMAND_SETTLEMENT_TIMEOUT_MS,
+): Promise<{
+	queueId: string | null;
+	outcome: AccountCommandOutcome;
+	report: ReplayReport | null;
+}> {
+	const accountId = actor.getSnapshot().context.accountId;
+	if (!accountId) {
+		return { queueId: null, outcome: "signed_out", report: null };
+	}
+
+	const createdAt = Date.now();
+	const queueId = await mutationQueue.enqueue(
+		createAccountEditCommand(opType, payload, {
+			idempotencyKey: crypto.randomUUID(),
+			entityId: accountId,
+			createdAt,
+			attemptCount: 0,
+			nextRetryAt: createdAt,
+		}),
+	);
+	actor.send({ type: "COMMAND_PERSISTED" });
+
+	let snapshot: ReturnType<AccountConvergenceActor["getSnapshot"]>;
+	try {
+		snapshot = await waitFor(
+			actor,
+			(candidate) => {
+				if (
+					reportOutcomeForQueue(candidate.context.lastReplayReport, queueId)
+				) {
+					return true;
+				}
+				return isStableConvergenceSnapshot(candidate);
+			},
+			{ timeout },
+		);
+	} catch (error) {
+		if (error instanceof Error && error.message.startsWith("Timeout of ")) {
+			return { queueId, outcome: "timed_out", report: null };
+		}
+		throw error;
+	}
+
+	const reportOutcome = reportOutcomeForQueue(
+		snapshot.context.lastReplayReport,
+		queueId,
+	);
+	if (reportOutcome) {
+		return {
+			queueId,
+			outcome: reportOutcome,
+			report: snapshot.context.lastReplayReport,
+		};
+	}
+	if (snapshot.matches("signedOut")) {
+		return { queueId, outcome: "signed_out", report: null };
+	}
+	const remainsQueued = mutationQueue
+		.getPending(accountId)
+		.some((command) => command.queueId === queueId);
+	return {
+		queueId,
+		// A command that vanished without appearing in an acknowledgement report
+		// was discarded by another reconciliation path; never infer success.
+		outcome: remainsQueued ? "queued" : "terminal",
+		report: null,
+	};
+}
 
 export function accountConvergenceErrorMessage(
 	error: AccountConvergenceError | null,
 ): string | null {
 	if (!error) return null;
 	if (error.scope === "auth") {
-		return error.kind === "invalid"
-			? "Invalid account ID format"
-			: "Account not found";
+		if (error.kind === "invalid") return "Invalid account ID format";
+		if (error.kind === "not_found") return "Account not found";
+		return "Failed to authenticate account";
 	}
 	if (error.scope === "access") return "Access revoked";
 	if (error.kind === "rate_limited") {
@@ -67,6 +173,14 @@ export function useAccountConvergence(
 		actor,
 		(snapshot) => snapshot.context.lastConvergedAt,
 	);
+	const lastReplayReport = useSelector(
+		actor,
+		(snapshot) => snapshot.context.lastReplayReport,
+	);
+	const lastReplayDurationMs = useSelector(
+		actor,
+		(snapshot) => snapshot.context.lastReplayDurationMs,
+	);
 	const error = useSelector(actor, (snapshot) => snapshot.context.error);
 	const isLoading = useSelector(
 		actor,
@@ -85,6 +199,8 @@ export function useAccountConvergence(
 		queueDepth,
 		lastReplayAt,
 		lastConvergedAt,
+		lastReplayReport,
+		lastReplayDurationMs,
 		error,
 		isLoading,
 	};
@@ -93,16 +209,12 @@ export function useAccountConvergence(
 export function useAccountCommandSubmission(
 	actor: AccountConvergenceActor,
 	mutationQueue: LocalMutationQueueService,
-	onReplay?: (report: ReplayReport, latencyMs: number) => void,
 ) {
 	const waitForStableConvergence = useCallback(
 		() =>
-			waitFor(actor, (snapshot) =>
-				snapshot.matches("ready") ||
-				snapshot.matches("readyOffline") ||
-				snapshot.matches("retryScheduled") ||
-				snapshot.matches("signedOut"),
-			),
+			waitFor(actor, isStableConvergenceSnapshot, {
+				timeout: COMMAND_SETTLEMENT_TIMEOUT_MS,
+			}),
 		[actor],
 	);
 
@@ -111,31 +223,9 @@ export function useAccountCommandSubmission(
 			opType: T,
 			payload: AccountCommandPayloadMap[NoInfer<T>],
 		) => {
-			const before = actor.getSnapshot();
-			const accountId = before.context.accountId;
-			if (!accountId) return { queueId: null, report: null };
-
-			const createdAt = Date.now();
-			const queueId = await mutationQueue.enqueue(
-				createAccountEditCommand(opType, payload, {
-					idempotencyKey: crypto.randomUUID(),
-					entityId: accountId,
-					createdAt,
-					attemptCount: 0,
-					nextRetryAt: createdAt,
-				}),
-			);
-			const startedAt = Date.now();
-			actor.send({ type: "COMMAND_PERSISTED" });
-			const snapshot = await waitForStableConvergence();
-			const report =
-				snapshot.context.lastReplayReport === before.context.lastReplayReport
-					? null
-					: snapshot.context.lastReplayReport;
-			if (report) onReplay?.(report, Math.max(0, Date.now() - startedAt));
-			return { queueId, report };
+			return persistAccountCommand(actor, mutationQueue, opType, payload);
 		},
-		[actor, mutationQueue, onReplay, waitForStableConvergence],
+		[actor, mutationQueue],
 	);
 
 	return { submitAccountCommand, waitForStableConvergence };

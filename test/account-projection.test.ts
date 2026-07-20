@@ -1,10 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	applyAccountCommand,
 	applyCommandEffects,
 	applyPendingCommands,
+	projectionFromLocalSnapshot,
 	projectionFromServer,
 } from "../src/lib/sync/account-projection";
+import {
+	fetchAccountProjection,
+	parseGetAccountResponse,
+} from "../src/lib/sync/account-api-client";
 import type {
 	AccountCommandPayloadMap,
 	AccountCommandType,
@@ -41,15 +46,64 @@ function baseProjection() {
 			hiddenSharedColumns: [],
 			createdAt: 1,
 		},
+		ownedColumns: [],
 		sharedColumns: [],
 		deletedColumns: [],
 	});
 }
 
 describe("account projection", () => {
-	it("replaces retained owned metadata with the authoritative server response", () => {
-		const projected = projectionFromServer(
-			{
+	it("rejects a server response that omits authoritative owned metadata", () => {
+		expect(() =>
+			parseGetAccountResponse({
+				account: baseProjection().account,
+				sharedColumns: [],
+				deletedColumns: [],
+			}),
+		).toThrow("Account response has invalid shape");
+	});
+
+	it("rejects owned metadata that belongs to a different account", () => {
+		expect(() =>
+			parseGetAccountResponse({
+				account: {
+					...baseProjection().account,
+					columnOrder: [COLUMN_ID],
+				},
+				ownedColumns: [
+					{
+						schemaVersion: 1,
+						id: COLUMN_ID,
+						ownerId: TARGET_ID,
+						sharedWith: [],
+						publicId: null,
+						createdAt: 1,
+					},
+				],
+				sharedColumns: [],
+				deletedColumns: [],
+			}),
+		).toThrow("Account response has invalid shape");
+	});
+
+	it("preserves retry-after from a rate-limited account response", async () => {
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(JSON.stringify({ retryAfter: 7 }), {
+				status: 429,
+				headers: { "Content-Type": "application/json" },
+			}),
+		);
+		try {
+			await expect(
+				fetchAccountProjection(ACCOUNT_ID, new AbortController().signal, "hydrate"),
+			).rejects.toMatchObject({ retryAfterMs: 7_000 });
+		} finally {
+			fetchMock.mockRestore();
+		}
+	});
+
+	it("builds owned metadata only from the authoritative server response", () => {
+		const projected = projectionFromServer({
 				account: baseProjection().account,
 				ownedColumns: [
 					{
@@ -63,12 +117,23 @@ describe("account projection", () => {
 				],
 				sharedColumns: [],
 				deletedColumns: [],
+			});
+
+		expect(projected.sharedWithByColumn[COLUMN_ID]).toEqual([TARGET_ID]);
+		expect(projected.publicLinksByColumn[COLUMN_ID]).toEqual({
+			publicId: "public-1",
+			url: "/p/public-1",
+		});
+	});
+
+	it("retains sharing metadata only through the local snapshot path", () => {
+		const projected = projectionFromLocalSnapshot({
+			account: baseProjection().account,
+			sharedWithByColumn: { [COLUMN_ID]: [TARGET_ID] },
+			publicLinksByColumn: {
+				[COLUMN_ID]: { publicId: "public-1", url: "/p/public-1" },
 			},
-			{
-				sharedWithByColumn: { [COLUMN_ID]: ["stale"] },
-				publicLinksByColumn: { [COLUMN_ID]: null },
-			},
-		);
+		});
 
 		expect(projected.sharedWithByColumn[COLUMN_ID]).toEqual([TARGET_ID]);
 		expect(projected.publicLinksByColumn[COLUMN_ID]).toEqual({

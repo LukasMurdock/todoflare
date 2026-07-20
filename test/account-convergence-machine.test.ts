@@ -21,6 +21,7 @@ function projection(columnOrder: string[] = []) {
 			hiddenSharedColumns: [],
 			createdAt: 1,
 		},
+		ownedColumns: [],
 		sharedColumns: [],
 		deletedColumns: [],
 	});
@@ -299,6 +300,33 @@ describe("account convergence machine", () => {
 		});
 	});
 
+	it("does not misclassify an authentication transport failure as not found", async () => {
+		const dependencies: AccountConvergenceDependencies = {
+			loadLocal: async () => null,
+			fetchServer: async () => projection(),
+			login: async () => {
+				throw new TypeError("Failed to fetch");
+			},
+			createAccount: async () => projection(),
+			replay: async () => emptyReport(),
+			getPending: () => [],
+			getNextRetryAt: () => null,
+			persistCredential: () => {},
+			reconcileAccessLoss: async () => {},
+		};
+		const actor = createActor(createAccountConvergenceMachine(dependencies), {
+			input: { networkOnline: true },
+		}).start();
+		actor.send({ type: "LOGIN", accountId: ACCOUNT_ID });
+
+		const snapshot = await waitFor(
+			actor,
+			(state) => state.matches("signedOut") && state.context.error !== null,
+		);
+		expect(snapshot.context.error).toEqual({ scope: "auth", kind: "server" });
+		actor.stop();
+	});
+
 	it("retries hydration failures through hydration rather than replay", async () => {
 		vi.useFakeTimers();
 		try {
@@ -323,7 +351,8 @@ describe("account convergence machine", () => {
 					return emptyReport();
 				},
 				getPending: () => [],
-				getNextRetryAt: () => null,
+				// A replay deadline must not delay an unrelated hydration retry.
+				getNextRetryAt: () => Date.now() + 60_000,
 				persistCredential: () => {},
 				reconcileAccessLoss: async () => {},
 			};
@@ -331,13 +360,58 @@ describe("account convergence machine", () => {
 				input: { networkOnline: true, restoredAccountId: ACCOUNT_ID },
 			}).start();
 			await waitFor(actor, (state) => state.matches("retryScheduled"));
-			expect(actor.getSnapshot().context.retryKind).toBe("hydrate");
+			expect(actor.getSnapshot().matches({ retryScheduled: "hydration" })).toBe(
+				true,
+			);
 
 			await vi.advanceTimersByTimeAsync(5_000);
 			await waitFor(actor, (state) => state.matches("ready"));
 
 			expect(fetchCount).toBe(2);
 			expect(replayCount).toBe(1);
+			actor.stop();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("honors server retry-after when scheduling hydration", async () => {
+		vi.useFakeTimers();
+		try {
+			let fetchCount = 0;
+			const dependencies: AccountConvergenceDependencies = {
+				loadLocal: async () => projection(),
+				fetchServer: async () => {
+					fetchCount += 1;
+					if (fetchCount === 1) {
+						throw new AccountConvergenceFailure(
+							{ scope: "hydrate", kind: "rate_limited" },
+							"retry later",
+							12_000,
+						);
+					}
+					return projection();
+				},
+				login: async () => projection(),
+				createAccount: async () => projection(),
+				replay: async () => emptyReport(),
+				getPending: () => [],
+				getNextRetryAt: () => null,
+				persistCredential: () => {},
+				reconcileAccessLoss: async () => {},
+			};
+			const actor = createActor(createAccountConvergenceMachine(dependencies), {
+				input: { networkOnline: true, restoredAccountId: ACCOUNT_ID },
+			}).start();
+			await waitFor(actor, (state) =>
+				state.matches({ retryScheduled: "hydration" }),
+			);
+
+			await vi.advanceTimersByTimeAsync(11_999);
+			expect(fetchCount).toBe(1);
+			await vi.advanceTimersByTimeAsync(1);
+			await waitFor(actor, (state) => state.matches("ready"));
+			expect(fetchCount).toBe(2);
 			actor.stop();
 		} finally {
 			vi.useRealTimers();
@@ -371,7 +445,9 @@ describe("account convergence machine", () => {
 				input: { networkOnline: true, restoredAccountId: ACCOUNT_ID },
 			}).start();
 			await waitFor(actor, (state) => state.matches("retryScheduled"));
-			expect(actor.getSnapshot().context.retryKind).toBe("replay");
+			expect(actor.getSnapshot().matches({ retryScheduled: "replay" })).toBe(
+				true,
+			);
 
 			await vi.advanceTimersByTimeAsync(5_000);
 			await waitFor(actor, (state) => state.matches("ready"));
@@ -463,6 +539,94 @@ describe("account convergence machine", () => {
 
 		expect(replayCount).toBe(2);
 		expect(fetchCount).toBe(3);
+	});
+
+	it("records an offline transition during authentication", async () => {
+		let resolveLogin:
+			| ((value: ReturnType<typeof projection>) => void)
+			| null = null;
+		const dependencies: AccountConvergenceDependencies = {
+			loadLocal: async () => null,
+			fetchServer: async () => {
+				throw new Error("server hydration must remain paused offline");
+			},
+			login: async () =>
+				new Promise((resolve) => {
+					resolveLogin = resolve;
+				}),
+			createAccount: async () => projection(),
+			replay: async () => emptyReport(),
+			getPending: () => [],
+			getNextRetryAt: () => null,
+			persistCredential: () => {},
+			reconcileAccessLoss: async () => {},
+		};
+		const actor = createActor(createAccountConvergenceMachine(dependencies), {
+			input: { networkOnline: true },
+		}).start();
+		actor.send({ type: "LOGIN", accountId: ACCOUNT_ID });
+		await waitFor(actor, (state) => state.matches("authenticating"));
+
+		actor.send({ type: "NETWORK_OFFLINE" });
+		if (resolveLogin) {
+			(resolveLogin as (value: ReturnType<typeof projection>) => void)(
+				projection(),
+			);
+		}
+		const snapshot = await waitFor(actor, (state) =>
+			state.matches("readyOffline"),
+		);
+
+		expect(snapshot.context.networkOnline).toBe(false);
+		actor.stop();
+	});
+
+	it("does not confirm against the server after going offline during reconciliation", async () => {
+		let pending: QueuedMutation[] = [queuedCreate()];
+		let releaseReconciliation: (() => void) | null = null;
+		let fetchCount = 0;
+		const dependencies: AccountConvergenceDependencies = {
+			loadLocal: async () => projection(),
+			fetchServer: async () => {
+				fetchCount += 1;
+				return projection();
+			},
+			login: async () => projection(),
+			createAccount: async () => projection(),
+			replay: async () => {
+				const command = pending[0]!;
+				pending = [];
+				return {
+					...emptyReport(),
+					attempted: 1,
+					acked: 1,
+					ackedCommands: [command],
+				};
+			},
+			getPending: () => [...pending],
+			getNextRetryAt: () => null,
+			persistCredential: () => {},
+			reconcileAccessLoss: async () =>
+				new Promise<void>((resolve) => {
+					releaseReconciliation = resolve;
+				}),
+		};
+		const actor = createActor(createAccountConvergenceMachine(dependencies), {
+			input: { networkOnline: true, restoredAccountId: ACCOUNT_ID },
+		}).start();
+		await waitFor(actor, (state) => state.matches("reconciling"));
+
+		actor.send({ type: "NETWORK_OFFLINE" });
+		if (releaseReconciliation) {
+			(releaseReconciliation as () => void)();
+		}
+		const snapshot = await waitFor(actor, (state) =>
+			state.matches("readyOffline"),
+		);
+
+		expect(snapshot.context.networkOnline).toBe(false);
+		expect(fetchCount).toBe(1);
+		actor.stop();
 	});
 
 	it("keeps realtime transport policy outside account convergence events", () => {

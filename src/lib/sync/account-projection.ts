@@ -5,6 +5,14 @@ import type {
 	GetAccountResponse,
 	PublicLinkResponse,
 } from "../../types/account";
+
+export interface LocalAccountProjectionSource {
+	account: Account;
+	sharedColumns?: ColumnMeta[];
+	deletedColumns?: DeletedColumn[];
+	sharedWithByColumn?: Record<string, string[] | undefined>;
+	publicLinksByColumn?: Record<string, PublicLinkResponse | null>;
+}
 import type {
 	AccountCommandEffect,
 	QueuedMutation,
@@ -21,38 +29,47 @@ export interface AccountProjection {
 
 export function projectionFromServer(
 	response: GetAccountResponse,
-	retained?: Pick<
-		AccountProjection,
-		"sharedWithByColumn" | "publicLinksByColumn"
-	>,
 	publicOrigin = "",
 ): AccountProjection {
-	const hasOwnedMetadata = response.ownedColumns !== undefined;
-	const ownedColumns = response.ownedColumns ?? [];
 	return {
 		account: response.account,
-		sharedColumns: response.sharedColumns ?? [],
-		deletedColumns: response.deletedColumns ?? [],
-		sharedWithByColumn:
-			hasOwnedMetadata
-				? Object.fromEntries(
-						ownedColumns.map((column) => [column.id, [...column.sharedWith]]),
-					)
-				: retained?.sharedWithByColumn ?? {},
-		publicLinksByColumn:
-			hasOwnedMetadata
-				? Object.fromEntries(
-						ownedColumns.map((column) => [
-							column.id,
-							column.publicId
-								? {
-									publicId: column.publicId,
-									url: `${publicOrigin}/p/${column.publicId}`,
-								}
-								: null,
-						]),
-					)
-				: retained?.publicLinksByColumn ?? {},
+		sharedColumns: response.sharedColumns,
+		deletedColumns: response.deletedColumns,
+		sharedWithByColumn: Object.fromEntries(
+			response.ownedColumns.map((column) => [
+				column.id,
+				[...column.sharedWith],
+			]),
+		),
+		publicLinksByColumn: Object.fromEntries(
+			response.ownedColumns.map((column) => [
+				column.id,
+				column.publicId
+					? {
+							publicId: column.publicId,
+							url: `${publicOrigin}/p/${column.publicId}`,
+						}
+					: null,
+			]),
+		),
+	};
+}
+
+/** Build an offline projection from retained local metadata, never network data. */
+export function projectionFromLocalSnapshot(
+	source: LocalAccountProjectionSource,
+): AccountProjection {
+	return {
+		account: source.account,
+		sharedColumns: source.sharedColumns ?? [],
+		deletedColumns: source.deletedColumns ?? [],
+		sharedWithByColumn: Object.fromEntries(
+			Object.entries(source.sharedWithByColumn ?? {}).map(([columnId, ids]) => [
+				columnId,
+				ids ? [...ids] : undefined,
+			]),
+		),
+		publicLinksByColumn: { ...(source.publicLinksByColumn ?? {}) },
 	};
 }
 

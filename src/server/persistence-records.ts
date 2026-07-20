@@ -1,48 +1,31 @@
 import { z } from "zod";
-import { validateAccountId } from "../lib/account";
 import type { Account, ColumnMeta } from "../types/account";
+import {
+	accountContractSchema,
+	columnMetaContractSchema,
+	deletedColumnContractSchema,
+	recordIdContractSchema,
+} from "../lib/api/account-contract";
 
 export const ACCOUNT_SCHEMA_VERSION = 1;
 export const COLUMN_META_SCHEMA_VERSION = 1;
 export const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
-const recordIdSchema = z.string().min(1).max(128);
-const accountIdSchema = z.string().refine(validateAccountId);
-const finiteTimestampSchema = z.number().finite().nonnegative();
-
 /** Authoritative runtime shape for account records persisted in KV. */
-export const accountRecordSchema = z
-	.object({
-		schemaVersion: z.literal(ACCOUNT_SCHEMA_VERSION).default(ACCOUNT_SCHEMA_VERSION),
-		id: accountIdSchema,
-		columnOrder: z.array(recordIdSchema).max(100),
-		hiddenSharedColumns: z.array(recordIdSchema).max(100),
-		createdAt: finiteTimestampSchema,
-	})
-	.strict();
+export const accountRecordSchema = accountContractSchema.extend({
+	schemaVersion: z.literal(ACCOUNT_SCHEMA_VERSION).default(ACCOUNT_SCHEMA_VERSION),
+});
 
 /** Authoritative runtime shape for metadata persisted by ColumnRoom. */
-export const columnMetaRecordSchema = z
-	.object({
-		schemaVersion: z
-			.literal(COLUMN_META_SCHEMA_VERSION)
-			.default(COLUMN_META_SCHEMA_VERSION),
-		id: recordIdSchema,
-		ownerId: accountIdSchema,
-		sharedWith: z.array(accountIdSchema).max(100),
-		publicId: z.string().regex(/^[0-9A-Za-z]{8}$/).nullable(),
-		createdAt: finiteTimestampSchema,
-	})
-	.strict();
+export const columnMetaRecordSchema = columnMetaContractSchema.extend({
+	schemaVersion: z
+		.literal(COLUMN_META_SCHEMA_VERSION)
+		.default(COLUMN_META_SCHEMA_VERSION),
+});
 
-export const deletedColumnRecordSchema = z
-	.object({
-		columnId: recordIdSchema,
-		deletedAt: finiteTimestampSchema,
-	})
-	.strict();
+export const deletedColumnRecordSchema = deletedColumnContractSchema;
 
-export const sharedColumnIndexSchema = z.array(recordIdSchema).max(100);
+export const sharedColumnIndexSchema = z.array(recordIdContractSchema).max(100);
 
 export type SchemaParseErrorCode =
 	| "invalid_json"
