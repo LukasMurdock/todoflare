@@ -10,38 +10,80 @@ export type TerminalReplayReason =
 	| "not_found"
 	| "validation_failed";
 
-export type AccountCommandType =
-	| "column.create"
-	| "column.delete"
-	| "column.restore"
-	| "column.reorder"
-	| "column.share"
-	| "column.revoke"
-	| "column.public.enable"
-	| "column.public.disable"
-	| "column.hide_shared";
+export const ACCOUNT_COMMAND_TYPES = [
+	"column.create",
+	"column.delete",
+	"column.restore",
+	"column.reorder",
+	"column.share",
+	"column.revoke",
+	"column.public.enable",
+	"column.public.disable",
+	"column.hide_shared",
+] as const;
 
-export interface AccountEditCommand {
+export type AccountCommandType = (typeof ACCOUNT_COMMAND_TYPES)[number];
+
+export interface AccountCommandPayloadMap {
+	"column.create": { columnId: string };
+	"column.delete": { columnId: string };
+	"column.restore": { columnId: string };
+	"column.reorder": { columnOrder: string[] };
+	"column.share": { columnId: string; targetAccountId: string };
+	"column.revoke": { columnId: string; targetAccountId: string };
+	"column.public.enable": { columnId: string };
+	"column.public.disable": { columnId: string };
+	"column.hide_shared": { hiddenSharedColumns: string[] };
+}
+
+export type AccountCommandDescriptor<
+	T extends AccountCommandType = AccountCommandType,
+> = T extends AccountCommandType
+	? { opType: T; payload: AccountCommandPayloadMap[T] }
+	: never;
+
+interface AccountEditCommandBase {
 	idempotencyKey: string;
-	opType: AccountCommandType;
 	entityId: string;
-	payload: Record<string, unknown>;
 	createdAt: number;
 	attemptCount: number;
 	nextRetryAt: number;
 }
 
-export interface QueuedMutation extends AccountEditCommand {
+export type NewAccountEditCommandFields = AccountEditCommandBase;
+
+export type AccountEditCommand<
+	T extends AccountCommandType = AccountCommandType,
+> = T extends AccountCommandType
+	? AccountEditCommandBase & AccountCommandDescriptor<T>
+	: never;
+
+export function createAccountEditCommand<T extends AccountCommandType>(
+	opType: T,
+	payload: AccountCommandPayloadMap[NoInfer<T>],
+	fields: NewAccountEditCommandFields,
+): AccountEditCommand<T> {
+	return { ...fields, opType, payload } as AccountEditCommand<T>;
+}
+
+interface QueuedMutationFields {
 	queueId: string;
 	lastError?: string;
 }
 
-export interface ReplayCommandSummary {
-	queueId: string;
-	opType: AccountCommandType;
-	entityId: string;
-	payload: Record<string, unknown>;
-}
+export type QueuedMutation<
+	T extends AccountCommandType = AccountCommandType,
+> = AccountEditCommand<T> & QueuedMutationFields;
+
+export type ReplayCommandSummary<
+	T extends AccountCommandType = AccountCommandType,
+> = T extends AccountCommandType
+	? Pick<QueuedMutation<T>, "queueId" | "opType" | "entityId" | "payload">
+	: never;
+
+export type TerminalReplayFailure<
+	T extends AccountCommandType = AccountCommandType,
+> = ReplayCommandSummary<T> & { reason: TerminalReplayReason };
 
 export interface ReplayReport {
 	attempted: number;
@@ -49,17 +91,11 @@ export interface ReplayReport {
 	retried: number;
 	dropped: number;
 	ackedCommands: ReplayCommandSummary[];
-	terminalFailures: Array<{
-		queueId: string;
-		reason: TerminalReplayReason;
-		opType: AccountCommandType;
-		entityId: string;
-		payload: Record<string, unknown>;
-	}>;
+	terminalFailures: TerminalReplayFailure[];
 }
 
 export interface MutationQueueService {
-	enqueue(cmd: AccountEditCommand): Promise<string>;
+	enqueue<T extends AccountCommandType>(cmd: AccountEditCommand<T>): Promise<string>;
 	replay(options?: { maxBatch?: number }): Promise<ReplayReport>;
 	dropWhere(
 		predicate: (m: QueuedMutation) => boolean,

@@ -1,28 +1,30 @@
 import { describe, expect, it } from "vitest";
 import { createAccountCommandExecutor } from "../src/lib/sync/account-command-executor";
 import type {
+	AccountCommandPayloadMap,
 	AccountCommandType,
 	QueuedMutation,
 } from "../src/lib/sync/contracts";
+import { createAccountEditCommand } from "../src/lib/sync/contracts";
 
 const ACCOUNT_ID = "1111 1111 1111 1111";
 const COLUMN_ID = "00000000-0000-4000-8000-000000000001";
 const TARGET_ID = "2222 2222 2222 2222";
 
-function mutation(
-	opType: AccountCommandType,
-	payload: Record<string, unknown>,
-): QueuedMutation {
+function mutation<T extends AccountCommandType>(
+	opType: T,
+	payload: AccountCommandPayloadMap[T],
+): QueuedMutation<T> {
 	return {
+		...createAccountEditCommand(opType, payload, {
+			idempotencyKey: `key:${opType}`,
+			entityId: ACCOUNT_ID,
+			createdAt: 1,
+			attemptCount: 0,
+			nextRetryAt: 0,
+		}),
 		queueId: `queue:${opType}`,
-		idempotencyKey: `key:${opType}`,
-		opType,
-		entityId: ACCOUNT_ID,
-		payload,
-		createdAt: 1,
-		attemptCount: 0,
-		nextRetryAt: 0,
-	};
+	} as QueuedMutation<T>;
 }
 
 describe("account command executor", () => {

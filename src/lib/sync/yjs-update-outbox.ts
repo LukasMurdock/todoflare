@@ -1,5 +1,5 @@
 import type { YjsUpdateOutboxDoc } from "@/lib/local-first/collections";
-import type { LocalFirstDatabase } from "@/lib/local-first/rxdb";
+import type { LocalFirstDatabase } from "@/lib/local-first/database";
 
 const DEFAULT_STORAGE_KEY = "todoflare-yjs-update-outbox-v1";
 const DEFAULT_AWARENESS_MAX_AGE_MS = 30_000;

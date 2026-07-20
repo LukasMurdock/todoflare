@@ -2,6 +2,7 @@ import { OpenAPIHono, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import type { Account, ColumnMeta } from "./types/account";
 import {
+	allocateGeneratedId,
 	generateAccountId,
 	normalizeAccountId,
 	displayAccountId,
@@ -24,7 +25,6 @@ import {
 	parseColumnMetaRecord,
 	parseDeletedColumnRecords,
 	TRASH_RETENTION_MS,
-	type DeletedColumnRecord,
 	type SchemaParseResult,
 } from "./server/persistence-records";
 import type { ColumnLifecycleFailure } from "./server/workflows/column-lifecycle";
@@ -32,6 +32,9 @@ import { deleteColumn } from "./server/workflows/delete-column";
 import { restoreColumn } from "./server/workflows/restore-column";
 import { shareColumn } from "./server/workflows/share-column";
 import { enablePublicColumn } from "./server/workflows/enable-public-column";
+import { purgeExpiredTrashedColumns } from "./server/workflows/purge-expired-trashed-columns";
+import { revokeColumnShare } from "./server/workflows/revoke-column-share";
+import { disablePublicColumn } from "./server/workflows/disable-public-column";
 
 // Re-export Durable Objects for Cloudflare
 export { ColumnRoomSql };
@@ -853,56 +856,6 @@ async function runScheduledBackups(env: Bindings) {
 	};
 }
 
-async function purgeExpiredTrashedColumns(env: Bindings) {
-	const now = Date.now();
-	let accountsScanned = 0;
-	let columnsPurged = 0;
-	let trashEntriesRemoved = 0;
-	let cursor: string | undefined;
-
-	while (true) {
-		const page = await env.ACCOUNTS.list({
-			prefix: "account:",
-			cursor,
-			limit: 1000,
-		});
-
-		for (const key of page.keys) {
-			const normalizedId = key.name.replace(/^account:/, "");
-			accountsScanned += 1;
-
-			const trashKey = `trash:${normalizedId}`;
-			const trashRaw = await env.ACCOUNTS.get(trashKey);
-			const trash = parseDeletedColumnRecords(trashRaw);
-			if (trash.length === 0) continue;
-
-			const keep: DeletedColumnRecord[] = [];
-			for (const entry of trash) {
-				if (now - entry.deletedAt < TRASH_RETENTION_MS) {
-					keep.push(entry);
-					continue;
-				}
-
-				const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(entry.columnId));
-				const deleteRes = await stub.fetch(
-					new Request("http://do/", { method: "DELETE" }),
-				);
-				if (deleteRes.ok) {
-					columnsPurged += 1;
-				}
-				trashEntriesRemoved += 1;
-			}
-
-			await env.ACCOUNTS.put(trashKey, JSON.stringify(keep));
-		}
-
-		if (page.list_complete) break;
-		cursor = page.cursor;
-	}
-
-	return { accountsScanned, columnsPurged, trashEntriesRemoved };
-}
-
 // ============================================
 // Account Routes
 // ============================================
@@ -931,7 +884,11 @@ app.post("/api/account", async (c) => {
 		}
 	}
 
-	const accountId = generateAccountId();
+	const accountId = await allocateGeneratedId({
+		createId: generateAccountId,
+		isInUse: async (candidate) =>
+			(await c.env.ACCOUNTS.get(`account:${normalizeAccountId(candidate)}`)) !== null,
+	});
 	const normalizedId = normalizeAccountId(accountId);
 
 	const account: Account = {
@@ -1637,55 +1594,15 @@ app.delete("/api/column/:id/share/:targetId", async (c) => {
 			accountId,
 		},
 		async () => {
-			const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
-			const metaResponse = await stub.fetch(new Request("http://do/meta"));
-
-			if (!metaResponse.ok) {
-				return apiErrorResponse("not_found", "Column not found", 404);
-			}
-
-			const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
-			if (!parsedMeta.ok) {
-				return schemaErrorResponse("column_meta", parsedMeta);
-			}
-			const meta = parsedMeta.value;
-
-			// Only owner can revoke
-			if (normalizeAccountId(meta.ownerId) !== normalizeAccountId(accountId)) {
-				return columnOwnerError(
-					meta,
-					accountId,
-					"Only owner can revoke sharing",
-				);
-			}
-
-			// Remove from sharedWith
-			const normalizedTargetId = normalizeAccountId(targetAccountId);
-			meta.sharedWith = meta.sharedWith.filter(
-				(id) => normalizeAccountId(id) !== normalizedTargetId,
-			);
-
-			await stub.fetch(
-				new Request("http://do/share", {
-					method: "PUT",
-					body: JSON.stringify({ sharedWith: meta.sharedWith }),
-				}),
-			);
-
-			// Remove from target's shared columns list
-			const sharedColumnsData = await c.env.ACCOUNTS.get(
-				`shared:${normalizedTargetId}`,
-			);
-			if (sharedColumnsData) {
-				const sharedColumns = JSON.parse(sharedColumnsData) as string[];
-				const updated = sharedColumns.filter((id) => id !== columnId);
-				await c.env.ACCOUNTS.put(
-					`shared:${normalizedTargetId}`,
-					JSON.stringify(updated),
-				);
-			}
-
-			return c.json({ success: true, sharedWith: meta.sharedWith });
+			const result = await revokeColumnShare({
+				env: c.env,
+				columnId,
+				accountId,
+				targetAccountId,
+			});
+			return result.ok
+				? c.json(result.value)
+				: columnLifecycleFailureResponse(result.failure, accountId);
 		},
 	);
 });
@@ -1757,41 +1674,14 @@ app.delete("/api/column/:id/public", async (c) => {
 			accountId,
 		},
 		async () => {
-			const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
-			const metaResponse = await stub.fetch(new Request("http://do/meta"));
-
-			if (!metaResponse.ok) {
-				return apiErrorResponse("not_found", "Column not found", 404);
-			}
-
-			const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
-			if (!parsedMeta.ok) {
-				return schemaErrorResponse("column_meta", parsedMeta);
-			}
-			const meta = parsedMeta.value;
-
-			// Only owner can disable public link
-			if (normalizeAccountId(meta.ownerId) !== normalizeAccountId(accountId)) {
-				return columnOwnerError(
-					meta,
-					accountId,
-					"Only owner can disable public link",
-				);
-			}
-
-			// Delete reverse lookup
-			if (meta.publicId) {
-				await c.env.ACCOUNTS.delete(`public:${meta.publicId}`);
-			}
-
-			await stub.fetch(
-				new Request("http://do/public", {
-					method: "PUT",
-					body: JSON.stringify({ publicId: null }),
-				}),
-			);
-
-			return c.json({ success: true });
+			const result = await disablePublicColumn({
+				env: c.env,
+				columnId,
+				accountId,
+			});
+			return result.ok
+				? c.json(result.value)
+				: columnLifecycleFailureResponse(result.failure, accountId);
 		},
 	);
 });
@@ -2249,7 +2139,7 @@ export default {
 	) => {
 		executionCtx.waitUntil(
 			(async () => {
-				const purgeResult = await purgeExpiredTrashedColumns(env);
+				const purgeResult = await purgeExpiredTrashedColumns({ env });
 				console.log(
 					JSON.stringify({
 						event: "scheduled_trash_purge_run",

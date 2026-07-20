@@ -9,16 +9,22 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { deriveSyncMode, type SyncMode } from "@/lib/sync/mode-machine";
-import { getLocalFirstDb } from "@/lib/local-first/rxdb";
+import { getLocalFirstDb } from "@/lib/local-first/database";
 import type { AccountSnapshotDoc } from "@/lib/local-first/collections";
-import type { AccountEditCommand, ReplayReport } from "@/lib/sync/contracts";
+import {
+	createAccountEditCommand,
+	type AccountCommandPayloadMap,
+	type AccountCommandType,
+	type ReplayReport,
+} from "@/lib/sync/contracts";
 import {
 	createLocalFirstMutationQueueStorage,
 	LocalMutationQueueService,
 } from "@/lib/sync/mutation-queue-service";
 import {
-	shouldApplyAccessLossPolicy,
-} from "@/lib/sync/replay-response";
+	columnIdForAccountCommand,
+	summarizeReplayReport,
+} from "@/lib/sync/account-command-reconciliation";
 import { startReplayScheduler } from "@/lib/sync/replay-scheduler";
 import {
 	createAccountCommandExecutor,
@@ -44,7 +50,7 @@ import {
 	WS_OP_AWARENESS,
 	WS_OP_SYNC,
 } from "@/lib/collaboration/websocket-protocol";
-import type { LocalFirstDatabase } from "@/lib/local-first/rxdb";
+import type { LocalFirstDatabase } from "@/lib/local-first/database";
 import type {
 	Account,
 	ColumnMeta,
@@ -84,14 +90,6 @@ function flushPendingSends(
 	void flushBufferedColumnMessages(conn, encodeOutboundMessage, {
 		onSent: options?.onSent,
 	});
-}
-
-function asString(value: unknown): string | null {
-	return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function columnIdFromPayload(payload: Record<string, unknown>): string | null {
-	return asString(payload.columnId);
 }
 
 function hasTerminalFailureForCommand(
@@ -930,7 +928,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			if (!columnId) return;
 
 			const droppedMutationCount = await mutationQueue.dropWhere(
-				(mutation) => columnIdFromPayload(mutation.payload) === columnId,
+				(mutation) => columnIdForAccountCommand(mutation) === columnId,
 				reason,
 			);
 			const droppedYjsCount = accountId
@@ -1008,22 +1006,20 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 	);
 
 	const enqueueAccountCommand = useCallback(
-		async (
-			opType: AccountEditCommand["opType"],
-			payload: Record<string, unknown>,
+		async <T extends AccountCommandType>(
+			opType: T,
+			payload: AccountCommandPayloadMap[NoInfer<T>],
 		) => {
 			if (!accountId) return null;
 
 			const createdAt = Date.now();
-			const command: AccountEditCommand = {
+			const command = createAccountEditCommand(opType, payload, {
 				idempotencyKey: crypto.randomUUID(),
-				opType,
 				entityId: accountId,
-				payload,
 				createdAt,
 				attemptCount: 0,
 				nextRetryAt: createdAt,
-			};
+			});
 
 			return mutationQueue.enqueue(command);
 		},
@@ -1043,10 +1039,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			setLastReplayLatencyMs(Math.max(0, replayFinishedAt - replayStartedAt));
 		}
 
-		const ackedCreatedColumnIds = report.ackedCommands
-			.filter((command) => command.opType === "column.create")
-			.map((command) => asString(command.payload.columnId))
-			.filter((columnId): columnId is string => !!columnId);
+		const reconciliation = summarizeReplayReport(report);
+		const { ackedCreatedColumnIds } = reconciliation;
 		if (ackedCreatedColumnIds.length > 0) {
 			const createdSet = new Set(ackedCreatedColumnIds);
 			setAccount((prev) => {
@@ -1065,10 +1059,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			});
 		}
 
-		const failedCreatedColumnIds = report.terminalFailures
-			.filter((failure) => failure.opType === "column.create")
-			.map((failure) => asString(failure.payload.columnId))
-			.filter((columnId): columnId is string => !!columnId);
+		const { failedCreatedColumnIds } = reconciliation;
 		if (failedCreatedColumnIds.length > 0) {
 			const failedSet = new Set(failedCreatedColumnIds);
 			setAccount((prev) => {
@@ -1090,22 +1081,13 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			publicLinkResultsByQueueIdRef.current.delete(failure.queueId);
 		}
 
-		const revokedColumnIds = new Set(
-			report.terminalFailures
-				.filter((failure) => shouldApplyAccessLossPolicy(failure.reason))
-				.map((failure) => columnIdFromPayload(failure.payload))
-				.filter((columnId): columnId is string => !!columnId),
-		);
-		for (const revokedColumnId of revokedColumnIds) {
+		for (const revokedColumnId of reconciliation.accessLostColumnIds) {
 			await applyColumnAccessLossPolicy(revokedColumnId, "revoked", "replay");
 		}
 
-		const nonRevokedFailures = report.terminalFailures.filter(
-			(failure) => !shouldApplyAccessLossPolicy(failure.reason),
-		);
-		if (nonRevokedFailures.length > 0) {
+		if (reconciliation.nonAccessLossFailureCount > 0) {
 			setConvergenceFailureCount(
-				(prev) => prev + nonRevokedFailures.length,
+				(prev) => prev + reconciliation.nonAccessLossFailureCount,
 			);
 			setError("Some offline changes could not be synced");
 			toast.error("Some offline changes could not be synced");

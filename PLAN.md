@@ -35,12 +35,15 @@ four collections: `accountSnapshot`, `mutationOutbox`, `yjsUpdateOutbox`, and
 `SyncProvider` remains the React orchestration root. Command-to-HTTP execution is
 owned by `account-command-executor.ts`; queue retry/idempotency behavior is owned
 by `mutation-queue-service.ts`; protocol constants and codecs are owned by
-`websocket-protocol.ts`. There is no implemented `SyncRuntime` facade.
+`websocket-protocol.ts`. Command names and payloads form one discriminated
+contract, and persisted outbox data is parsed before entering replay. There is
+no implemented `SyncRuntime` facade.
 
 On the server, Hono route ingress uses Zod/OpenAPI schemas. Persistence record
-parsing is centralized in `persistence-records.ts`, and delete/restore lifecycle
-behavior is owned by named workflow modules. External replay failures use stable
-API error codes so a generic `403` does not imply access revocation.
+parsing is centralized in `persistence-records.ts`. Delete, restore, share,
+revoke, public-link enable/disable, and scheduled purge behavior are owned by
+named workflow modules. External replay failures use stable API error codes so
+a generic `403` does not imply access revocation.
 
 ## Decision status
 
@@ -49,7 +52,7 @@ API error codes so a generic `403` does not imply access revocation.
 - Yjs plus one SQLite-backed Durable Object per collaborative column.
 - Offline account snapshots and durable metadata/Yjs outboxes in IndexedDB.
 - One replayable metadata command envelope with FIFO replay, bounded retry,
-  idempotency keys, and explicit terminal outcomes.
+  idempotency keys, operation-specific payloads, and explicit terminal outcomes.
 - Optimistic create, reorder, hide, share, revoke, public-link, delete, and
   restore commands through the same queue.
 - Offline startup from the latest account snapshot.
@@ -57,7 +60,10 @@ API error codes so a generic `403` does not imply access revocation.
   detach sync, and notify the user.
 - Central WebSocket opcodes/codecs and persisted-record schemas.
 - Runtime validation for external request bodies, paths, queries, and headers.
-- Named delete and restore server workflows with failure-injection coverage.
+- Named lifecycle and purge workflows with failure-injection coverage.
+- Cryptographically secure account/public IDs with bounded collision handling.
+- Isolated, single-build full verification that preserves normal development state.
+- Enforced browser/server import boundaries and accurately named local storage.
 - One authoritative verification command: `pnpm verify` locally and in CI.
 - Browser coverage for collaboration, offline restart, outages, revocation, and
   public rendering. One outage smoke retains the real five-second timer; the
@@ -85,17 +91,13 @@ These are possible follow-up increments, not selected implementations:
 - Extract column connection lifecycle and access-loss policy from
   `SyncProvider` into browser-safe modules.
 - Continue extracting server lifecycle workflows one operation at a time,
-  especially share/public-link and successful backup restore.
+  especially create and successful backup restore.
 - Add deterministic failure injection at every external write boundary for the
   remaining multi-store operations.
 - Decide whether the custom IndexedDB persistence layer is the long-term store.
   Do not add RxDB or TanStack DB without a new decision based on measured need.
-- Consider more E2E parallelism only if shared local Worker state remains
-  isolated and the suite stays deterministic.
-- Replace the current `Math.random()` account-number generator with a
-  cryptographically secure generator and add collision/format tests. Because the
-  account number is an authentication secret, unpredictability is a security
-  requirement rather than a cosmetic implementation detail.
+- Consider more E2E parallelism only if isolated E2E Worker state remains
+  deterministic.
 
 ## Resolved product decisions
 
@@ -147,10 +149,12 @@ decision and its migration/verification plan first.
 - Revocation is the only authorization result that triggers column-wide local
   outbox deletion.
 - Browser-safe contracts must not import Worker or Durable Object modules.
+- The architecture check enforces browser/server import boundaries.
 - Route handlers validate ingress once and delegate lifecycle-sensitive work to
   named workflows.
 - `pnpm verify:fast` is the development gate; `pnpm verify` is the completion
-  gate and must remain identical to CI.
+  gate and must remain identical to CI. Full verification builds once and uses
+  only `.wrangler/e2e-state`.
 
 ## Historical proposal mapping
 

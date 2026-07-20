@@ -12,10 +12,9 @@ export default defineConfig({
 		trace: "on-first-retry",
 	},
 	webServer: {
-		command:
-			"rm -rf .wrangler/state && VITE_E2E_REPLAY_CONTROL=true pnpm build && pnpm preview --host 127.0.0.1 --port 4173",
+		command: "pnpm e2e:serve",
 		url: "http://127.0.0.1:4173",
-		reuseExistingServer: !process.env.CI,
+		reuseExistingServer: false,
 		timeout: 120000,
 	},
 	projects: [

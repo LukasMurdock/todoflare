@@ -75,16 +75,20 @@ pnpm verify:fast
 ```
 
 Before considering a change complete, run the authoritative full gate. It adds
-the Playwright browser suite:
+the Playwright browser suite and performs exactly one E2E-enabled production
+build:
 
 ```bash
 pnpm verify
 ```
 
 GitHub Actions installs Chromium and runs this same `pnpm verify` command.
+Browser tests reset only `.wrangler/e2e-state`; normal development data under
+`.wrangler/state` is never touched by verification.
 
 Individual checks are also available as `pnpm typecheck`,
 `pnpm typecheck:test`, `pnpm test:run`, `pnpm build`, and `pnpm test:e2e`.
+The standalone E2E command performs its own E2E-enabled build.
 
 ## Building
 

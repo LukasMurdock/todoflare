@@ -29,7 +29,7 @@ test.describe("collaborative editing", () => {
 		const ownerContext = await browser.newContext();
 		const ownerPage = await ownerContext.newPage();
 		await bootstrapAuthenticatedPage(ownerPage, ownerId);
-		await addColumnAndGetId(ownerPage);
+		const columnId = await addColumnAndGetId(ownerPage);
 
 		const collaboratorContext = await browser.newContext();
 		const collaboratorPage = await collaboratorContext.newPage();
@@ -61,11 +61,28 @@ test.describe("collaborative editing", () => {
 			timeout: 15000,
 			wakeReplay: false,
 		});
+		await expect
+			.poll(
+				async () => {
+					const response = await request.get(
+						`${appUrl}/api/account/${collaboratorId.replace(/\D/g, "")}`,
+					);
+					if (!response.ok()) return false;
+					const payload = (await response.json()) as {
+						sharedColumns?: Array<{ id?: string }>;
+					};
+					return payload.sharedColumns?.some((column) => column.id === columnId) ?? false;
+				},
+				{ timeout: 15000 },
+			)
+			.toBe(true);
 
-		await collaboratorPage.reload();
-		await expect(
-			collaboratorPage.getByText(`Shared by ${ownerShort}`),
-		).toBeVisible({ timeout: 15000 });
+		await expect(async () => {
+			await collaboratorPage.reload();
+			await expect(
+				collaboratorPage.getByText(`Shared by ${ownerShort}`),
+			).toBeVisible({ timeout: 5000 });
+		}).toPass({ timeout: 30000, intervals: [500, 1000, 2000] });
 
 		await ownerContext.close();
 		await collaboratorContext.close();

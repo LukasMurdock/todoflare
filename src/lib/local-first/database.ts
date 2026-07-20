@@ -1,13 +1,13 @@
+/** IndexedDB-backed local-first collections with an in-memory fallback. */
 import type {
 	AccountSnapshotDoc,
-	MutationOutboxDoc,
 	SyncStateDoc,
 	YjsUpdateOutboxDoc,
 } from "@/lib/local-first/collections";
 
 export interface LocalFirstCollections {
 	accountSnapshot: Map<string, AccountSnapshotDoc>;
-	mutationOutbox: Map<string, MutationOutboxDoc>;
+	mutationOutbox: Map<string, unknown>;
 	yjsUpdateOutbox: Map<string, YjsUpdateOutboxDoc>;
 	syncState: Map<string, SyncStateDoc>;
 }
@@ -206,8 +206,8 @@ async function createIndexedDbBackedDb(): Promise<LocalFirstDatabase> {
 				persistCollection("accountSnapshot", entries);
 			},
 		),
-		mutationOutbox: new PersistedMap<MutationOutboxDoc>(
-			asCollectionEntries<MutationOutboxDoc>(
+		mutationOutbox: new PersistedMap<unknown>(
+			asCollectionEntries<unknown>(
 				loadedEntriesByCollection.get("mutationOutbox") ?? [],
 			),
 			(entries) => {

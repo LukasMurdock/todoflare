@@ -16,6 +16,14 @@ import {
 	enablePublicColumn,
 	type EnablePublicColumnWriteBoundary,
 } from "../src/server/workflows/enable-public-column";
+import {
+	revokeColumnShare,
+	type RevokeColumnShareWriteBoundary,
+} from "../src/server/workflows/revoke-column-share";
+import {
+	disablePublicColumn,
+	type DisablePublicColumnWriteBoundary,
+} from "../src/server/workflows/disable-public-column";
 import type { Account, ColumnMeta } from "../src/types/account";
 
 function normalizeAccountId(id: string): string {
@@ -246,6 +254,43 @@ describe("shareColumn lifecycle workflow", () => {
 });
 
 describe("enablePublicColumn lifecycle workflow", () => {
+	it("retries generated ID collisions without overwriting their mappings", async () => {
+		const ownerId = await createAccount();
+		const columnId = await createColumn(ownerId);
+		const candidates = ["Collision", "Available"];
+		await env.ACCOUNTS.put("public:Collision", "another-column");
+
+		const result = await enablePublicColumn({
+			env,
+			columnId,
+			accountId: ownerId,
+			createPublicId: () => candidates.shift() as string,
+		});
+
+		expect(result).toEqual({ ok: true, value: { publicId: "Available" } });
+		expect(await env.ACCOUNTS.get("public:Collision")).toBe("another-column");
+		expect(await env.ACCOUNTS.get("public:Available")).toBe(columnId);
+	});
+
+	it("stops after bounded public ID collisions without changing the column", async () => {
+		const ownerId = await createAccount();
+		const columnId = await createColumn(ownerId);
+		await env.ACCOUNTS.put("public:Collision", "another-column");
+
+		await expect(
+			enablePublicColumn({
+				env,
+				columnId,
+				accountId: ownerId,
+				createPublicId: () => "Collision",
+				maxPublicIdAttempts: 2,
+			}),
+		).rejects.toThrow("Unable to allocate a unique ID after 2 attempts");
+
+		expect(await env.ACCOUNTS.get("public:Collision")).toBe("another-column");
+		expect((await loadMeta(columnId)).publicId).toBeNull();
+	});
+
 	for (const boundary of [
 		"column-public",
 		"public-mapping",
@@ -281,6 +326,87 @@ describe("enablePublicColumn lifecycle workflow", () => {
 			});
 			expect(await env.ACCOUNTS.get(`public:${expectedPublicId}`)).toBe(columnId);
 			expect((await loadMeta(columnId)).publicId).toBe(expectedPublicId);
+		});
+	}
+});
+
+describe("revokeColumnShare lifecycle workflow", () => {
+	for (const boundary of [
+		"column-shares",
+		"shared-account",
+	] satisfies RevokeColumnShareWriteBoundary[]) {
+		it(`repairs a failure after the ${boundary} write`, async () => {
+			const ownerId = await createAccount();
+			const collaboratorId = await createAccount();
+			const columnId = await createColumn(ownerId);
+			await shareColumn(ownerId, columnId, collaboratorId);
+
+			await expect(
+				revokeColumnShare({
+					env,
+					columnId,
+					accountId: ownerId,
+					targetAccountId: collaboratorId,
+					afterWrite: (observed) => {
+						if (observed === boundary) {
+							throw new Error(`injected failure after ${observed}`);
+						}
+					},
+				}),
+			).rejects.toThrow(`injected failure after ${boundary}`);
+
+			const retried = await revokeColumnShare({
+				env,
+				columnId,
+				accountId: ownerId,
+				targetAccountId: collaboratorId,
+			});
+			expect(retried).toEqual({
+				ok: true,
+				value: { success: true, sharedWith: [] },
+			});
+			expect((await loadMeta(columnId)).sharedWith).toEqual([]);
+			const shared = JSON.parse(
+				(await env.ACCOUNTS.get(
+					`shared:${normalizeAccountId(collaboratorId)}`,
+				)) ?? "[]",
+			) as string[];
+			expect(shared).not.toContain(columnId);
+		});
+	}
+});
+
+describe("disablePublicColumn lifecycle workflow", () => {
+	for (const boundary of [
+		"public-mapping",
+		"column-public",
+	] satisfies DisablePublicColumnWriteBoundary[]) {
+		it(`repairs a failure after the ${boundary} write`, async () => {
+			const ownerId = await createAccount();
+			const columnId = await createColumn(ownerId);
+			const publicId = await enablePublic(ownerId, columnId);
+
+			await expect(
+				disablePublicColumn({
+					env,
+					columnId,
+					accountId: ownerId,
+					afterWrite: (observed) => {
+						if (observed === boundary) {
+							throw new Error(`injected failure after ${observed}`);
+						}
+					},
+				}),
+			).rejects.toThrow(`injected failure after ${boundary}`);
+
+			const retried = await disablePublicColumn({
+				env,
+				columnId,
+				accountId: ownerId,
+			});
+			expect(retried).toEqual({ ok: true, value: { success: true } });
+			expect(await env.ACCOUNTS.get(`public:${publicId}`)).toBeNull();
+			expect((await loadMeta(columnId)).publicId).toBeNull();
 		});
 	}
 });

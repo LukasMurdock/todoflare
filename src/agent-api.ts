@@ -3,18 +3,17 @@ import * as Y from "yjs";
 import type { Account, ColumnMeta } from "./types/account";
 import { checkRateLimit, getClientIP, ipRateLimitKey, RATE_LIMITS } from "./lib/rate-limit";
 import { normalizeAccountId, validateAccountId } from "./lib/account";
+import {
+	parseAccountRecord,
+	parseColumnMetaRecord,
+	parseDeletedColumnRecords,
+	TRASH_RETENTION_MS,
+} from "./server/persistence-records";
 
 type Bindings = {
 	ACCOUNTS: KVNamespace;
 	RATE_LIMIT: KVNamespace;
 	COLUMN_ROOM: DurableObjectNamespace;
-};
-
-const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-
-type DeletedColumnRecord = {
-	columnId: string;
-	deletedAt: number;
 };
 
 const accountIdPathSchema = z.object({
@@ -107,80 +106,6 @@ const snapshotResponseSchema = z.object({
 	markdownError: z.string().optional(),
 });
 
-function parseAccountRecord(raw: string): Account | null {
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(raw);
-	} catch {
-		return null;
-	}
-
-	if (!parsed || typeof parsed !== "object") return null;
-	const obj = parsed as Partial<Account>;
-
-	if (
-		typeof obj.id !== "string" ||
-		!Array.isArray(obj.columnOrder) ||
-		!Array.isArray(obj.hiddenSharedColumns) ||
-		typeof obj.createdAt !== "number"
-	) {
-		return null;
-	}
-
-	return {
-		schemaVersion: 1,
-		id: obj.id,
-		columnOrder: obj.columnOrder,
-		hiddenSharedColumns: obj.hiddenSharedColumns,
-		createdAt: obj.createdAt,
-	};
-}
-
-function parseColumnMetaRecord(raw: unknown): ColumnMeta | null {
-	if (!raw || typeof raw !== "object") return null;
-	const obj = raw as Partial<ColumnMeta>;
-
-	if (
-		typeof obj.id !== "string" ||
-		typeof obj.ownerId !== "string" ||
-		!Array.isArray(obj.sharedWith) ||
-		!(typeof obj.publicId === "string" || obj.publicId === null) ||
-		typeof obj.createdAt !== "number"
-	) {
-		return null;
-	}
-
-	return {
-		schemaVersion: 1,
-		id: obj.id,
-		ownerId: obj.ownerId,
-		sharedWith: obj.sharedWith,
-		publicId: obj.publicId,
-		createdAt: obj.createdAt,
-	};
-}
-
-function parseDeletedColumnRecords(raw: string | null): DeletedColumnRecord[] {
-	if (!raw) return [];
-
-	try {
-		const parsed = JSON.parse(raw) as unknown;
-		if (!Array.isArray(parsed)) return [];
-
-		return parsed
-			.filter(
-				(item): item is DeletedColumnRecord =>
-					!!item &&
-					typeof item === "object" &&
-					typeof (item as { columnId?: unknown }).columnId === "string" &&
-					typeof (item as { deletedAt?: unknown }).deletedAt === "number",
-			)
-			.map((item) => ({ columnId: item.columnId, deletedAt: item.deletedAt }));
-	} catch {
-		return [];
-	}
-}
-
 function shouldApplyAgentRateLimit(url: string): boolean {
 	const hostname = new URL(url).hostname;
 	if (hostname === "localhost" || hostname === "127.0.0.1") return false;
@@ -220,12 +145,12 @@ async function fetchAccount(
 		return { ok: false, status: 404, error: "Account not found" };
 	}
 
-	const account = parseAccountRecord(accountData);
-	if (!account) {
+	const parsedAccount = parseAccountRecord(accountData);
+	if (!parsedAccount.ok) {
 		return { ok: false, status: 503, error: "Account record is invalid" };
 	}
 
-	return { ok: true, account, normalizedId };
+	return { ok: true, account: parsedAccount.value, normalizedId };
 }
 
 function buildCapabilities(meta: ColumnMeta, accountId: string) {
@@ -337,8 +262,8 @@ export function registerAgentApi(app: OpenAPIHono<{ Bindings: Bindings }>) {
 			const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
 			const response = await stub.fetch(new Request("http://do/meta"));
 			if (!response.ok) continue;
-			const meta = parseColumnMetaRecord(await response.json());
-			if (meta) sharedMetas.push(meta);
+			const parsedMeta = parseColumnMetaRecord(await response.json());
+			if (parsedMeta.ok) sharedMetas.push(parsedMeta.value);
 		}
 
 		const now = Date.now();
@@ -449,10 +374,11 @@ export function registerAgentApi(app: OpenAPIHono<{ Bindings: Bindings }>) {
 			return c.json({ error: "Column not found" }, 404);
 		}
 
-		const meta = parseColumnMetaRecord(await metaResponse.json());
-		if (!meta) {
+		const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
+		if (!parsedMeta.ok) {
 			return c.json({ error: "Column metadata is invalid" }, 503);
 		}
+		const meta = parsedMeta.value;
 
 		const capabilities = buildCapabilities(meta, account.id);
 		if (!capabilities.canRead) {
@@ -535,10 +461,11 @@ export function registerAgentApi(app: OpenAPIHono<{ Bindings: Bindings }>) {
 			meta: unknown;
 			yjs: number[] | null;
 		};
-		const meta = parseColumnMetaRecord(exported.meta);
-		if (!meta) {
+		const parsedMeta = parseColumnMetaRecord(exported.meta);
+		if (!parsedMeta.ok) {
 			return c.json({ error: "Column metadata is invalid" }, 503);
 		}
+		const meta = parsedMeta.value;
 
 		const capabilities = buildCapabilities(meta, account.id);
 		if (!capabilities.canRead) {

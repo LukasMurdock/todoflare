@@ -3,7 +3,7 @@ import type {
 	ColumnMeta,
 	DeletedColumn,
 } from "@/types/account";
-import type { AccountEditCommand, TerminalReplayReason } from "@/lib/sync/contracts";
+import type { TerminalReplayReason } from "@/lib/sync/contracts";
 
 export interface AccountSnapshotDoc {
 	id: string;
@@ -13,16 +13,6 @@ export interface AccountSnapshotDoc {
 	deletedColumns: DeletedColumn[];
 	hydratedAt: number;
 	reconciledAt: number | null;
-}
-
-export interface MutationOutboxDoc extends AccountEditCommand {
-	id: string;
-	queueId: string;
-	ackedAt: number | null;
-	lastError: string | null;
-	terminalReason: TerminalReplayReason | null;
-	lastAttemptAt: number | null;
-	insertedAt: number;
 }
 
 export interface YjsUpdateOutboxDoc {

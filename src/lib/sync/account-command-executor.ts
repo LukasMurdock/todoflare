@@ -71,7 +71,7 @@ export function createAccountCommandExecutor(
 
 			switch (mutation.opType) {
 				case "column.create": {
-					const columnId = asString(mutation.payload.columnId);
+					const { columnId } = mutation.payload;
 					if (!columnId) return invalidPayload("Invalid columnId payload");
 
 					const response = await fetchRequest("/api/column", {
@@ -99,8 +99,7 @@ export function createAccountCommandExecutor(
 				}
 
 				case "column.reorder": {
-					const columnOrder = asStringArray(mutation.payload.columnOrder);
-					if (!columnOrder) return invalidPayload("Invalid columnOrder payload");
+					const { columnOrder } = mutation.payload;
 					return classifyResponse(
 						await fetchRequest(
 							`/api/account/${normalizedActiveAccountId}/columns`,
@@ -117,12 +116,7 @@ export function createAccountCommandExecutor(
 				}
 
 				case "column.hide_shared": {
-					const hiddenSharedColumns = asStringArray(
-						mutation.payload.hiddenSharedColumns,
-					);
-					if (!hiddenSharedColumns) {
-						return invalidPayload("Invalid hiddenSharedColumns payload");
-					}
+					const { hiddenSharedColumns } = mutation.payload;
 					return classifyResponse(
 						await fetchRequest(
 							`/api/account/${normalizedActiveAccountId}/hidden`,
@@ -139,7 +133,7 @@ export function createAccountCommandExecutor(
 				}
 
 				case "column.delete": {
-					const columnId = asString(mutation.payload.columnId);
+					const { columnId } = mutation.payload;
 					if (!columnId) return invalidPayload("Invalid columnId payload");
 					const result = await classifyResponse(
 						await fetchRequest(`/api/column/${columnId}`, {
@@ -156,7 +150,7 @@ export function createAccountCommandExecutor(
 				}
 
 				case "column.restore": {
-					const columnId = asString(mutation.payload.columnId);
+					const { columnId } = mutation.payload;
 					if (!columnId) return invalidPayload("Invalid columnId payload");
 					return classifyResponse(
 						await fetchRequest(`/api/column/${columnId}/restore`, {
@@ -171,8 +165,7 @@ export function createAccountCommandExecutor(
 
 				case "column.share":
 				case "column.revoke": {
-					const columnId = asString(mutation.payload.columnId);
-					const targetAccountId = asString(mutation.payload.targetAccountId);
+					const { columnId, targetAccountId } = mutation.payload;
 					if (
 						!columnId ||
 						!targetAccountId ||
@@ -215,7 +208,7 @@ export function createAccountCommandExecutor(
 				}
 
 				case "column.public.enable": {
-					const columnId = asString(mutation.payload.columnId);
+					const { columnId } = mutation.payload;
 					if (!columnId) return invalidPayload("Invalid columnId payload");
 					const response = await fetchRequest(`/api/column/${columnId}/public`, {
 						method: "POST",
@@ -246,7 +239,7 @@ export function createAccountCommandExecutor(
 				}
 
 				case "column.public.disable": {
-					const columnId = asString(mutation.payload.columnId);
+					const { columnId } = mutation.payload;
 					if (!columnId) return invalidPayload("Invalid columnId payload");
 					const result = await classifyResponse(
 						await fetchRequest(`/api/column/${columnId}/public`, {

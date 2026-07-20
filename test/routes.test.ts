@@ -506,6 +506,46 @@ describe("Worker routes", () => {
 		);
 	});
 
+	it("routes sharing revoke and public disable through lifecycle workflows", async () => {
+		const ownerId = await createAccount();
+		const collaboratorId = await createAccount();
+		const columnId = await createColumn(ownerId);
+		await shareColumn(ownerId, columnId, collaboratorId);
+
+		const publicResponse = await SELF.fetch(
+			`http://example.com/api/column/${columnId}/public`,
+			{ method: "POST", headers: { "X-Account-ID": ownerId } },
+		);
+		expect(publicResponse.ok).toBe(true);
+		const { publicId } = (await publicResponse.json()) as { publicId: string };
+
+		const revokeResponse = await SELF.fetch(
+			`http://example.com/api/column/${columnId}/share/${normalizeAccountId(collaboratorId)}`,
+			{ method: "DELETE", headers: { "X-Account-ID": ownerId } },
+		);
+		expect(revokeResponse.ok).toBe(true);
+		expect(await revokeResponse.json()).toEqual({
+			success: true,
+			sharedWith: [],
+		});
+
+		const disableResponse = await SELF.fetch(
+			`http://example.com/api/column/${columnId}/public`,
+			{ method: "DELETE", headers: { "X-Account-ID": ownerId } },
+		);
+		expect(disableResponse.ok).toBe(true);
+		expect(await disableResponse.json()).toEqual({ success: true });
+
+		expect(
+			JSON.parse(
+				(await env.ACCOUNTS.get(
+					`shared:${normalizeAccountId(collaboratorId)}`,
+				)) ?? "[]",
+			) as string[],
+		).not.toContain(columnId);
+		expect(await env.ACCOUNTS.get(`public:${publicId}`)).toBeNull();
+	});
+
 	it("filters and removes a stale shared KV projection on account hydration", async () => {
 		const ownerId = await createAccount();
 		const collaboratorId = await createAccount();
@@ -708,6 +748,97 @@ describe("WebSocket upgrade routing", () => {
 });
 
 describe("Agent read API", () => {
+	for (const persistedAccountCase of [
+		{
+			name: "invalid JSON",
+			record: "{",
+			code: "invalid_json",
+		},
+		{
+			name: "an invalid shape",
+			record: JSON.stringify({ schemaVersion: 1 }),
+			code: "invalid_shape",
+		},
+		{
+			name: "an unsupported schema version",
+			record: JSON.stringify({
+				schemaVersion: 999,
+				id: "0000 0000 0000 0000",
+				columnOrder: [],
+				hiddenSharedColumns: [],
+				createdAt: 0,
+			}),
+			code: "unsupported_schema_version",
+		},
+	] as const) {
+		it(`rejects ${persistedAccountCase.name} through both account APIs`, async () => {
+			const accountId = await createAccount();
+			const normalizedId = normalizeAccountId(accountId);
+			await env.ACCOUNTS.put(
+				`account:${normalizedId}`,
+				persistedAccountCase.record,
+			);
+
+			const browserResponse = await SELF.fetch(
+				`http://example.com/api/account/${normalizedId}`,
+			);
+			expect(browserResponse.status).toBe(503);
+			expect(await browserResponse.json()).toMatchObject({
+				error: "schema_guard_blocked",
+				kind: "account",
+				code: persistedAccountCase.code,
+			});
+
+			const agentResponse = await SELF.fetch(
+				`http://example.com/api/agent/v1/accounts/${normalizedId}/columns`,
+				{ headers: { "X-Account-ID": accountId } },
+			);
+			expect(agentResponse.status).toBe(503);
+			expect(await agentResponse.json()).toEqual({
+				error: "Account record is invalid",
+			});
+		});
+	}
+
+	it("rejects unsupported column metadata through both column APIs", async () => {
+		const accountId = await createAccount();
+		const columnId = await createColumn(accountId);
+		const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
+		const metaResponse = await stub.fetch(new Request("http://do/meta"));
+		expect(metaResponse.ok).toBe(true);
+		const meta = (await metaResponse.json()) as Record<string, unknown>;
+		const importResponse = await stub.fetch(
+			new Request("http://do/import", {
+				method: "POST",
+				body: JSON.stringify({
+					meta: { ...meta, schemaVersion: 999 },
+					yjs: null,
+				}),
+			}),
+		);
+		expect(importResponse.ok).toBe(true);
+
+		const browserResponse = await SELF.fetch(
+			`http://example.com/api/column/${columnId}`,
+			{ headers: { "X-Account-ID": accountId } },
+		);
+		expect(browserResponse.status).toBe(503);
+		expect(await browserResponse.json()).toMatchObject({
+			error: "schema_guard_blocked",
+			kind: "column_meta",
+			code: "unsupported_schema_version",
+		});
+
+		const agentResponse = await SELF.fetch(
+			`http://example.com/api/agent/v1/columns/${columnId}`,
+			{ headers: { "X-Account-ID": accountId } },
+		);
+		expect(agentResponse.status).toBe(503);
+		expect(await agentResponse.json()).toEqual({
+			error: "Column metadata is invalid",
+		});
+	});
+
 	it("serves a public OpenAPI spec for agent endpoints", async () => {
 		const res = await SELF.fetch("http://example.com/openapi.json");
 		expect(res.ok).toBe(true);

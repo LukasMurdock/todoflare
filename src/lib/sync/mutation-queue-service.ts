@@ -7,8 +7,8 @@ import type {
 	ReplayReport,
 	TerminalReplayReason,
 } from "@/lib/sync/contracts";
-import type { MutationOutboxDoc } from "@/lib/local-first/collections";
-import type { LocalFirstDatabase } from "@/lib/local-first/rxdb";
+import type { LocalFirstDatabase } from "@/lib/local-first/database";
+import { parseQueuedMutation } from "./account-command-parser";
 
 const DEFAULT_STORAGE_KEY = "todoflare-mutation-outbox-v1";
 const BASE_BACKOFF_MS = 750;
@@ -91,7 +91,9 @@ export class LocalMutationQueueService implements MutationQueueService {
 		this.queue = this.storage.read().sort(byCreatedAt);
 	}
 
-	async enqueue(cmd: AccountEditCommand): Promise<string> {
+	async enqueue<T extends AccountEditCommand["opType"]>(
+		cmd: AccountEditCommand<T>,
+	): Promise<string> {
 		const queueId = crypto.randomUUID();
 		const queued: QueuedMutation = {
 			...cmd,
@@ -144,12 +146,7 @@ export class LocalMutationQueueService implements MutationQueueService {
 			if (result.kind === "ack") {
 				this.queue.splice(index, 1);
 				report.acked += 1;
-				report.ackedCommands.push({
-					queueId: mutation.queueId,
-					opType: mutation.opType,
-					entityId: mutation.entityId,
-					payload: mutation.payload,
-				});
+				report.ackedCommands.push(mutation);
 				continue;
 			}
 
@@ -157,12 +154,9 @@ export class LocalMutationQueueService implements MutationQueueService {
 				this.queue.splice(index, 1);
 				report.dropped += 1;
 				report.terminalFailures.push({
-					queueId: mutation.queueId,
+					...mutation,
 					reason: result.reason,
-					opType: mutation.opType,
-					entityId: mutation.entityId,
-					payload: mutation.payload,
-				});
+				} as (typeof report.terminalFailures)[number]);
 				continue;
 			}
 
@@ -227,9 +221,11 @@ export function createLocalStorageMutationQueueStorage(
 			try {
 				const raw = window.localStorage.getItem(storageKey);
 				if (!raw) return [];
-				const parsed = JSON.parse(raw);
+				const parsed: unknown = JSON.parse(raw);
 				if (!Array.isArray(parsed)) return [];
-				return parsed as QueuedMutation[];
+				return parsed
+					.map((mutation) => parseQueuedMutation(mutation))
+					.filter((mutation): mutation is QueuedMutation => mutation !== null);
 			} catch {
 				return [];
 			}
@@ -260,20 +256,6 @@ export function createMemoryMutationQueueStorage(
 	};
 }
 
-function mutationFromOutboxDoc(doc: MutationOutboxDoc): QueuedMutation {
-	return {
-		queueId: doc.queueId,
-		idempotencyKey: doc.idempotencyKey,
-		opType: doc.opType,
-		entityId: doc.entityId,
-		payload: doc.payload,
-		createdAt: doc.createdAt,
-		attemptCount: doc.attemptCount,
-		nextRetryAt: doc.nextRetryAt,
-		lastError: doc.lastError ?? undefined,
-	};
-}
-
 export function createLocalFirstMutationQueueStorage(
 	db: LocalFirstDatabase,
 ): MutationQueueStorage {
@@ -282,7 +264,8 @@ export function createLocalFirstMutationQueueStorage(
 	return {
 		read() {
 			return Array.from(collection.values())
-				.map((doc) => mutationFromOutboxDoc(doc))
+				.map((doc) => parseQueuedMutation(doc))
+				.filter((mutation): mutation is QueuedMutation => mutation !== null)
 				.sort(byCreatedAt);
 		},
 		write(mutations) {

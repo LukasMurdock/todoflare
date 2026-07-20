@@ -1,26 +1,29 @@
 import { describe, expect, it } from "vitest";
-import type { AccountEditCommand } from "../src/lib/sync/contracts";
+import {
+	createAccountEditCommand,
+	type AccountCommandPayloadMap,
+	type AccountCommandType,
+	type AccountEditCommand,
+} from "../src/lib/sync/contracts";
 import {
 	createLocalFirstMutationQueueStorage,
 	LocalMutationQueueService,
 	createMemoryMutationQueueStorage,
 } from "../src/lib/sync/mutation-queue-service";
-import type { LocalFirstDatabase } from "../src/lib/local-first/rxdb";
+import type { LocalFirstDatabase } from "../src/lib/local-first/database";
 
-function makeCommand(
-	opType: AccountEditCommand["opType"],
-	payload: Record<string, unknown>,
+function makeCommand<T extends AccountCommandType>(
+	opType: T,
+	payload: AccountCommandPayloadMap[T],
 	createdAt: number,
-): AccountEditCommand {
-	return {
+): AccountEditCommand<T> {
+	return createAccountEditCommand(opType, payload, {
 		idempotencyKey: crypto.randomUUID(),
-		opType,
 		entityId: "1111 1111 1111 1111",
-		payload,
 		createdAt,
 		attemptCount: 0,
 		nextRetryAt: createdAt,
-	};
+	});
 }
 
 describe("LocalMutationQueueService", () => {
@@ -28,14 +31,20 @@ describe("LocalMutationQueueService", () => {
 		const order: string[] = [];
 		const queue = new LocalMutationQueueService({
 			executor: async (mutation) => {
-				order.push(String(mutation.payload.marker));
+				if (mutation.opType === "column.reorder") {
+					order.push(mutation.payload.columnOrder[0] ?? "");
+				}
 				return { kind: "ack" };
 			},
 			storage: createMemoryMutationQueueStorage(),
 		});
 
-		await queue.enqueue(makeCommand("column.reorder", { marker: "second" }, 200));
-		await queue.enqueue(makeCommand("column.reorder", { marker: "first" }, 100));
+		await queue.enqueue(
+			makeCommand("column.reorder", { columnOrder: ["second"] }, 200),
+		);
+		await queue.enqueue(
+			makeCommand("column.reorder", { columnOrder: ["first"] }, 100),
+		);
 
 		const report = await queue.replay({ maxBatch: 10 });
 
@@ -55,7 +64,9 @@ describe("LocalMutationQueueService", () => {
 		});
 
 		const now = Date.now();
-		await queue.enqueue(makeCommand("column.hide_shared", { ids: [] }, now));
+		await queue.enqueue(
+			makeCommand("column.hide_shared", { hiddenSharedColumns: [] }, now),
+		);
 		const report = await queue.replay({ maxBatch: 10 });
 
 		expect(report.attempted).toBe(1);
@@ -97,11 +108,15 @@ describe("LocalMutationQueueService", () => {
 		});
 
 		const inMemoryQueueId = await queue.enqueue(
-			makeCommand("column.reorder", { marker: "memory" }, 150),
+			makeCommand("column.reorder", { columnOrder: ["memory"] }, 150),
 		);
 
 		const persistedMutation = {
-			...makeCommand("column.hide_shared", { marker: "persisted" }, 100),
+			...makeCommand(
+				"column.hide_shared",
+				{ hiddenSharedColumns: ["persisted"] },
+				100,
+			),
 			queueId: "persisted-queue-id",
 		};
 		const swappedStorage = createMemoryMutationQueueStorage([persistedMutation]);
@@ -144,5 +159,33 @@ describe("LocalMutationQueueService", () => {
 
 		storage.write([queuedMutation]);
 		expect(storage.read()).toEqual([queuedMutation]);
+	});
+
+	it("discards malformed records loaded from the persisted outbox", () => {
+		const db = {
+			collections: {
+				accountSnapshot: new Map(),
+				mutationOutbox: new Map<string, unknown>(),
+				yjsUpdateOutbox: new Map(),
+				syncState: new Map(),
+			},
+			async close() {
+				return;
+			},
+		} satisfies LocalFirstDatabase;
+		const storage = createLocalFirstMutationQueueStorage(db);
+		const valid = {
+			...makeCommand("column.delete", { columnId: "column-1" }, 123),
+			queueId: "valid",
+		};
+
+		storage.write([valid]);
+		db.collections.mutationOutbox.set("malformed", {
+			...valid,
+			queueId: "malformed",
+			payload: { columnId: 42 },
+		});
+
+		expect(storage.read()).toEqual([valid]);
 	});
 });

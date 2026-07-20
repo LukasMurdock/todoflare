@@ -258,13 +258,9 @@ export function WelcomeScreen({ onDismiss }: WelcomeScreenProps) {
 			}
 		};
 		
-		// Small delay to avoid immediate dismissal from the click that loaded the page
-		const timeoutId = setTimeout(() => {
-			window.addEventListener("click", handleClick);
-		}, 100);
+		window.addEventListener("click", handleClick);
 		
 		return () => {
-			clearTimeout(timeoutId);
 			window.removeEventListener("click", handleClick);
 		};
 	}, [onDismiss, refs]);
