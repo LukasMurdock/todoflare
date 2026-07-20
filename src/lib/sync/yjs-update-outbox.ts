@@ -1,5 +1,8 @@
 import type { YjsUpdateOutboxDoc } from "@/lib/local-first/collections";
-import type { LocalFirstDatabase } from "@/lib/local-first/database";
+import {
+	replaceLocalFirstCollection,
+	type LocalFirstDatabase,
+} from "../local-first/database";
 
 const DEFAULT_STORAGE_KEY = "todoflare-yjs-update-outbox-v1";
 const DEFAULT_AWARENESS_MAX_AGE_MS = 30_000;
@@ -123,8 +126,17 @@ export class LocalYjsUpdateOutbox {
 	}
 
 	swapStorage(storage: YjsOutboxStorage) {
+		const synchronousMirror = this.storage;
 		const persistedEntries = storage.read().sort(byCreatedAt);
-		this.storage = storage;
+		this.storage = {
+			read: () => storage.read(),
+			write: (entries) => {
+				// Keep the original localStorage-backed writer as a synchronous
+				// crash/refresh journal while IndexedDB persistence catches up.
+				synchronousMirror.write(entries);
+				storage.write(entries);
+			},
+		};
 		this.entries = mergeEntriesById(persistedEntries, this.entries).sort(byCreatedAt);
 		this.persist();
 	}
@@ -322,9 +334,11 @@ export function createLocalFirstYjsOutboxStorage(
 			return cloneEntries(entries);
 		},
 		write(entries) {
-			collection.clear();
-			for (const entry of entries) {
-				collection.set(entry.id, {
+			replaceLocalFirstCollection(
+				collection,
+				entries.map((entry) => [
+					entry.id,
+					{
 					id: entry.id,
 					accountId: entry.accountId,
 					columnId: entry.columnId,
@@ -339,8 +353,9 @@ export function createLocalFirstYjsOutboxStorage(
 					ackedAt: entry.ackedAt,
 					terminalReason: entry.terminalReason,
 					lastError: entry.lastError,
-				});
-			}
+					},
+				] as const),
+			);
 		},
 	};
 }

@@ -4,17 +4,16 @@ import {
 	useState,
 	useCallback,
 	useEffect,
+	useMemo,
 	useRef,
 	type ReactNode,
 } from "react";
+import { waitFor } from "xstate";
 import { toast } from "sonner";
 import { deriveSyncMode, type SyncMode } from "@/lib/sync/mode-machine";
 import { getLocalFirstDb } from "@/lib/local-first/database";
 import type { AccountSnapshotDoc } from "@/lib/local-first/collections";
 import {
-	createAccountEditCommand,
-	type AccountCommandPayloadMap,
-	type AccountCommandType,
 	type ReplayReport,
 } from "@/lib/sync/contracts";
 import {
@@ -25,21 +24,11 @@ import {
 	columnIdForAccountCommand,
 	summarizeReplayReport,
 } from "@/lib/sync/account-command-reconciliation";
-import { canApplyAccountHydration } from "@/lib/sync/account-hydration";
 import {
 	LOCAL_COLUMNS_STORAGE_KEY,
 	parseLocalColumns,
 } from "@/lib/local-column-storage";
-import { startReplayScheduler } from "@/lib/sync/replay-scheduler";
-import {
-	createAccountCommandExecutor,
-	type AccountCommandEffect,
-	type AccountCommandExecutor,
-} from "@/lib/sync/account-command-executor";
-import {
-	removeSharedWithByColumn,
-	upsertSharedWithByColumn,
-} from "@/lib/sync/replay-state";
+import { createAccountCommandExecutor } from "@/lib/sync/account-command-executor";
 import {
 	LocalYjsUpdateOutbox,
 	createLocalFirstYjsOutboxStorage,
@@ -55,6 +44,19 @@ import type {
 	ColumnSocketFrame,
 	ColumnSocketLike,
 } from "@/lib/sync/column-socket-actor";
+import {
+	AccountConvergenceFailure,
+	type AccountConvergenceDependencies,
+} from "@/lib/sync/account-convergence-machine";
+import {
+	accountConvergenceErrorMessage,
+	useAccountCommandSubmission,
+	useAccountConvergence,
+} from "@/hooks/use-account-convergence";
+import {
+	projectionFromServer,
+	type AccountProjection,
+} from "@/lib/sync/account-projection";
 import type { LocalFirstDatabase } from "@/lib/local-first/database";
 import type {
 	Account,
@@ -66,7 +68,6 @@ import type {
 	GetAccountResponse,
 	CreateAccountResponse,
 	PublicLinkResponse,
-	RateLimitError,
 	AccountExportPayload,
 } from "@/types/account";
 import {
@@ -76,8 +77,7 @@ import {
 } from "@/lib/account";
 
 const ACCOUNT_STORAGE_KEY = "todoflare-account";
-const QUEUE_RESULT_CACHE_TTL_MS = 5 * 60 * 1000;
-const QUEUE_RESULT_CACHE_PRUNE_INTERVAL_MS = 60 * 1000;
+const E2E_REPLAY_WAKE_EVENT = "todoflare:e2e:replay-wake";
 const YJS_AWARENESS_REPLAY_MAX_AGE_MS = 30_000;
 const ACCESS_LOSS_NOTICE_COOLDOWN_MS = 2000;
 
@@ -95,22 +95,6 @@ function hasTerminalFailureForCommand(
 ): boolean {
 	if (!report || !queueId) return false;
 	return report.terminalFailures.some((failure) => failure.queueId === queueId);
-}
-
-function pruneExpiredQueueResults<T>(
-	cache: Map<string, CachedQueueResult<T>>,
-	cutoff: number,
-) {
-	for (const [queueId, cached] of cache) {
-		if (cached.storedAt < cutoff) {
-			cache.delete(queueId);
-		}
-	}
-}
-
-interface CachedQueueResult<T> {
-	value: T;
-	storedAt: number;
 }
 
 interface YjsOutboxSummary {
@@ -171,7 +155,6 @@ interface SyncContextValue {
 
 	// Connection status
 	connectionStatus: ConnectionStatus;
-	isRealtimeDegraded: boolean;
 	syncMode: SyncMode;
 	syncStateSummary: SyncStateSummary;
 	yjsOutboxSummary: YjsOutboxSummary;
@@ -232,26 +215,15 @@ export function useSyncContext() {
 }
 
 export function SyncProvider({ children }: { children: ReactNode }) {
-	const [accountId, setAccountId] = useState<string | null>(() => {
+	const restoredAccountIdRef = useRef<string | null | undefined>(undefined);
+	if (restoredAccountIdRef.current === undefined) {
 		try {
-			return localStorage.getItem(ACCOUNT_STORAGE_KEY);
+			restoredAccountIdRef.current = localStorage.getItem(ACCOUNT_STORAGE_KEY);
 		} catch {
-			return null;
+			restoredAccountIdRef.current = null;
 		}
-	});
-	const [account, setAccount] = useState<Account | null>(null);
-	const [sharedColumns, setSharedColumns] = useState<ColumnMeta[]>([]);
-	const [deletedColumns, setDeletedColumns] = useState<DeletedColumn[]>([]);
-	const [sharedWithByColumn, setSharedWithByColumn] = useState<
-		Record<string, string[] | undefined>
-	>({});
-	const [publicLinksByColumn, setPublicLinksByColumn] = useState<
-		Record<string, PublicLinkResponse | null>
-	>({});
-	const [isLoading, setIsLoading] = useState(false);
-	const [error, setError] = useState<string | null>(null);
-	const [isRealtimeDegraded, setIsRealtimeDegraded] = useState(false);
-	const [mutationQueueDepth, setMutationQueueDepth] = useState(0);
+	}
+	const [operationError, setError] = useState<string | null>(null);
 	const [lastServerHydrationAt, setLastServerHydrationAt] = useState<
 		number | null
 	>(null);
@@ -279,96 +251,35 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 	const messageCallbacks = useRef<
 		Map<string, Set<(message: SyncMessage) => void>>
 	>(new Map());
-	const accountIdRef = useRef<string | null>(accountId);
-	const accountProjectionRevisionRef = useRef(0);
-	const accountHydrationGenerationRef = useRef(0);
 	const recentAccessLossNoticesRef = useRef<Map<string, number>>(new Map());
 	const accessLossSourcesRef = useRef<
 		Map<string, "websocket" | "replay">
 	>(new Map());
-	const createColumnResultsByQueueIdRef = useRef<
-		Map<string, CachedQueueResult<ColumnMeta>>
-	>(
-		new Map(),
-	);
-	const publicLinkResultsByQueueIdRef = useRef<
-		Map<string, CachedQueueResult<PublicLinkResponse>>
-	>(
-		new Map(),
-	);
+	const accessLossReconcilerRef = useRef<
+		(
+			columnId: string,
+			reason: "revoked" | "column_deleted",
+			source: "websocket" | "replay",
+		) => Promise<void>
+	>(async () => {});
 	const localFirstDbRef = useRef<LocalFirstDatabase | null>(null);
-	const accountCommandExecutorRef = useRef<AccountCommandExecutor | null>(null);
+	const accountCommandExecutorRef = useRef<ReturnType<
+		typeof createAccountCommandExecutor
+	> | null>(null);
 	const mutationQueueRef = useRef<LocalMutationQueueService | null>(null);
 	const yjsOutboxRef = useRef<LocalYjsUpdateOutbox | null>(null);
-
-	const reconcileAccountCommandEffect = (effect: AccountCommandEffect) => {
-		switch (effect.type) {
-			case "column.created":
-				createColumnResultsByQueueIdRef.current.set(effect.queueId, {
-					value: effect.column,
-					storedAt: Date.now(),
-				});
-				break;
-			case "column.deleted":
-				setSharedWithByColumn((prev) =>
-					removeSharedWithByColumn(prev, effect.columnId),
-				);
-				setPublicLinksByColumn((prev) => {
-					if (!(effect.columnId in prev)) return prev;
-					const { [effect.columnId]: _removed, ...rest } = prev;
-					return rest;
-				});
-				break;
-			case "column.sharing.updated":
-				setSharedWithByColumn((prev) =>
-					upsertSharedWithByColumn(
-						prev,
-						effect.columnId,
-						effect.sharedWith,
-					),
-				);
-				break;
-			case "column.public.enabled":
-				publicLinkResultsByQueueIdRef.current.set(effect.queueId, {
-					value: effect.publicLink,
-					storedAt: Date.now(),
-				});
-				setPublicLinksByColumn((prev) => {
-					const existing = prev[effect.columnId];
-					if (
-						existing?.publicId === effect.publicLink.publicId &&
-						existing.url === effect.publicLink.url
-					) {
-						return prev;
-					}
-					return { ...prev, [effect.columnId]: effect.publicLink };
-				});
-				break;
-			case "column.public.disabled":
-				setPublicLinksByColumn((prev) => {
-					if (!(effect.columnId in prev)) return prev;
-					const { [effect.columnId]: _removed, ...rest } = prev;
-					return rest;
-				});
-				break;
-		}
-	};
+	const durableQueueStoragePromiseRef = useRef<Promise<LocalFirstDatabase> | null>(
+		null,
+	);
 
 	if (!accountCommandExecutorRef.current) {
-		accountCommandExecutorRef.current = createAccountCommandExecutor({
-			getActiveAccountId: () => accountIdRef.current,
-		});
+		accountCommandExecutorRef.current = createAccountCommandExecutor({});
 	}
 
 	if (!mutationQueueRef.current) {
 		mutationQueueRef.current = new LocalMutationQueueService({
-			executor: async (mutation) => {
-				const result = await accountCommandExecutorRef.current!.execute(mutation);
-				for (const effect of result.effects ?? []) {
-					reconcileAccountCommandEffect(effect);
-				}
-				return result;
-			},
+			executor: (mutation, options) =>
+				accountCommandExecutorRef.current!.execute(mutation, options),
 		});
 	}
 
@@ -390,26 +301,16 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		return db;
 	}, []);
 
-	const hydrateAccountFromLocalSnapshot = useCallback(
-		async (id: string): Promise<boolean> => {
-			try {
-				const db = await ensureLocalFirstDb();
-				const snapshot = db.collections.accountSnapshot.get(
-					accountSnapshotDocId(id),
-				) as AccountSnapshotDoc | undefined;
-				if (!snapshot) return false;
-
-				setAccount(snapshot.account);
-				setSharedColumns(snapshot.sharedColumns || []);
-				setDeletedColumns(snapshot.deletedColumns || []);
-				return true;
-			} catch (err) {
-				console.error("Failed to hydrate account from local snapshot:", err);
-				return false;
-			}
-		},
-		[ensureLocalFirstDb],
-	);
+	const ensureDurableQueueStorage = useCallback(() => {
+		if (!durableQueueStoragePromiseRef.current) {
+			durableQueueStoragePromiseRef.current = ensureLocalFirstDb().then((db) => {
+				mutationQueue.swapStorage(createLocalFirstMutationQueueStorage(db));
+				yjsOutbox.swapStorage(createLocalFirstYjsOutboxStorage(db));
+				return db;
+			});
+		}
+		return durableQueueStoragePromiseRef.current;
+	}, [ensureLocalFirstDb, mutationQueue, yjsOutbox]);
 
 	const persistAccountLocalSnapshot = useCallback(
 		async (
@@ -417,6 +318,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			nextAccount: Account,
 			nextSharedColumns: ColumnMeta[],
 			nextDeletedColumns: DeletedColumn[],
+			nextSharedWithByColumn: Record<string, string[] | undefined>,
+			nextPublicLinksByColumn: Record<string, PublicLinkResponse | null>,
 			options?: { reconciledAt?: number | null },
 		) => {
 			try {
@@ -431,6 +334,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 					account: nextAccount,
 					sharedColumns: nextSharedColumns,
 					deletedColumns: nextDeletedColumns,
+					sharedWithByColumn: nextSharedWithByColumn,
+					publicLinksByColumn: nextPublicLinksByColumn,
 					hydratedAt: previousHydratedAt,
 					reconciledAt: options?.reconciledAt ?? null,
 				});
@@ -498,6 +403,169 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		[ensureLocalFirstDb],
 	);
 
+	const fetchProjection = useCallback(
+		async (
+			id: string,
+			signal: AbortSignal,
+			scope: "auth" | "hydrate",
+		): Promise<AccountProjection> => {
+			if (!validateAccountId(id)) {
+				throw new AccountConvergenceFailure(
+					{ scope: "auth", kind: "invalid" },
+					"Invalid account ID format",
+				);
+			}
+			const response = await fetch(`/api/account/${normalizeAccountId(id)}`, {
+				signal,
+			});
+			if (response.status === 404) {
+				throw new AccountConvergenceFailure(
+					{ scope: "auth", kind: "not_found" },
+					"Account not found",
+				);
+			}
+			if (response.status === 429) {
+				throw new AccountConvergenceFailure(
+					{ scope: "hydrate", kind: "rate_limited" },
+					"Account request was rate limited",
+				);
+			}
+			if (!response.ok) {
+				throw new AccountConvergenceFailure(
+					{ scope: "hydrate", kind: "server" },
+					`Failed to ${scope === "auth" ? "authenticate" : "hydrate"} account`,
+				);
+			}
+			return projectionFromServer(
+				(await response.json()) as GetAccountResponse,
+				undefined,
+				window.location.origin,
+			);
+		},
+		[],
+	);
+
+	const accountConvergenceDependencies = useMemo<AccountConvergenceDependencies>(
+		() => ({
+			loadLocal: async (id) => {
+				// Queue storage must be ready before cached columns can mount and open
+				// sessions; otherwise a fast reconnect can miss durable Yjs frames.
+				const db = await ensureDurableQueueStorage();
+				const snapshot = db.collections.accountSnapshot.get(
+					accountSnapshotDocId(id),
+				) as AccountSnapshotDoc | undefined;
+				if (!snapshot) return null;
+				return projectionFromServer(
+					{
+						account: snapshot.account,
+						sharedColumns: snapshot.sharedColumns ?? [],
+						deletedColumns: snapshot.deletedColumns ?? [],
+					},
+					{
+						sharedWithByColumn: snapshot.sharedWithByColumn ?? {},
+						publicLinksByColumn: snapshot.publicLinksByColumn ?? {},
+					},
+				);
+			},
+			fetchServer: (id, signal) => fetchProjection(id, signal, "hydrate"),
+			login: (id, signal) => fetchProjection(id, signal, "auth"),
+			createAccount: async (signal) => {
+				const response = await fetch("/api/account", { method: "POST", signal });
+				if (response.status === 429) {
+					throw new AccountConvergenceFailure(
+						{ scope: "hydrate", kind: "rate_limited" },
+						"Account creation was rate limited",
+					);
+				}
+				if (!response.ok) {
+					throw new AccountConvergenceFailure(
+						{ scope: "hydrate", kind: "server" },
+						"Failed to create account",
+					);
+				}
+				const { account: created } =
+					(await response.json()) as CreateAccountResponse;
+				return projectionFromServer({
+					account: created,
+					ownedColumns: [],
+					sharedColumns: [],
+					deletedColumns: [],
+				});
+			},
+			replay: (id, signal) =>
+				mutationQueue.replay({ accountId: id, signal, maxBatch: 50 }),
+			getPending: (id) => mutationQueue.getPending(id),
+			getNextRetryAt: (id) => mutationQueue.getNextRetryAt(id),
+			persistCredential: (id) => {
+				try {
+					if (id) localStorage.setItem(ACCOUNT_STORAGE_KEY, id);
+					else localStorage.removeItem(ACCOUNT_STORAGE_KEY);
+				} catch {
+					// Storage may be unavailable in privacy-restricted contexts.
+				}
+			},
+			reconcileAccessLoss: async (_id, columnIds) => {
+				for (const columnId of columnIds) {
+					accessLossSourcesRef.current.set(columnId, "replay");
+					const manager = columnSessionManagerRef.current?.manager;
+					if (manager) {
+						await manager.terminateColumn(columnId, "revoked");
+					} else {
+						await accessLossReconcilerRef.current(
+							columnId,
+							"revoked",
+							"replay",
+						);
+					}
+				}
+			},
+		}),
+		[ensureDurableQueueStorage, fetchProjection, mutationQueue],
+	);
+	const accountConvergence = useAccountConvergence(accountConvergenceDependencies, {
+		networkOnline: isNetworkOnline,
+		restoredAccountId: restoredAccountIdRef.current,
+	});
+	const accountConvergenceActor = accountConvergence.actor;
+	const accountId = accountConvergence.accountId;
+	const projection = accountConvergence.projection;
+	const {
+		account,
+		sharedColumns,
+		deletedColumns,
+		sharedWithByColumn,
+		publicLinksByColumn,
+	} = useMemo(
+		() => ({
+			account: projection?.account ?? null,
+			sharedColumns: projection?.sharedColumns ?? [],
+			deletedColumns: projection?.deletedColumns ?? [],
+			sharedWithByColumn: projection?.sharedWithByColumn ?? {},
+			publicLinksByColumn: projection?.publicLinksByColumn ?? {},
+		}),
+		[projection],
+	);
+	const mutationQueueDepth = accountConvergence.queueDepth;
+	const isLoading = accountConvergence.isLoading;
+	const error =
+		accountConvergenceErrorMessage(accountConvergence.error) ?? operationError;
+	const handleAccountReplay = useCallback(
+		(report: ReplayReport, latencyMs: number) => {
+			if (report.attempted > 0) setLastReplayLatencyMs(latencyMs);
+			if (summarizeReplayReport(report).nonAccessLossFailureCount > 0) {
+				setConvergenceFailureCount((value) => value + 1);
+				toast.error("Some offline changes could not be synced");
+			}
+		},
+		[],
+	);
+	const { submitAccountCommand, waitForStableConvergence } =
+		useAccountCommandSubmission(
+			accountConvergenceActor,
+			mutationQueue,
+			handleAccountReplay,
+		);
+
 	const refreshYjsOutboxSummary = useCallback(() => {
 		if (!accountId) {
 			setYjsOutboxSummary(emptyYjsOutboxSummary());
@@ -518,7 +586,6 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		hasAccountSession: !!accountId,
 		isPublicReadonly: false,
 		isNetworkOnline,
-		isRealtimeDegraded,
 		connectionStatus,
 	});
 	const activeSyncStateDocId = syncStateDocId(accountId);
@@ -534,23 +601,25 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 	};
 
 	useEffect(() => {
-		const subscription = mutationQueue.pending$().subscribe((pending) => {
-			if (!accountId) {
-				setMutationQueueDepth(0);
-				return;
-			}
+		const replayAt = accountConvergence.lastReplayAt;
+		if (replayAt === null) return;
+		setLastReplayAt((current) =>
+			current === null ? replayAt : Math.max(current, replayAt),
+		);
+		setLastReplayLatencyMs((current) => current ?? 0);
+	}, [accountConvergence.lastReplayAt]);
 
-			const normalizedAccountId = normalizeAccountId(accountId);
-			const depth = pending.filter(
-				(mutation) => normalizeAccountId(mutation.entityId) === normalizedAccountId,
-			).length;
-			setMutationQueueDepth(depth);
-		});
+	useEffect(() => {
+		const convergedAt = accountConvergence.lastConvergedAt;
+		if (convergedAt === null) return;
+		setLastServerHydrationAt((current) =>
+			current === null ? convergedAt : Math.max(current, convergedAt),
+		);
+	}, [accountConvergence.lastConvergedAt]);
 
-		return () => {
-			subscription.unsubscribe();
-		};
-	}, [accountId, mutationQueue]);
+	useEffect(() => {
+		setError(null);
+	}, [accountId]);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -628,8 +697,16 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 	]);
 
 	useEffect(() => {
-		const onOnline = () => setIsNetworkOnline(true);
-		const onOffline = () => setIsNetworkOnline(false);
+		const onOnline = () => {
+			accountConvergenceActor.send({ type: "NETWORK_ONLINE" });
+			columnSessionManagerRef.current?.manager.setNetworkOnline(true);
+			setIsNetworkOnline(true);
+		};
+		const onOffline = () => {
+			accountConvergenceActor.send({ type: "NETWORK_OFFLINE" });
+			columnSessionManagerRef.current?.manager.setNetworkOnline(false);
+			setIsNetworkOnline(false);
+		};
 
 		window.addEventListener("online", onOnline);
 		window.addEventListener("offline", onOffline);
@@ -638,82 +715,34 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			window.removeEventListener("online", onOnline);
 			window.removeEventListener("offline", onOffline);
 		};
-	}, []);
+	}, [accountConvergenceActor]);
 
 	useEffect(() => {
-		let cancelled = false;
-
-		void (async () => {
-			const db = await ensureLocalFirstDb();
-			if (cancelled) return;
-
-			mutationQueue.swapStorage(createLocalFirstMutationQueueStorage(db));
-			yjsOutbox.swapStorage(createLocalFirstYjsOutboxStorage(db));
-			refreshYjsOutboxSummary();
-		})();
-
-		return () => {
-			cancelled = true;
+		if (import.meta.env.VITE_E2E_REPLAY_CONTROL !== "true") return;
+		const wakeReplay = () => {
+			accountConvergenceActor.send({ type: "REPLAY_WAKE" });
 		};
+		window.addEventListener(E2E_REPLAY_WAKE_EVENT, wakeReplay);
+		return () => {
+			window.removeEventListener(E2E_REPLAY_WAKE_EVENT, wakeReplay);
+		};
+	}, [accountConvergenceActor]);
+
+	useEffect(() => {
+		void ensureDurableQueueStorage().then(() => {
+			refreshYjsOutboxSummary();
+			accountConvergenceActor.send({ type: "COMMAND_PERSISTED" });
+		});
 	}, [
-		ensureLocalFirstDb,
-		mutationQueue,
+		accountConvergenceActor,
+		ensureDurableQueueStorage,
 		refreshYjsOutboxSummary,
-		yjsOutbox,
 	]);
 
 	useEffect(() => {
-		accountIdRef.current = accountId;
 		recentAccessLossNoticesRef.current.clear();
 		refreshYjsOutboxSummary();
-		createColumnResultsByQueueIdRef.current.clear();
-		publicLinkResultsByQueueIdRef.current.clear();
-		setSharedWithByColumn({});
-		setPublicLinksByColumn({});
 	}, [accountId, refreshYjsOutboxSummary]);
-
-	useEffect(() => {
-		if (!accountId) return;
-
-		let cancelled = false;
-		void (async () => {
-			const hydrated = await hydrateAccountFromLocalSnapshot(accountId);
-			if (cancelled) return;
-			if (hydrated) {
-				setError(null);
-			}
-		})();
-
-		return () => {
-			cancelled = true;
-		};
-	}, [accountId, hydrateAccountFromLocalSnapshot]);
-
-	useEffect(() => {
-		const pruneCaches = () => {
-			const cutoff = Date.now() - QUEUE_RESULT_CACHE_TTL_MS;
-			pruneExpiredQueueResults(createColumnResultsByQueueIdRef.current, cutoff);
-			pruneExpiredQueueResults(publicLinkResultsByQueueIdRef.current, cutoff);
-		};
-
-		pruneCaches();
-		const timerId = window.setInterval(
-			pruneCaches,
-			QUEUE_RESULT_CACHE_PRUNE_INTERVAL_MS,
-		);
-
-		return () => {
-			window.clearInterval(timerId);
-		};
-	}, []);
-
-	const markRealtimeDegraded = useCallback((reason: string) => {
-		setIsRealtimeDegraded((prev) => {
-			if (prev) return prev;
-			toast.warning(reason);
-			return true;
-		});
-	}, []);
 
 	const resetSyncTelemetry = useCallback(() => {
 		setLastReplayLatencyMs(null);
@@ -743,34 +772,9 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 				: yjsOutbox.dropWhere((entry) => entry.columnId === columnId);
 
 			refreshYjsOutboxSummary();
-
-			setSharedColumns((prev) => prev.filter((column) => column.id !== columnId));
-			setSharedWithByColumn((prev) => removeSharedWithByColumn(prev, columnId));
-			setPublicLinksByColumn((prev) => {
-				if (!(columnId in prev)) return prev;
-				const { [columnId]: _removed, ...rest } = prev;
-				return rest;
-			});
-			setAccount((prev) => {
-				if (!prev) return prev;
-
-				const nextColumnOrder = prev.columnOrder.filter((id) => id !== columnId);
-				const nextHiddenSharedColumns = prev.hiddenSharedColumns.filter(
-					(id) => id !== columnId,
-				);
-
-				if (
-					nextColumnOrder.length === prev.columnOrder.length &&
-					nextHiddenSharedColumns.length === prev.hiddenSharedColumns.length
-				) {
-					return prev;
-				}
-
-				return {
-					...prev,
-					columnOrder: nextColumnOrder,
-					hiddenSharedColumns: nextHiddenSharedColumns,
-				};
+			accountConvergenceActor.send({
+				type: reason === "revoked" ? "ACCESS_REVOKED" : "COLUMN_DELETED",
+				columnId,
 			});
 
 			const discardedCount = droppedMutationCount + droppedYjsCount;
@@ -802,12 +806,14 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			}
 		},
 		[
+			accountConvergenceActor,
 			accountId,
 			mutationQueue,
 			refreshYjsOutboxSummary,
 			yjsOutbox,
 		],
 	);
+	accessLossReconcilerRef.current = applyColumnAccessLossPolicy;
 
 	const ensureColumnSessionManager = useCallback(() => {
 		if (!accountId) return null;
@@ -818,7 +824,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		const manager = new ColumnSessionManager({
 			accountId,
 			networkOnline: isNetworkOnline,
-			realtimeEnabled: !isRealtimeDegraded,
+			realtimeEnabled: true,
 			onStatusChange: setConnectionStatus,
 			dependencies: {
 				createSocket: (url) =>
@@ -880,206 +886,25 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		accountId,
 		applyColumnAccessLossPolicy,
 		isNetworkOnline,
-		isRealtimeDegraded,
 		refreshYjsOutboxSummary,
 		yjsOutbox,
 	]);
 
-	const enqueueAccountCommand = useCallback(
-		async <T extends AccountCommandType>(
-			opType: T,
-			payload: AccountCommandPayloadMap[NoInfer<T>],
-		) => {
-			if (!accountId) return null;
-			accountProjectionRevisionRef.current += 1;
-
-			const createdAt = Date.now();
-			const command = createAccountEditCommand(opType, payload, {
-				idempotencyKey: crypto.randomUUID(),
-				entityId: accountId,
-				createdAt,
-				attemptCount: 0,
-				nextRetryAt: createdAt,
-			});
-
-			return mutationQueue.enqueue(command);
-		},
-		[accountId, mutationQueue],
-	);
-
-	const replayMutationQueue = useCallback(async (): Promise<ReplayReport | null> => {
-		if (!accountId) return null;
-		if (!isNetworkOnline) return null;
-		if (isRealtimeDegraded) return null;
-
-		const replayStartedAt = Date.now();
-		const report = await mutationQueue.replay({ maxBatch: 50 });
-		if (report.attempted > 0) {
-			const replayFinishedAt = Date.now();
-			setLastReplayAt(replayFinishedAt);
-			setLastReplayLatencyMs(Math.max(0, replayFinishedAt - replayStartedAt));
-		}
-
-		const reconciliation = summarizeReplayReport(report);
-		const { ackedCreatedColumnIds } = reconciliation;
-		if (ackedCreatedColumnIds.length > 0) {
-			const createdSet = new Set(ackedCreatedColumnIds);
-			setAccount((prev) => {
-				if (!prev) return prev;
-
-				const nextOrder = [...prev.columnOrder];
-				let changed = false;
-				for (const columnId of createdSet) {
-					if (nextOrder.includes(columnId)) continue;
-					nextOrder.push(columnId);
-					changed = true;
-				}
-
-				if (!changed) return prev;
-				return { ...prev, columnOrder: nextOrder };
-			});
-		}
-
-		const { failedCreatedColumnIds } = reconciliation;
-		if (failedCreatedColumnIds.length > 0) {
-			const failedSet = new Set(failedCreatedColumnIds);
-			setAccount((prev) => {
-				if (!prev) return prev;
-
-				const nextOrder = prev.columnOrder.filter(
-					(columnId) => !failedSet.has(columnId),
-				);
-				if (nextOrder.length === prev.columnOrder.length) {
-					return prev;
-				}
-
-				return { ...prev, columnOrder: nextOrder };
-			});
-		}
-
-		for (const failure of report.terminalFailures) {
-			createColumnResultsByQueueIdRef.current.delete(failure.queueId);
-			publicLinkResultsByQueueIdRef.current.delete(failure.queueId);
-		}
-
-		for (const revokedColumnId of reconciliation.accessLostColumnIds) {
-			accessLossSourcesRef.current.set(revokedColumnId, "replay");
-			const manager = ensureColumnSessionManager();
-			if (manager) {
-				manager.terminateColumn(revokedColumnId, "revoked");
-			} else {
-				await applyColumnAccessLossPolicy(revokedColumnId, "revoked", "replay");
-			}
-		}
-
-		if (reconciliation.nonAccessLossFailureCount > 0) {
-			setConvergenceFailureCount(
-				(prev) => prev + reconciliation.nonAccessLossFailureCount,
-			);
-			setError("Some offline changes could not be synced");
-			toast.error("Some offline changes could not be synced");
-		}
-		return report;
-	}, [
-		accountId,
-		applyColumnAccessLossPolicy,
-		ensureColumnSessionManager,
-		isNetworkOnline,
-		isRealtimeDegraded,
-		mutationQueue,
-	]);
-
-	useEffect(() => {
-		if (!accountId) return;
-		if (!isNetworkOnline) return;
-		if (isRealtimeDegraded) return;
-
-		return startReplayScheduler(replayMutationQueue, {
-			enableE2eWake: import.meta.env.VITE_E2E_REPLAY_CONTROL === "true",
-		});
-	}, [accountId, isNetworkOnline, isRealtimeDegraded, replayMutationQueue]);
-
-	// Fetch account data
-	const fetchAccount = useCallback(async (id: string) => {
-		const guard = {
-			accountId: id,
-			projectionRevision: accountProjectionRevisionRef.current,
-			requestGeneration: ++accountHydrationGenerationRef.current,
-		};
-		try {
-			setIsLoading(true);
-			setError(null);
-
-			const response = await fetch(`/api/account/${normalizeAccountId(id)}`);
-
-			if (!response.ok) {
-				if (response.status === 404) {
-					const requestedId = normalizeAccountId(id);
-					const currentId = accountId ? normalizeAccountId(accountId) : null;
-
-					if (currentId && currentId === requestedId) {
-						setAccountId(null);
-						setAccount(null);
-						setSharedColumns([]);
-						setDeletedColumns([]);
-						try {
-							localStorage.removeItem(ACCOUNT_STORAGE_KEY);
-						} catch {
-							// ignore
-						}
-					}
-
-					throw new Error("Account not found");
-				}
-				if (response.status === 429) {
-					const data = (await response.json()) as RateLimitError;
-					throw new Error(
-						`Rate limited. Try again in ${data.retryAfter} seconds.`,
-					);
-				}
-				throw new Error("Failed to fetch account");
-			}
-
-			const data = (await response.json()) as GetAccountResponse;
-			const currentAccountId = accountIdRef.current;
+	const fetchAccount = useCallback(
+		async (id: string) => {
+			const snapshot = accountConvergenceActor.getSnapshot();
 			if (
-				!currentAccountId ||
-				!canApplyAccountHydration(guard, {
-					accountId: currentAccountId,
-					projectionRevision: accountProjectionRevisionRef.current,
-					requestGeneration: accountHydrationGenerationRef.current,
-				})
+				!snapshot.context.accountId ||
+				normalizeAccountId(snapshot.context.accountId) !== normalizeAccountId(id)
 			) {
-				return data.account;
+				return null;
 			}
-			const hydratedAt = Date.now();
-			setAccount(data.account);
-			setSharedColumns(data.sharedColumns || []);
-			setDeletedColumns(data.deletedColumns || []);
-			setLastServerHydrationAt(hydratedAt);
-			await persistAccountLocalSnapshot(
-				id,
-				data.account,
-				data.sharedColumns || [],
-				data.deletedColumns || [],
-				{ reconciledAt: hydratedAt },
-			);
-			return data.account;
-		} catch (err) {
-			setError(err instanceof Error ? err.message : "Unknown error");
-			return null;
-		} finally {
-			setIsLoading(false);
-		}
-	}, [accountId, persistAccountLocalSnapshot]);
-
-	// Load account on mount if we have an account ID
-	useEffect(() => {
-		if (!accountId) return;
-		if (!isNetworkOnline) return;
-
-		void fetchAccount(accountId);
-	}, [accountId, fetchAccount, isNetworkOnline]);
+			accountConvergenceActor.send({ type: "REFRESH_REQUESTED" });
+			const converged = await waitForStableConvergence();
+			return converged.context.projection?.account ?? null;
+		},
+		[accountConvergenceActor, waitForStableConvergence],
+	);
 
 	useEffect(() => {
 		if (!accountId || !account) return;
@@ -1089,90 +914,77 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			account,
 			sharedColumns,
 			deletedColumns,
+			sharedWithByColumn,
+			publicLinksByColumn,
+			{ reconciledAt: lastServerHydrationAt },
 		);
 	}, [
 		accountId,
 		account,
 		sharedColumns,
 		deletedColumns,
+		sharedWithByColumn,
+		publicLinksByColumn,
+		lastServerHydrationAt,
 		persistAccountLocalSnapshot,
 	]);
 
-	// Create new account
 	const createAccount = useCallback(async () => {
-		try {
-			setIsLoading(true);
-			setError(null);
-
-			const response = await fetch("/api/account", { method: "POST" });
-
-			if (!response.ok) {
-				if (response.status === 429) {
-					const data = (await response.json()) as RateLimitError;
-					throw new Error(
-						`Rate limited. Try again in ${data.retryAfter} seconds.`,
-					);
-				}
-				throw new Error("Failed to create account");
-			}
-
-			const data = (await response.json()) as CreateAccountResponse;
-			const newAccount = data.account;
-
-			setAccount(newAccount);
-			setAccountId(newAccount.id);
-			localStorage.setItem(ACCOUNT_STORAGE_KEY, newAccount.id);
-
+		accountConvergenceActor.send({ type: "CREATE_ACCOUNT" });
+		const snapshot = await waitFor(
+			accountConvergenceActor,
+			(state) =>
+				(!!state.context.accountId &&
+					!!state.context.projection &&
+					!state.matches("authenticating")) ||
+				(state.matches("signedOut") && state.context.error !== null),
+		);
+		const created = snapshot.context.projection?.account ?? null;
+		if (created) {
 			toast.success("Account created successfully!");
-			return newAccount;
-		} catch (err) {
-			const message = err instanceof Error ? err.message : "Unknown error";
-			setError(message);
-			toast.error(message);
-			return null;
-		} finally {
-			setIsLoading(false);
+		} else {
+			toast.error("Failed to create account");
 		}
-	}, []);
+		return created;
+	}, [accountConvergenceActor]);
 
-	// Login with existing account ID
 	const loginWithAccountId = useCallback(
 		async (id: string) => {
 			if (!validateAccountId(id)) {
 				setError("Invalid account ID format");
 				return false;
 			}
-
 			const formattedId = displayAccountId(id);
-			const fetchedAccount = await fetchAccount(formattedId);
-
-			if (fetchedAccount) {
-				setAccountId(formattedId);
-				localStorage.setItem(ACCOUNT_STORAGE_KEY, formattedId);
-				toast.success("Logged in successfully!");
-				return true;
-			}
-
-			return false;
+			accountConvergenceActor.send({ type: "LOGIN", accountId: formattedId });
+			const snapshot = await waitFor(
+				accountConvergenceActor,
+				(state) =>
+					(state.context.accountId !== null &&
+						normalizeAccountId(state.context.accountId) ===
+							normalizeAccountId(formattedId)) ||
+					(state.matches("signedOut") && state.context.error !== null),
+			);
+			const success =
+				snapshot.context.accountId !== null &&
+				normalizeAccountId(snapshot.context.accountId) ===
+					normalizeAccountId(formattedId);
+			if (success) toast.success("Logged in successfully!");
+			return success;
 		},
-		[fetchAccount],
+		[accountConvergenceActor],
 	);
 
 	// Logout
 	const logout = useCallback(() => {
 		columnSessionManagerRef.current?.manager.stop();
 		columnSessionManagerRef.current = null;
+		accountConvergenceActor.send({ type: "LOGOUT" });
 		resetSyncTelemetry();
 		recentAccessLossNoticesRef.current.clear();
 		accessLossSourcesRef.current.clear();
 
-		setAccountId(null);
-		setAccount(null);
-		setSharedColumns([]);
-		setDeletedColumns([]);
-		localStorage.removeItem(ACCOUNT_STORAGE_KEY);
 		setConnectionStatus("offline");
-	}, [resetSyncTelemetry]);
+	}, [accountConvergenceActor, resetSyncTelemetry]);
 
 	const subscribeToColumn = useCallback(
 		(columnId: string) => {
@@ -1202,14 +1014,11 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 	);
 
 	useEffect(() => {
+		accountConvergenceActor.send({
+			type: isNetworkOnline ? "NETWORK_ONLINE" : "NETWORK_OFFLINE",
+		});
 		columnSessionManagerRef.current?.manager.setNetworkOnline(isNetworkOnline);
-	}, [isNetworkOnline]);
-
-	useEffect(() => {
-		columnSessionManagerRef.current?.manager.setRealtimeEnabled(
-			!isRealtimeDegraded,
-		);
-	}, [isRealtimeDegraded]);
+	}, [accountConvergenceActor, isNetworkOnline]);
 
 	useEffect(() => {
 		return () => {
@@ -1249,72 +1058,25 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			createdAt: Date.now(),
 		};
 
-		setAccount((prev) => {
-			if (!prev) return prev;
-			if (prev.columnOrder.includes(columnId)) return prev;
-			return {
-				...prev,
-				columnOrder: [...prev.columnOrder, columnId],
-			};
-		});
-
 		try {
-			const queueId = await enqueueAccountCommand("column.create", {
-				columnId,
-			});
-			const report = await replayMutationQueue();
+			const { queueId, report } = await submitAccountCommand(
+				"column.create",
+				{ columnId },
+			);
 
 			if (hasTerminalFailureForCommand(report, queueId)) {
 				detachColumnSync(columnId);
-				setAccount((prev) => {
-					if (!prev) return prev;
-					return {
-						...prev,
-						columnOrder: prev.columnOrder.filter((id) => id !== columnId),
-					};
-				});
-				await fetchAccount(accountId);
 				return null;
-			}
-
-			if (!queueId) {
-				return provisionalColumn;
-			}
-
-			const created = createColumnResultsByQueueIdRef.current.get(queueId);
-			if (created) {
-				createColumnResultsByQueueIdRef.current.delete(queueId);
-				return created.value;
 			}
 
 			return provisionalColumn;
 		} catch (err) {
 			detachColumnSync(columnId);
-			setAccount((prev) => {
-				if (!prev) return prev;
-				return {
-					...prev,
-					columnOrder: prev.columnOrder.filter((id) => id !== columnId),
-				};
-			});
-
 			const message = err instanceof Error ? err.message : "Unknown error";
 			setError(message);
-			if (message.includes("Exceeded allowed duration in Durable Objects free tier")) {
-				markRealtimeDegraded(
-					"Realtime exceeded Durable Object limits. Using local-only mode.",
-				);
-			}
 			return null;
 		}
-	}, [
-		accountId,
-		detachColumnSync,
-		enqueueAccountCommand,
-		fetchAccount,
-		markRealtimeDegraded,
-		replayMutationQueue,
-	]);
+	}, [accountId, detachColumnSync, submitAccountCommand]);
 
 	// Delete a column
 	const deleteColumn = useCallback(
@@ -1322,77 +1084,43 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			if (!accountId) return false;
 
 			detachColumnSync(columnId);
-			const deletedAt = Date.now();
-			setAccount((prev) => {
-				if (!prev) return prev;
-				return {
-					...prev,
-					columnOrder: prev.columnOrder.filter((id) => id !== columnId),
-				};
-			});
-			setDeletedColumns((prev) => [
-				{ columnId, deletedAt },
-				...prev.filter((entry) => entry.columnId !== columnId),
-			]);
 
 			try {
-				const queueId = await enqueueAccountCommand("column.delete", {
-					columnId,
-				});
-				const report = await replayMutationQueue();
+				const { queueId, report } = await submitAccountCommand(
+					"column.delete",
+					{ columnId },
+				);
 				if (hasTerminalFailureForCommand(report, queueId)) {
-					await fetchAccount(accountId);
 					return false;
 				}
 				return true;
 			} catch (err) {
-				await fetchAccount(accountId);
 				setError(err instanceof Error ? err.message : "Unknown error");
 				return false;
 			}
 		},
-		[
-			accountId,
-			detachColumnSync,
-			enqueueAccountCommand,
-			fetchAccount,
-			replayMutationQueue,
-		],
+		[accountId, detachColumnSync, submitAccountCommand],
 	);
 
 	const restoreColumn = useCallback(
 		async (columnId: string) => {
 			if (!accountId) return false;
 
-			setDeletedColumns((prev) =>
-				prev.filter((entry) => entry.columnId !== columnId),
-			);
-			setAccount((prev) => {
-				if (!prev) return prev;
-				if (prev.columnOrder.includes(columnId)) return prev;
-				return {
-					...prev,
-					columnOrder: [...prev.columnOrder, columnId],
-				};
-			});
-
 			try {
-				const queueId = await enqueueAccountCommand("column.restore", {
-					columnId,
-				});
-				const report = await replayMutationQueue();
+				const { queueId, report } = await submitAccountCommand(
+					"column.restore",
+					{ columnId },
+				);
 				if (hasTerminalFailureForCommand(report, queueId)) {
-					await fetchAccount(accountId);
 					return false;
 				}
 				return true;
 			} catch (err) {
-				await fetchAccount(accountId);
 				setError(err instanceof Error ? err.message : "Unknown error");
 				return false;
 			}
 		},
-		[accountId, enqueueAccountCommand, fetchAccount, replayMutationQueue],
+		[accountId, submitAccountCommand],
 	);
 
 	// Share a column
@@ -1402,14 +1130,10 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			if (!validateAccountId(targetAccountId)) return false;
 
 			try {
-				const queueId = await enqueueAccountCommand("column.share", {
-					columnId,
-					targetAccountId,
-				});
-				const report = await replayMutationQueue();
-				if (!report) {
-					return false;
-				}
+				const { queueId, report } = await submitAccountCommand(
+					"column.share",
+					{ columnId, targetAccountId },
+				);
 				if (hasTerminalFailureForCommand(report, queueId)) {
 					return false;
 				}
@@ -1419,7 +1143,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 				return false;
 			}
 		},
-		[accountId, enqueueAccountCommand, replayMutationQueue],
+		[accountId, submitAccountCommand],
 	);
 
 	// Revoke share
@@ -1429,14 +1153,10 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			if (!validateAccountId(targetAccountId)) return false;
 
 			try {
-				const queueId = await enqueueAccountCommand("column.revoke", {
-					columnId,
-					targetAccountId,
-				});
-				const report = await replayMutationQueue();
-				if (!report) {
-					return false;
-				}
+				const { queueId, report } = await submitAccountCommand(
+					"column.revoke",
+					{ columnId, targetAccountId },
+				);
 				if (hasTerminalFailureForCommand(report, queueId)) {
 					return false;
 				}
@@ -1446,7 +1166,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 				return false;
 			}
 		},
-		[accountId, enqueueAccountCommand, replayMutationQueue],
+		[accountId, submitAccountCommand],
 	);
 
 	// Enable public link
@@ -1455,31 +1175,24 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			if (!accountId) return null;
 
 			try {
-				const queueId = await enqueueAccountCommand("column.public.enable", {
-					columnId,
-				});
-				const report = await replayMutationQueue();
+				const { queueId, report } = await submitAccountCommand(
+					"column.public.enable",
+					{ columnId },
+				);
 				if (hasTerminalFailureForCommand(report, queueId)) {
 					return null;
 				}
 
-				if (!queueId) {
-					return null;
-				}
-
-				const result = publicLinkResultsByQueueIdRef.current.get(queueId);
-				if (result) {
-					publicLinkResultsByQueueIdRef.current.delete(queueId);
-					return result.value;
-				}
-
-				return null;
+				return (
+					accountConvergenceActor.getSnapshot().context.projection
+						?.publicLinksByColumn[columnId] ?? null
+				);
 			} catch (err) {
 				setError(err instanceof Error ? err.message : "Unknown error");
 				return null;
 			}
 		},
-		[accountId, enqueueAccountCommand, replayMutationQueue],
+		[accountConvergenceActor, accountId, submitAccountCommand],
 	);
 
 	// Disable public link
@@ -1488,13 +1201,10 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			if (!accountId) return false;
 
 			try {
-				const queueId = await enqueueAccountCommand("column.public.disable", {
-					columnId,
-				});
-				const report = await replayMutationQueue();
-				if (!report) {
-					return false;
-				}
+				const { queueId, report } = await submitAccountCommand(
+					"column.public.disable",
+					{ columnId },
+				);
 				if (hasTerminalFailureForCommand(report, queueId)) {
 					return false;
 				}
@@ -1504,7 +1214,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 				return false;
 			}
 		},
-		[accountId, enqueueAccountCommand, replayMutationQueue],
+		[accountId, submitAccountCommand],
 	);
 
 	// Update column order
@@ -1512,16 +1222,13 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		async (columnOrder: string[]) => {
 			if (!accountId) return;
 
-			setAccount((prev) => (prev ? { ...prev, columnOrder } : null));
-
 			try {
-				await enqueueAccountCommand("column.reorder", { columnOrder });
-				await replayMutationQueue();
+				await submitAccountCommand("column.reorder", { columnOrder });
 			} catch (err) {
 				console.error("Failed to update column order:", err);
 			}
 		},
-		[accountId, enqueueAccountCommand, replayMutationQueue],
+		[accountId, submitAccountCommand],
 	);
 
 	// Update hidden shared columns
@@ -1529,20 +1236,15 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		async (hiddenSharedColumns: string[]) => {
 			if (!accountId) return;
 
-			setAccount((prev) =>
-				prev ? { ...prev, hiddenSharedColumns } : null,
-			);
-
 			try {
-				await enqueueAccountCommand("column.hide_shared", {
+				await submitAccountCommand("column.hide_shared", {
 					hiddenSharedColumns,
 				});
-				await replayMutationQueue();
 			} catch (err) {
 				console.error("Failed to update hidden shared columns:", err);
 			}
 		},
-		[accountId, enqueueAccountCommand, replayMutationQueue],
+		[accountId, submitAccountCommand],
 	);
 
 	const exportAccountData = useCallback(async () => {
@@ -1619,7 +1321,6 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		isLoading,
 		error,
 		connectionStatus,
-		isRealtimeDegraded,
 		syncMode,
 		syncStateSummary,
 		yjsOutboxSummary,

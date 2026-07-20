@@ -173,6 +173,15 @@ describe("LocalYjsUpdateOutbox", () => {
 		const persistedIds = persistentStorage.read().map((entry) => entry.id);
 		expect(persistedIds).toContain("persisted-entry");
 		expect(persistedIds).toContain(transientId);
+
+		const afterSwapId = outbox.enqueue({
+			accountId: "1111 1111 1111 1111",
+			columnId: "col-1",
+			kind: "sync",
+			payload: new Uint8Array([10]),
+		});
+		expect(transientStorage.read().map((entry) => entry.id)).toContain(afterSwapId);
+		expect(persistentStorage.read().map((entry) => entry.id)).toContain(afterSwapId);
 	});
 
 	it("drops queued entries for a revoked column", () => {

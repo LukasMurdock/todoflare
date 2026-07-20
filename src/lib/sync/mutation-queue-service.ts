@@ -1,4 +1,5 @@
 import type {
+	AccountCommandEffect,
 	AccountEditCommand,
 	DropReason,
 	MutationQueueService,
@@ -7,7 +8,10 @@ import type {
 	ReplayReport,
 	TerminalReplayReason,
 } from "@/lib/sync/contracts";
-import type { LocalFirstDatabase } from "@/lib/local-first/database";
+import {
+	replaceLocalFirstCollection,
+	type LocalFirstDatabase,
+} from "../local-first/database";
 import { parseQueuedMutation } from "./account-command-parser";
 
 const DEFAULT_STORAGE_KEY = "todoflare-mutation-outbox-v1";
@@ -31,7 +35,8 @@ export interface MutationQueueStorage {
 
 export type MutationExecutor = (
 	mutation: QueuedMutation,
-) => Promise<MutationReplayResult>;
+	options?: { signal?: AbortSignal },
+) => Promise<MutationReplayResult & { effects?: AccountCommandEffect[] }>;
 
 function cloneMutations(mutations: QueuedMutation[]): QueuedMutation[] {
 	return mutations.map((mutation) => ({ ...mutation }));
@@ -105,19 +110,35 @@ export class LocalMutationQueueService implements MutationQueueService {
 	}
 
 	swapStorage(storage: MutationQueueStorage) {
+		const synchronousMirror = this.storage;
 		const persistedMutations = storage.read().sort(byCreatedAt);
-		this.storage = storage;
+		this.storage = {
+			read: () => storage.read(),
+			write: (mutations) => {
+				synchronousMirror.write(mutations);
+				storage.write(mutations);
+			},
+		};
 		this.queue = mergeMutationsByQueueId(persistedMutations, this.queue).sort(
 			byCreatedAt,
 		);
 		this.persistAndPublish();
 	}
 
-	async replay(options?: { maxBatch?: number }): Promise<ReplayReport> {
+	async replay(options: {
+		accountId: string;
+		signal?: AbortSignal;
+		maxBatch?: number;
+	}): Promise<ReplayReport> {
 		const now = Date.now();
-		const maxBatch = options?.maxBatch ?? 50;
+		const maxBatch = options.maxBatch ?? 50;
+		const normalizedAccountId = options.accountId.replace(/\s/g, "");
 		const eligible = this.queue
-			.filter((mutation) => mutation.nextRetryAt <= now)
+			.filter(
+				(mutation) =>
+					mutation.entityId.replace(/\s/g, "") === normalizedAccountId &&
+					mutation.nextRetryAt <= now,
+			)
 			.sort(byCreatedAt)
 			.slice(0, maxBatch);
 
@@ -128,17 +149,23 @@ export class LocalMutationQueueService implements MutationQueueService {
 			dropped: 0,
 			ackedCommands: [],
 			terminalFailures: [],
+			effects: [],
 		};
 
 		for (const mutation of eligible) {
+			if (options.signal?.aborted) break;
 			report.attempted += 1;
 
-			let result: MutationReplayResult;
+			let result: MutationReplayResult & { effects?: AccountCommandEffect[] };
 			try {
-				result = await this.executeMutation(mutation);
+				result = await this.executeMutation(mutation, {
+					signal: options.signal,
+				});
 			} catch (err) {
+				if (options.signal?.aborted) break;
 				result = { kind: "retry", error: toErrorMessage(err) };
 			}
+			if (options.signal?.aborted) break;
 
 			const index = this.queue.findIndex((entry) => entry.queueId === mutation.queueId);
 			if (index < 0) continue;
@@ -147,6 +174,7 @@ export class LocalMutationQueueService implements MutationQueueService {
 				this.queue.splice(index, 1);
 				report.acked += 1;
 				report.ackedCommands.push(mutation);
+				report.effects.push(...(result.effects ?? []));
 				continue;
 			}
 
@@ -201,6 +229,22 @@ export class LocalMutationQueueService implements MutationQueueService {
 				};
 			},
 		};
+	}
+
+	getPending(accountId: string): QueuedMutation[] {
+		const normalizedAccountId = accountId.replace(/\s/g, "");
+		return cloneMutations(
+			this.queue.filter(
+				(mutation) =>
+					mutation.entityId.replace(/\s/g, "") === normalizedAccountId,
+			),
+		);
+	}
+
+	getNextRetryAt(accountId: string): number | null {
+		const pending = this.getPending(accountId);
+		if (pending.length === 0) return null;
+		return Math.min(...pending.map((mutation) => mutation.nextRetryAt));
 	}
 
 	private persistAndPublish() {
@@ -269,9 +313,11 @@ export function createLocalFirstMutationQueueStorage(
 				.sort(byCreatedAt);
 		},
 		write(mutations) {
-			collection.clear();
-			for (const mutation of mutations) {
-				collection.set(mutation.queueId, {
+			replaceLocalFirstCollection(
+				collection,
+				mutations.map((mutation) => [
+					mutation.queueId,
+					{
 					id: mutation.queueId,
 					queueId: mutation.queueId,
 					idempotencyKey: mutation.idempotencyKey,
@@ -286,8 +332,9 @@ export function createLocalFirstMutationQueueStorage(
 					terminalReason: null,
 					lastAttemptAt: null,
 					insertedAt: mutation.createdAt,
-				});
-			}
+					},
+				] as const),
+			);
 		},
 	};
 }

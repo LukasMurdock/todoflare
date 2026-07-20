@@ -2,6 +2,7 @@ import type {
 	Account,
 	ColumnMeta,
 	DeletedColumn,
+	PublicLinkResponse,
 } from "@/types/account";
 import type { TerminalReplayReason } from "@/lib/sync/contracts";
 import type { SyncMode } from "@/lib/sync/mode-machine";
@@ -12,6 +13,8 @@ export interface AccountSnapshotDoc {
 	account: Account;
 	sharedColumns: ColumnMeta[];
 	deletedColumns: DeletedColumn[];
+	sharedWithByColumn?: Record<string, string[] | undefined>;
+	publicLinksByColumn?: Record<string, PublicLinkResponse | null>;
 	hydratedAt: number;
 	reconciledAt: number | null;
 }

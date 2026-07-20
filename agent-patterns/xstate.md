@@ -61,6 +61,23 @@ vendored source under `repos/xstate/`; it is not a replacement for that source.
 - Add lifecycle invariants to `test/column-session-machine.test.ts` when changing
   connection, retry, replay, lease, or terminal behavior.
 
+## Account convergence
+
+- `account-convergence-machine.ts` is the lifecycle owner for authentication,
+  cached hydration, server hydration, durable command replay, reconciliation,
+  retry scheduling, network pause/resume, and logout cancellation.
+- The visible account must be derived with `applyPendingCommands(serverBase,
+  durableQueue)`. A server response replaces the confirmed base, never the
+  optimistic projection directly.
+- Persist account commands before sending `COMMAND_PERSISTED`. Account command
+  effects return in `ReplayReport` and are applied only by the active account
+  actor.
+- Account replay is scoped by the immutable command `entityId`, accepts an
+  `AbortSignal`, and is independent of realtime WebSocket policy.
+- Add transition and projection invariants to
+  `test/account-convergence-machine.test.ts` and
+  `test/account-projection.test.ts` when changing this lifecycle.
+
 ## Reference routes
 
 - Core behavior and idioms: `repos/xstate/packages/core/test/`

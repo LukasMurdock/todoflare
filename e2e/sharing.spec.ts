@@ -457,7 +457,7 @@ test.describe("collaborative editing", () => {
 		});
 
 		await page.getByRole("button", { name: "Share", exact: true }).click();
-		await expect(page.getByText("Failed to share. Check the account ID.")).toBeVisible();
+		await expect(page.getByText(shortId)).toBeVisible();
 
 		const replayShareResponsePromise = page.waitForResponse(
 			(response) =>
@@ -481,7 +481,7 @@ test.describe("collaborative editing", () => {
 		});
 
 		await page.getByRole("button", { name: `Revoke access for ${shortId}` }).click();
-		await expect(page.getByText(shortId)).toBeVisible();
+		await expect(page.getByText(shortId)).toHaveCount(0);
 
 		const replayRevokeResponsePromise = page.waitForResponse(
 			(response) =>
@@ -543,7 +543,9 @@ test.describe("collaborative editing", () => {
 		});
 
 		await page.getByRole("button", { name: "Disable" }).click();
-		await expect(page.getByRole("button", { name: "Disable" })).toBeVisible();
+		await expect(
+			page.getByRole("button", { name: "Enable public link" }),
+		).toBeVisible();
 
 		const replayDisableResponsePromise = page.waitForResponse(
 			(response) =>

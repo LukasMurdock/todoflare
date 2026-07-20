@@ -56,7 +56,6 @@ describe("account command executor", () => {
 		}) as typeof globalThis.fetch;
 
 		const executor = createAccountCommandExecutor({
-			getActiveAccountId: () => ACCOUNT_ID,
 			fetch: fetchMock,
 		});
 		const commands: QueuedMutation[] = [
@@ -118,7 +117,6 @@ describe("account command executor", () => {
 	it("rejects invalid command payloads without fetching", async () => {
 		let fetchCount = 0;
 		const executor = createAccountCommandExecutor({
-			getActiveAccountId: () => ACCOUNT_ID,
 			fetch: (async () => {
 				fetchCount += 1;
 				return Response.json({ success: true });
@@ -139,21 +137,8 @@ describe("account command executor", () => {
 		expect(fetchCount).toBe(0);
 	});
 
-	it("retries session mismatches and preserves coded server outcomes", async () => {
-		const mismatchedExecutor = createAccountCommandExecutor({
-			getActiveAccountId: () => "3333 3333 3333 3333",
-			fetch: (() => {
-				throw new Error("fetch should not run");
-			}) as typeof globalThis.fetch,
-		});
-		expect(
-			await mismatchedExecutor.execute(
-				mutation("column.delete", { columnId: COLUMN_ID }),
-			),
-		).toMatchObject({ kind: "retry" });
-
+	it("preserves coded server outcomes", async () => {
 		const deniedExecutor = createAccountCommandExecutor({
-			getActiveAccountId: () => ACCOUNT_ID,
 			fetch: (async () =>
 				Response.json(
 					{ error: "Only owner can delete", code: "not_owner" },

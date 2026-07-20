@@ -339,9 +339,21 @@ describe("Worker routes", () => {
 		expect(accountRes.ok).toBe(true);
 		const data = (await accountRes.json()) as {
 			account: { columnOrder: string[] };
+			ownedColumns: Array<{
+				id: string;
+				sharedWith: string[];
+				publicId: string | null;
+			}>;
 		};
 
 		expect(data.account.columnOrder).toContain(columnId);
+		expect(data.ownedColumns).toContainEqual(
+			expect.objectContaining({
+				id: columnId,
+				sharedWith: [],
+				publicId: null,
+			}),
+		);
 	});
 
 	it("treats repeated create with same client id as idempotent", async () => {

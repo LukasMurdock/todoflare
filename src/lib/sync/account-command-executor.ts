@@ -1,31 +1,24 @@
 import { normalizeAccountId, validateAccountId } from "../account";
 import type { ColumnMeta, PublicLinkResponse } from "../../types/account";
-import type { QueuedMutation } from "./contracts";
+import type {
+	AccountCommandEffect,
+	QueuedMutation,
+} from "./contracts";
 import type { MutationReplayResult } from "./mutation-queue-service";
 import { mutationResultFromResponse } from "./replay-response";
-
-export type AccountCommandEffect =
-	| { type: "column.created"; queueId: string; column: ColumnMeta }
-	| { type: "column.deleted"; columnId: string }
-	| { type: "column.sharing.updated"; columnId: string; sharedWith: string[] }
-	| {
-			type: "column.public.enabled";
-			queueId: string;
-			columnId: string;
-			publicLink: PublicLinkResponse;
-	  }
-	| { type: "column.public.disabled"; columnId: string };
 
 export type AccountCommandExecutionResult = MutationReplayResult & {
 	effects?: AccountCommandEffect[];
 };
 
 export interface AccountCommandExecutor {
-	execute(mutation: QueuedMutation): Promise<AccountCommandExecutionResult>;
+	execute(
+		mutation: QueuedMutation,
+		options?: { signal?: AbortSignal },
+	): Promise<AccountCommandExecutionResult>;
 }
 
 interface AccountCommandExecutorOptions {
-	getActiveAccountId(): string | null;
 	fetch?: typeof globalThis.fetch;
 }
 
@@ -55,19 +48,10 @@ export function createAccountCommandExecutor(
 	const fetchRequest = options.fetch ?? globalThis.fetch.bind(globalThis);
 
 	return {
-		async execute(mutation) {
-			const activeAccountId = options.getActiveAccountId();
-			if (!activeAccountId) {
-				return { kind: "retry", error: "No active account session" };
-			}
-
+		async execute(mutation, executionOptions) {
+			const activeAccountId = mutation.entityId;
 			const normalizedActiveAccountId = normalizeAccountId(activeAccountId);
-			if (normalizedActiveAccountId !== normalizeAccountId(mutation.entityId)) {
-				return {
-					kind: "retry",
-					error: "Active session does not match queued command account",
-				};
-			}
+			const signal = executionOptions?.signal;
 
 			switch (mutation.opType) {
 				case "column.create": {
@@ -76,6 +60,7 @@ export function createAccountCommandExecutor(
 
 					const response = await fetchRequest("/api/column", {
 						method: "POST",
+						signal,
 						headers: {
 							"Content-Type": "application/json",
 							"X-Idempotency-Key": mutation.idempotencyKey,
@@ -105,6 +90,7 @@ export function createAccountCommandExecutor(
 							`/api/account/${normalizedActiveAccountId}/columns`,
 							{
 								method: "PUT",
+								signal,
 								headers: {
 									"Content-Type": "application/json",
 									"X-Idempotency-Key": mutation.idempotencyKey,
@@ -122,6 +108,7 @@ export function createAccountCommandExecutor(
 							`/api/account/${normalizedActiveAccountId}/hidden`,
 							{
 								method: "PUT",
+								signal,
 								headers: {
 									"Content-Type": "application/json",
 									"X-Idempotency-Key": mutation.idempotencyKey,
@@ -138,6 +125,7 @@ export function createAccountCommandExecutor(
 					const result = await classifyResponse(
 						await fetchRequest(`/api/column/${columnId}`, {
 							method: "DELETE",
+							signal,
 							headers: {
 								"X-Account-ID": activeAccountId,
 								"X-Idempotency-Key": mutation.idempotencyKey,
@@ -155,6 +143,7 @@ export function createAccountCommandExecutor(
 					return classifyResponse(
 						await fetchRequest(`/api/column/${columnId}/restore`, {
 							method: "POST",
+							signal,
 							headers: {
 								"X-Account-ID": activeAccountId,
 								"X-Idempotency-Key": mutation.idempotencyKey,
@@ -185,6 +174,7 @@ export function createAccountCommandExecutor(
 							: `/api/column/${columnId}/share/${normalizeAccountId(targetAccountId)}`,
 						{
 							method: isShare ? "POST" : "DELETE",
+							signal,
 							headers: {
 								...(isShare ? { "Content-Type": "application/json" } : {}),
 								"X-Account-ID": activeAccountId,
@@ -212,6 +202,7 @@ export function createAccountCommandExecutor(
 					if (!columnId) return invalidPayload("Invalid columnId payload");
 					const response = await fetchRequest(`/api/column/${columnId}/public`, {
 						method: "POST",
+						signal,
 						headers: {
 							"X-Account-ID": activeAccountId,
 							"X-Idempotency-Key": mutation.idempotencyKey,
@@ -244,6 +235,7 @@ export function createAccountCommandExecutor(
 					const result = await classifyResponse(
 						await fetchRequest(`/api/column/${columnId}/public`, {
 							method: "DELETE",
+							signal,
 							headers: {
 								"X-Account-ID": activeAccountId,
 								"X-Idempotency-Key": mutation.idempotencyKey,

@@ -1,4 +1,4 @@
-import { createActor, type ActorRefFrom } from "xstate";
+import { createActor, waitFor, type ActorRefFrom } from "xstate";
 import {
 	columnSessionConnectionStatus,
 	createColumnSessionMachine,
@@ -67,10 +67,12 @@ export class ColumnSessionManager {
 		this.ensureSession(columnId).send({ type: "SEND_AWARENESS", update });
 	}
 
-	terminateColumn(columnId: string, reason: ColumnTerminationReason) {
-		this.ensureSession(columnId).send({
+	async terminateColumn(columnId: string, reason: ColumnTerminationReason) {
+		const actor = this.ensureSession(columnId);
+		actor.send({
 			type: reason === "revoked" ? "ACCESS_REVOKED" : "COLUMN_DELETED",
 		});
+		await waitFor(actor, (snapshot) => snapshot.status === "done");
 	}
 
 	detachColumn(columnId: string) {

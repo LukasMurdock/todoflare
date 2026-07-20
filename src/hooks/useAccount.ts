@@ -13,7 +13,6 @@ export function useAccount() {
 		isLoading,
 		error,
 		connectionStatus,
-		isRealtimeDegraded,
 		syncMode,
 		syncStateSummary,
 		yjsOutboxSummary,
@@ -38,7 +37,6 @@ export function useAccount() {
 
 		// Connection status
 		connectionStatus,
-		isRealtimeDegraded,
 		syncMode,
 		syncStateSummary,
 		yjsOutboxSummary,

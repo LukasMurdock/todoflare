@@ -60,6 +60,7 @@ export interface CreateAccountResponse {
 
 export interface GetAccountResponse {
 	account: Account;
+	ownedColumns?: ColumnMeta[]; // Metadata for columns owned by this account
 	sharedColumns: ColumnMeta[]; // Columns shared TO this account
 	deletedColumns: DeletedColumn[];
 }

@@ -78,12 +78,27 @@ export type QueuedMutation<
 export type ReplayCommandSummary<
 	T extends AccountCommandType = AccountCommandType,
 > = T extends AccountCommandType
-	? Pick<QueuedMutation<T>, "queueId" | "opType" | "entityId" | "payload">
+	? Pick<
+			QueuedMutation<T>,
+			"queueId" | "opType" | "entityId" | "payload" | "createdAt"
+	  >
 	: never;
 
 export type TerminalReplayFailure<
 	T extends AccountCommandType = AccountCommandType,
 > = ReplayCommandSummary<T> & { reason: TerminalReplayReason };
+
+export type AccountCommandEffect =
+	| { type: "column.created"; queueId: string; column: ColumnMeta }
+	| { type: "column.deleted"; columnId: string }
+	| { type: "column.sharing.updated"; columnId: string; sharedWith: string[] }
+	| {
+			type: "column.public.enabled";
+			queueId: string;
+			columnId: string;
+			publicLink: PublicLinkResponse;
+	  }
+	| { type: "column.public.disabled"; columnId: string };
 
 export interface ReplayReport {
 	attempted: number;
@@ -92,14 +107,22 @@ export interface ReplayReport {
 	dropped: number;
 	ackedCommands: ReplayCommandSummary[];
 	terminalFailures: TerminalReplayFailure[];
+	effects: AccountCommandEffect[];
 }
 
 export interface MutationQueueService {
 	enqueue<T extends AccountCommandType>(cmd: AccountEditCommand<T>): Promise<string>;
-	replay(options?: { maxBatch?: number }): Promise<ReplayReport>;
+	replay(options: {
+		accountId: string;
+		signal?: AbortSignal;
+		maxBatch?: number;
+	}): Promise<ReplayReport>;
 	dropWhere(
 		predicate: (m: QueuedMutation) => boolean,
 		reason: DropReason,
 	): Promise<number>;
 	pending$(): ObservableLike<QueuedMutation[]>;
+	getPending(accountId: string): QueuedMutation[];
+	getNextRetryAt(accountId: string): number | null;
 }
+import type { ColumnMeta, PublicLinkResponse } from "../../types/account";

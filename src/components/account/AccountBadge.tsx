@@ -38,7 +38,6 @@ export function AccountBadge() {
 	const {
 		accountId,
 		connectionStatus,
-		isRealtimeDegraded,
 		syncMode,
 		syncStateSummary,
 		yjsOutboxSummary,
@@ -83,9 +82,7 @@ export function AccountBadge() {
 		offline: "Offline",
 	}[connectionStatus];
 
-	const effectiveStatusText = isRealtimeDegraded
-		? "Local-only mode"
-		: statusText;
+	const effectiveStatusText = statusText;
 
 	const syncModeText = {
 		guest_local: "Guest local",
@@ -145,7 +142,6 @@ export function AccountBadge() {
 			sync: {
 				mode: syncMode,
 				connectionStatus,
-				isRealtimeDegraded,
 				queueDepth: syncStateSummary.queueDepth,
 				yjsQueueDepth: syncStateSummary.yjsQueueDepth,
 				lastServerHydrationAt: syncStateSummary.lastServerHydrationAt,
@@ -365,11 +361,6 @@ export function AccountBadge() {
 								</p>
 							) : null}
 						</>
-					) : null}
-					{isRealtimeDegraded ? (
-						<p className="text-muted-foreground">
-							Realtime unavailable (Durable Object limit)
-						</p>
 					) : null}
 				</TooltipContent>
 				</Tooltip>

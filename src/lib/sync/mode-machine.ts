@@ -11,7 +11,6 @@ export interface SyncModeContext {
 	hasAccountSession: boolean;
 	isPublicReadonly: boolean;
 	isNetworkOnline: boolean;
-	isRealtimeDegraded: boolean;
 	connectionStatus: ConnectionStatus;
 }
 
@@ -24,7 +23,7 @@ export function deriveSyncMode(ctx: SyncModeContext): SyncMode {
 		return "guest_local";
 	}
 
-	if (ctx.isRealtimeDegraded || !ctx.isNetworkOnline) {
+	if (!ctx.isNetworkOnline) {
 		return "account_offline";
 	}
 

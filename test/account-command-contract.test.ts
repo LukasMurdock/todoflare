@@ -119,6 +119,7 @@ describe("persisted account command parsing", () => {
 				dropped: 1,
 				ackedCommands: [created],
 				terminalFailures: [{ ...revoked, reason: "revoked" }],
+				effects: [],
 			}),
 		).toEqual({
 			ackedCreatedColumnIds: ["column-1"],

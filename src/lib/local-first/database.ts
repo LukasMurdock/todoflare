@@ -64,6 +64,29 @@ class PersistedMap<T> extends Map<string, T> {
 		super.clear();
 		this.onChange([]);
 	}
+
+	replaceAll(entries: Iterable<[string, T]>): void {
+		super.clear();
+		for (const [key, value] of entries) {
+			super.set(key, value);
+		}
+		this.onChange(Array.from(this.entries()));
+	}
+}
+
+/** Replaces a collection with one persistence notification instead of one per row. */
+export function replaceLocalFirstCollection<T>(
+	collection: Map<string, T>,
+	entries: Iterable<[string, T]>,
+): void {
+	if (collection instanceof PersistedMap) {
+		collection.replaceAll(entries);
+		return;
+	}
+	collection.clear();
+	for (const [key, value] of entries) {
+		collection.set(key, value);
+	}
 }
 
 function canUseIndexedDb(): boolean {

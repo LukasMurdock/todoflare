@@ -900,6 +900,40 @@ app.get("/api/account/:id", async (c) => {
 	}
 	const account = parsedAccount.value;
 
+	// Fetch authoritative metadata for owned columns so account convergence can
+	// confirm sharing and public-link state rather than retaining client effects.
+	const ownedColumns: ColumnMeta[] = [];
+	for (const columnId of account.columnOrder) {
+		const stub = c.env.COLUMN_ROOM.get(
+			c.env.COLUMN_ROOM.idFromName(columnId),
+		);
+		try {
+			const response = await stub.fetch(new Request("http://do/meta"));
+			if (response.status === 404) continue;
+			if (!response.ok) {
+				return apiErrorResponse(
+					"durable_object_unavailable",
+					"Failed to load owned column metadata",
+					503,
+				);
+			}
+			const parsedMeta = parseColumnMetaRecord(await response.json());
+			if (!parsedMeta.ok) {
+				return schemaErrorResponse("column_meta", parsedMeta);
+			}
+			ownedColumns.push(parsedMeta.value);
+		} catch (err) {
+			if (isDurableObjectDurationError(err)) {
+				return apiErrorResponse(
+					"durable_object_unavailable",
+					"Owned column metadata is temporarily unavailable",
+					503,
+				);
+			}
+			throw err;
+		}
+	}
+
 	// Get shared columns (columns where this account is in sharedWith)
 	const sharedColumnsData = await c.env.ACCOUNTS.get(
 		`shared:${normalizedId}`,
@@ -966,7 +1000,7 @@ app.get("/api/account/:id", async (c) => {
 		await c.env.ACCOUNTS.put(trashKey, JSON.stringify(deletedColumns));
 	}
 
-	return c.json({ account, sharedColumns, deletedColumns });
+	return c.json({ account, ownedColumns, sharedColumns, deletedColumns });
 });
 
 /**
