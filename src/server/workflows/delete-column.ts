@@ -1,8 +1,10 @@
 import { normalizeAccountId } from "../../lib/account";
+import { isColumnOwner } from "../../lib/column-access";
 import {
 	parseAccountRecord,
 	parseColumnMetaRecord,
 	parseDeletedColumnRecords,
+	parseSharedColumnIndex,
 	TRASH_RETENTION_MS,
 } from "../persistence-records";
 import {
@@ -61,7 +63,7 @@ export async function deleteColumn<TColumnRoomId>(
 	}
 	const meta = parsedMeta.value;
 
-	if (normalizeAccountId(meta.ownerId) !== normalizeAccountId(accountId)) {
+	if (!isColumnOwner(meta, accountId)) {
 		return {
 			ok: false,
 			failure: { kind: "owner", meta, message: "Only owner can delete" },
@@ -93,7 +95,18 @@ export async function deleteColumn<TColumnRoomId>(
 		const sharedColumnsData = await env.ACCOUNTS.get(sharedKey);
 		if (!sharedColumnsData) continue;
 
-		const sharedColumns = JSON.parse(sharedColumnsData) as string[];
+		const parsedSharedColumns = parseSharedColumnIndex(sharedColumnsData);
+		if (!parsedSharedColumns.ok) {
+			return {
+				ok: false,
+				failure: {
+					kind: "schema",
+					record: "shared_index",
+					result: parsedSharedColumns,
+				},
+			};
+		}
+		const sharedColumns = parsedSharedColumns.value;
 		const updated = sharedColumns.filter((id) => id !== columnId);
 		await env.ACCOUNTS.put(sharedKey, JSON.stringify(updated));
 		await afterWrite?.(`shared-account:${normalizedSharedId}`);

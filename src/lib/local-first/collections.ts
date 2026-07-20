@@ -4,6 +4,7 @@ import type {
 	DeletedColumn,
 } from "@/types/account";
 import type { TerminalReplayReason } from "@/lib/sync/contracts";
+import type { SyncMode } from "@/lib/sync/mode-machine";
 
 export interface AccountSnapshotDoc {
 	id: string;
@@ -33,7 +34,7 @@ export interface YjsUpdateOutboxDoc {
 export interface SyncStateDoc {
 	id: string;
 	accountId: string | null;
-	mode: "guest_local" | "account_offline" | "account_syncing" | "account_realtime" | "public_readonly";
+	mode: SyncMode;
 	queueDepth: number;
 	yjsQueueDepth: number;
 	lastServerHydrationAt: number | null;

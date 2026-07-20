@@ -1,6 +1,10 @@
 import { OpenAPIHono, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
-import type { Account, ColumnMeta } from "./types/account";
+import type {
+	Account,
+	AccountExportPayload,
+	ColumnMeta,
+} from "./types/account";
 import {
 	allocateGeneratedId,
 	generateAccountId,
@@ -8,6 +12,7 @@ import {
 	displayAccountId,
 	validateAccountId,
 } from "./lib/account";
+import { hasColumnAccess } from "./lib/column-access";
 import {
 	checkRateLimit,
 	getClientIP,
@@ -24,6 +29,7 @@ import {
 	parseAccountRecord,
 	parseColumnMetaRecord,
 	parseDeletedColumnRecords,
+	parseSharedColumnIndex,
 	TRASH_RETENTION_MS,
 	type SchemaParseResult,
 } from "./server/persistence-records";
@@ -35,6 +41,11 @@ import { enablePublicColumn } from "./server/workflows/enable-public-column";
 import { purgeExpiredTrashedColumns } from "./server/workflows/purge-expired-trashed-columns";
 import { revokeColumnShare } from "./server/workflows/revoke-column-share";
 import { disablePublicColumn } from "./server/workflows/disable-public-column";
+import { cloneColumnSnapshot } from "./server/workflows/clone-column-snapshot";
+import {
+	restoreColumnBackup,
+	type ColumnBackupPayload,
+} from "./server/workflows/restore-column-backup";
 
 // Re-export Durable Objects for Cloudflare
 export { ColumnRoomSql };
@@ -102,7 +113,7 @@ function apiErrorResponse(
 }
 
 function schemaErrorResponse(
-	kind: "account" | "column_meta",
+	kind: "account" | "column_meta" | "shared_index",
 	result: Extract<SchemaParseResult<unknown>, { ok: false }>,
 ) {
 	return Response.json(
@@ -494,25 +505,6 @@ async function sha256Hex(value: string): Promise<string> {
 	return toHex(digest);
 }
 
-type ColumnBackupPayload = {
-	schemaVersion: 1;
-	columnId: string;
-	snapshotAt: number;
-	checksum: string;
-	meta: ColumnMeta;
-	yjs: number[] | null;
-};
-
-type AccountExportPayload = {
-	schemaVersion: 1;
-	exportedAt: number;
-	account: Account;
-	ownedColumns: Array<{
-		meta: ColumnMeta;
-		yjs: number[] | null;
-	}>;
-};
-
 const accountIdValueSchema = z
 	.string()
 	.refine(validateAccountId, "Invalid account ID");
@@ -634,11 +626,7 @@ function columnOwnerError(
 	accountId: string,
 	message: string,
 ): Response {
-	const normalizedAccountId = normalizeAccountId(accountId);
-	const stillHasAccess = meta.sharedWith.some(
-		(sharedAccountId) =>
-			normalizeAccountId(sharedAccountId) === normalizedAccountId,
-	);
+	const stillHasAccess = hasColumnAccess(meta, accountId);
 	return apiErrorResponse(
 		stillHasAccess ? "not_owner" : "access_revoked",
 		message,
@@ -680,48 +668,12 @@ async function restoreColumnFromBackupPayload(
 	columnId: string,
 	payload: ColumnBackupPayload,
 ) {
-	const parsedBackupMeta = parseColumnMetaRecord(payload.meta);
-	if (!parsedBackupMeta.ok) {
-		return { ok: false as const, code: "column_meta_invalid" as const };
-	}
-	const backupMeta = parsedBackupMeta.value;
-
-	const expectedChecksum = await sha256Hex(
-		JSON.stringify({
-			schemaVersion: payload.schemaVersion,
-			columnId: payload.columnId,
-			snapshotAt: payload.snapshotAt,
-			meta: payload.meta,
-			yjs: payload.yjs,
-		}),
-	);
-
-	if (expectedChecksum !== payload.checksum) {
-		return { ok: false as const, code: "backup_checksum_mismatch" as const };
-	}
-
-	const preBackup = await createColumnBackupSnapshot(env, columnId).catch(() => null);
-	if (!preBackup) {
-		return { ok: false as const, code: "pre_restore_backup_failed" as const };
-	}
-
-	const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
-	const importResponse = await stub.fetch(
-		new Request("http://do/import", {
-			method: "POST",
-			body: JSON.stringify({ meta: backupMeta, yjs: payload.yjs }),
-		}),
-	);
-
-	if (!importResponse.ok) {
-		return { ok: false as const, code: "restore_failed" as const };
-	}
-
-	return {
-		ok: true as const,
-		meta: backupMeta,
-		preRestoreBackupKey: preBackup.key,
-	};
+	return restoreColumnBackup({
+		env,
+		columnId,
+		payload,
+		createPreRestoreBackup: () => createColumnBackupSnapshot(env, columnId),
+	});
 }
 
 async function rebuildSharedIndexesForColumns(env: Bindings, columns: ColumnMeta[]) {
@@ -739,9 +691,13 @@ async function rebuildSharedIndexesForColumns(env: Bindings, columns: ColumnMeta
 
 	for (const [normalizedAccountId, expectedColumnsSet] of byAccount) {
 		const sharedColumnsData = await env.ACCOUNTS.get(`shared:${normalizedAccountId}`);
-		const existingColumns = sharedColumnsData
-			? (JSON.parse(sharedColumnsData) as string[])
-			: [];
+		const parsedExistingColumns = parseSharedColumnIndex(sharedColumnsData);
+		if (!parsedExistingColumns.ok) {
+			throw new Error(
+				`Invalid shared index for account ${normalizedAccountId}`,
+			);
+		}
+		const existingColumns = parsedExistingColumns.value;
 
 		const expectedColumns = Array.from(expectedColumnsSet);
 		const merged = Array.from(new Set([...existingColumns, ...expectedColumns]));
@@ -948,9 +904,11 @@ app.get("/api/account/:id", async (c) => {
 	const sharedColumnsData = await c.env.ACCOUNTS.get(
 		`shared:${normalizedId}`,
 	);
-	const sharedColumnIds: string[] = sharedColumnsData
-		? JSON.parse(sharedColumnsData)
-		: [];
+	const parsedSharedColumnIds = parseSharedColumnIndex(sharedColumnsData);
+	if (!parsedSharedColumnIds.ok) {
+		return schemaErrorResponse("shared_index", parsedSharedColumnIds);
+	}
+	const sharedColumnIds = parsedSharedColumnIds.value;
 
 	// Fetch metadata for shared columns
 	const sharedColumns: ColumnMeta[] = [];
@@ -964,9 +922,7 @@ app.get("/api/account/:id", async (c) => {
 			if (response.ok) {
 				const parsedMeta = parseColumnMetaRecord(await response.json());
 				if (parsedMeta.ok) {
-					const stillShared = parsedMeta.value.sharedWith.some(
-						(id) => normalizeAccountId(id) === normalizedId,
-					);
+					const stillShared = hasColumnAccess(parsedMeta.value, accountId);
 					if (stillShared) {
 						sharedColumns.push(parsedMeta.value);
 						reconciledSharedColumnIds.push(columnId);
@@ -1199,44 +1155,19 @@ app.post("/api/account/:id/import", async (c) => {
 				return schemaErrorResponse("account", parsedAccount);
 			}
 
-			const account = parsedAccount.value;
 			const importedColumnIds: string[] = [];
 
 			for (const column of body.data.ownedColumns) {
-				const parsedMeta = parseColumnMetaRecord(column.meta);
-				if (!parsedMeta.ok) continue;
-
-				const newColumnId = crypto.randomUUID();
-				const importedMeta: ColumnMeta = {
-					...parsedMeta.value,
-					id: newColumnId,
-					ownerId: displayAccountId(accountIdParam),
-					sharedWith: [],
-					publicId: null,
-					createdAt: Date.now(),
-				};
-
-				const stub = c.env.COLUMN_ROOM.get(
-					c.env.COLUMN_ROOM.idFromName(newColumnId),
-				);
-				await stub.fetch(
-					new Request("http://do/init", {
-						method: "POST",
-						body: JSON.stringify(importedMeta),
-					}),
-				);
-				await stub.fetch(
-					new Request("http://do/import", {
-						method: "POST",
-						body: JSON.stringify({ meta: importedMeta, yjs: column.yjs ?? null }),
-					}),
-				);
-
-				importedColumnIds.push(newColumnId);
+				const cloned = await cloneColumnSnapshot({
+					env: c.env,
+					ownerId: accountIdParam,
+					snapshot: { meta: column.meta, yjs: column.yjs ?? null },
+				});
+				if (!cloned.ok) {
+					return c.json({ error: cloned.code }, 503);
+				}
+				importedColumnIds.push(cloned.column.id);
 			}
-
-			account.columnOrder = [...account.columnOrder, ...importedColumnIds];
-			await c.env.ACCOUNTS.put(`account:${normalizedId}`, JSON.stringify(account));
 
 			return c.json({ success: true, importedColumns: importedColumnIds.length });
 		},
@@ -1487,14 +1418,7 @@ app.get("/api/column/:id", async (c) => {
 
 	// Check access
 	if (accountId) {
-		const normalizedAccountId = normalizeAccountId(accountId);
-		const isOwner =
-			normalizeAccountId(meta.ownerId) === normalizedAccountId;
-		const isShared = meta.sharedWith.some(
-			(id) => normalizeAccountId(id) === normalizedAccountId,
-		);
-
-		if (!isOwner && !isShared) {
+		if (!hasColumnAccess(meta, accountId)) {
 			return apiErrorResponse("access_revoked", "Access denied", 403);
 		}
 	} else {
@@ -1965,52 +1889,13 @@ app.post("/api/admin/backups/column/:id/restore", async (c) => {
 	const backupMeta = parsedBackupMeta.value;
 
 	if (mode === "clone") {
-		const restoredColumnId = crypto.randomUUID();
-		const restoredMeta: ColumnMeta = {
-			...backupMeta,
-			id: restoredColumnId,
-			sharedWith: [],
-			publicId: null,
-			createdAt: Date.now(),
-		};
-
-		const restoredStub = c.env.COLUMN_ROOM.get(
-			c.env.COLUMN_ROOM.idFromName(restoredColumnId),
-		);
-
-		await restoredStub.fetch(
-			new Request("http://do/init", {
-				method: "POST",
-				body: JSON.stringify(restoredMeta),
-			}),
-		);
-
-		const cloneImportResponse = await restoredStub.fetch(
-			new Request("http://do/import", {
-				method: "POST",
-				body: JSON.stringify({ meta: restoredMeta, yjs: parsed.yjs }),
-			}),
-		);
-
-		if (!cloneImportResponse.ok) {
-			return c.json({ error: "restore_failed" }, 500);
-		}
-
-		const ownerId = normalizeAccountId(restoredMeta.ownerId);
-		const ownerData = await c.env.ACCOUNTS.get(`account:${ownerId}`);
-		if (ownerData) {
-			const parsedOwner = parseAccountRecord(ownerData);
-			if (!parsedOwner.ok) {
-				return schemaErrorResponse("account", parsedOwner);
-			}
-			const ownerAccount = parsedOwner.value;
-			if (!ownerAccount.columnOrder.includes(restoredColumnId)) {
-				ownerAccount.columnOrder.push(restoredColumnId);
-				await c.env.ACCOUNTS.put(
-					`account:${ownerId}`,
-					JSON.stringify(ownerAccount),
-				);
-			}
+		const cloned = await cloneColumnSnapshot({
+			env: c.env,
+			ownerId: backupMeta.ownerId,
+			snapshot: { meta: backupMeta, yjs: parsed.yjs },
+		});
+		if (!cloned.ok) {
+			return c.json({ error: cloned.code }, 500);
 		}
 
 		return c.json({
@@ -2019,95 +1904,24 @@ app.post("/api/admin/backups/column/:id/restore", async (c) => {
 			restoredFrom: key,
 			snapshotAt: parsed.snapshotAt,
 			originalColumnId: columnId,
-			restoredColumnId,
+			restoredColumnId: cloned.column.id,
 		});
 	}
 
-	let preRestoreBackupKey: string | null = null;
-	try {
-		const preBackup = await createColumnBackupSnapshot(c.env, columnId);
-		preRestoreBackupKey = preBackup.key;
-	} catch {
-		return c.json({ error: "pre_restore_backup_failed" }, 500);
-	}
-
-	const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
-
-	const currentMetaResponse = await stub.fetch(new Request("http://do/meta"));
-	let currentMeta: ColumnMeta | null = null;
-	if (currentMetaResponse.ok) {
-		const parsedCurrentMeta = parseColumnMetaRecord(
-			await currentMetaResponse.json(),
-		);
-		if (!parsedCurrentMeta.ok) {
-			return schemaErrorResponse("column_meta", parsedCurrentMeta);
-		}
-		currentMeta = parsedCurrentMeta.value;
-	}
-
-	const importResponse = await stub.fetch(
-		new Request("http://do/import", {
-			method: "POST",
-			body: JSON.stringify({ meta: backupMeta, yjs: parsed.yjs }),
-		}),
-	);
-
-	if (!importResponse.ok) {
-		return c.json({ error: "restore_failed" }, 500);
-	}
-
-	const ownerId = normalizeAccountId(backupMeta.ownerId);
-	const ownerData = await c.env.ACCOUNTS.get(`account:${ownerId}`);
-	if (ownerData) {
-		const parsedOwner = parseAccountRecord(ownerData);
-		if (!parsedOwner.ok) {
-			return schemaErrorResponse("account", parsedOwner);
-		}
-		const ownerAccount = parsedOwner.value;
-		if (!ownerAccount.columnOrder.includes(columnId)) {
-			ownerAccount.columnOrder.push(columnId);
-			await c.env.ACCOUNTS.put(`account:${ownerId}`, JSON.stringify(ownerAccount));
-		}
-	}
-
-	for (const sharedAccountId of backupMeta.sharedWith) {
-		const normalized = normalizeAccountId(sharedAccountId);
-		const sharedColumnsData = await c.env.ACCOUNTS.get(`shared:${normalized}`);
-		const sharedColumns: string[] = sharedColumnsData
-			? JSON.parse(sharedColumnsData)
-			: [];
-
-		if (!sharedColumns.includes(columnId)) {
-			sharedColumns.push(columnId);
-			await c.env.ACCOUNTS.put(
-				`shared:${normalized}`,
-				JSON.stringify(sharedColumns),
-			);
-		}
-	}
-
-	if (currentMeta?.sharedWith) {
-		for (const oldSharedAccountId of currentMeta.sharedWith) {
-			const normalized = normalizeAccountId(oldSharedAccountId);
-			const stillShared = backupMeta.sharedWith.some(
-				(id) => normalizeAccountId(id) === normalized,
-			);
-			if (stillShared) continue;
-
-			const sharedColumnsData = await c.env.ACCOUNTS.get(`shared:${normalized}`);
-			if (!sharedColumnsData) continue;
-
-			const sharedColumns = JSON.parse(sharedColumnsData) as string[];
-			const filtered = sharedColumns.filter((id) => id !== columnId);
-			await c.env.ACCOUNTS.put(`shared:${normalized}`, JSON.stringify(filtered));
-		}
-	}
-
-	if (currentMeta?.publicId && currentMeta.publicId !== backupMeta.publicId) {
-		await c.env.ACCOUNTS.delete(`public:${currentMeta.publicId}`);
-	}
-	if (backupMeta.publicId) {
-		await c.env.ACCOUNTS.put(`public:${backupMeta.publicId}`, columnId);
+	const restored = await restoreColumnBackup({
+		env: c.env,
+		columnId,
+		payload: parsed,
+		createPreRestoreBackup: () => createColumnBackupSnapshot(c.env, columnId),
+	});
+	if (!restored.ok) {
+		const status =
+			restored.code === "backup_checksum_mismatch" ||
+			restored.code === "invalid_backup_payload" ||
+			restored.code === "column_meta_invalid"
+				? 400
+				: 500;
+		return c.json({ error: restored.code }, status);
 	}
 
 	return c.json({
@@ -2115,7 +1929,7 @@ app.post("/api/admin/backups/column/:id/restore", async (c) => {
 		mode,
 		restoredFrom: key,
 		snapshotAt: parsed.snapshotAt,
-		preRestoreBackupKey,
+		preRestoreBackupKey: restored.preRestoreBackupKey,
 	});
 });
 
@@ -2127,8 +1941,6 @@ app.get("/api/clock", (c) => {
 		autoBackupEnabled: isAutoBackupEnabled(c.env),
 	});
 });
-
-export type AppType = typeof app;
 
 export default {
 	fetch: app.fetch,

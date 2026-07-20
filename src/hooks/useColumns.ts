@@ -4,11 +4,14 @@ import { EMPTY_COLUMN_VALUE, type Column, createEmptyColumn } from "@/types/colu
 import { useDebouncedEffect } from "./useDebouncedEffect";
 import { useSyncContext } from "@/contexts/sync-context";
 import type { ColumnMeta } from "@/types/account";
-import { normalizeAccountId } from "@/lib/account";
+import { isColumnOwner as accountOwnsColumn } from "@/lib/column-access";
+import {
+	LOCAL_COLUMN_BACKUP_INDEX_KEY,
+	LOCAL_COLUMN_BACKUP_PREFIX,
+	LOCAL_COLUMNS_STORAGE_KEY,
+	parseLocalColumns,
+} from "@/lib/local-column-storage";
 
-const LOCAL_STORAGE_KEY = "todoflare-columns";
-const LOCAL_BACKUP_PREFIX = "todoflare-backup-";
-const LOCAL_BACKUP_INDEX_KEY = "todoflare-backup-index";
 const LOCAL_BACKUP_MAX_CHECKPOINTS = 24 * 30;
 
 function currentHourBucket(ts = Date.now()): string {
@@ -23,16 +26,16 @@ function currentHourBucket(ts = Date.now()): string {
 function persistLocalCheckpoint(columns: Column[]): void {
 	try {
 		const bucket = currentHourBucket();
-		const key = `${LOCAL_BACKUP_PREFIX}${bucket}`;
+		const key = `${LOCAL_COLUMN_BACKUP_PREFIX}${bucket}`;
 		const serialized = JSON.stringify(columns);
 
 		localStorage.setItem(key, serialized);
 
-		const existingRaw = localStorage.getItem(LOCAL_BACKUP_INDEX_KEY);
+		const existingRaw = localStorage.getItem(LOCAL_COLUMN_BACKUP_INDEX_KEY);
 		const existing = existingRaw ? (JSON.parse(existingRaw) as string[]) : [];
 		const merged = [key, ...existing.filter((k) => k !== key)];
 		const kept = merged.slice(0, LOCAL_BACKUP_MAX_CHECKPOINTS);
-		localStorage.setItem(LOCAL_BACKUP_INDEX_KEY, JSON.stringify(kept));
+		localStorage.setItem(LOCAL_COLUMN_BACKUP_INDEX_KEY, JSON.stringify(kept));
 
 		for (const oldKey of merged.slice(LOCAL_BACKUP_MAX_CHECKPOINTS)) {
 			localStorage.removeItem(oldKey);
@@ -44,13 +47,10 @@ function persistLocalCheckpoint(columns: Column[]): void {
 
 function loadLocalColumns(): Column[] {
 	try {
-		const stored = localStorage.getItem(LOCAL_STORAGE_KEY);
-		if (stored) {
-			const parsed = JSON.parse(stored);
-			if (Array.isArray(parsed) && parsed.length > 0) {
-				return parsed;
-			}
-		}
+		const parsed = parseLocalColumns(
+			localStorage.getItem(LOCAL_COLUMNS_STORAGE_KEY),
+		);
+		if (parsed) return parsed;
 	} catch (e) {
 		console.error("Failed to load columns from localStorage:", e);
 	}
@@ -60,7 +60,7 @@ function loadLocalColumns(): Column[] {
 function saveLocalColumns(columns: Column[]): void {
 	try {
 		const serialized = JSON.stringify(columns);
-		localStorage.setItem(LOCAL_STORAGE_KEY, serialized);
+		localStorage.setItem(LOCAL_COLUMNS_STORAGE_KEY, serialized);
 		persistLocalCheckpoint(columns);
 	} catch (e) {
 		console.error("Failed to save columns to localStorage:", e);
@@ -69,7 +69,7 @@ function saveLocalColumns(columns: Column[]): void {
 
 export function clearLocalColumns(): void {
 	try {
-		localStorage.removeItem(LOCAL_STORAGE_KEY);
+		localStorage.removeItem(LOCAL_COLUMNS_STORAGE_KEY);
 	} catch (e) {
 		console.error("Failed to clear columns from localStorage:", e);
 	}
@@ -162,9 +162,7 @@ export function useColumns() {
 			if (usesSyncedMode) {
 				// Check if we own this column
 				const meta = columnMetaMap.get(id);
-				const isOwner =
-					!meta ||
-					normalizeAccountId(meta.ownerId) === normalizeAccountId(accountId);
+				const isOwner = !meta || accountOwnsColumn(meta, accountId);
 
 				if (isOwner) {
 					// Delete column from server
@@ -188,6 +186,7 @@ export function useColumns() {
 		[
 			usesSyncedMode,
 			account,
+			accountId,
 			columnMetaMap,
 			deleteColumn,
 			updateHiddenSharedColumns,
@@ -294,6 +293,7 @@ export function useColumns() {
 		publicLinksByColumn,
 		localColumns,
 		collapsedById,
+		accountId,
 	]);
 
 	// Check if a column is owned by the current user
@@ -304,9 +304,7 @@ export function useColumns() {
 			const meta = columnMetaMap.get(columnId);
 			if (!meta) return true; // If no meta, it's owned
 
-			return (
-				normalizeAccountId(meta.ownerId) === normalizeAccountId(accountId)
-			);
+			return accountOwnsColumn(meta, accountId);
 		},
 		[usesSyncedMode, accountId, columnMetaMap],
 	);
@@ -319,7 +317,7 @@ export function useColumns() {
 			const meta = columnMetaMap.get(columnId);
 			return meta?.ownerId || null;
 		},
-		[usesSyncedMode, accountId, columnMetaMap],
+		[usesSyncedMode, columnMetaMap],
 	);
 
 	return {

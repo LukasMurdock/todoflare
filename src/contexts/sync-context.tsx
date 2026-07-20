@@ -25,6 +25,11 @@ import {
 	columnIdForAccountCommand,
 	summarizeReplayReport,
 } from "@/lib/sync/account-command-reconciliation";
+import { canApplyAccountHydration } from "@/lib/sync/account-hydration";
+import {
+	LOCAL_COLUMNS_STORAGE_KEY,
+	parseLocalColumns,
+} from "@/lib/local-column-storage";
 import { startReplayScheduler } from "@/lib/sync/replay-scheduler";
 import {
 	createAccountCommandExecutor,
@@ -363,6 +368,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		Map<string, Set<(message: SyncMessage) => void>>
 	>(new Map());
 	const accountIdRef = useRef<string | null>(accountId);
+	const accountProjectionRevisionRef = useRef(0);
+	const accountHydrationGenerationRef = useRef(0);
 	const pendingSendDropsByColumnRef = useRef<
 		Map<string, PendingSendDropStats>
 	>(new Map());
@@ -1011,6 +1018,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			payload: AccountCommandPayloadMap[NoInfer<T>],
 		) => {
 			if (!accountId) return null;
+			accountProjectionRevisionRef.current += 1;
 
 			const createdAt = Date.now();
 			const command = createAccountEditCommand(opType, payload, {
@@ -1133,6 +1141,11 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 
 	// Fetch account data
 	const fetchAccount = useCallback(async (id: string) => {
+		const guard = {
+			accountId: id,
+			projectionRevision: accountProjectionRevisionRef.current,
+			requestGeneration: ++accountHydrationGenerationRef.current,
+		};
 		try {
 			setIsLoading(true);
 			setError(null);
@@ -1168,6 +1181,17 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			}
 
 			const data = (await response.json()) as GetAccountResponse;
+			const currentAccountId = accountIdRef.current;
+			if (
+				!currentAccountId ||
+				!canApplyAccountHydration(guard, {
+					accountId: currentAccountId,
+					projectionRevision: accountProjectionRevisionRef.current,
+					requestGeneration: accountHydrationGenerationRef.current,
+				})
+			) {
+				return data.account;
+			}
 			const hydratedAt = Date.now();
 			setAccount(data.account);
 			setSharedColumns(data.sharedColumns || []);
@@ -2009,11 +2033,9 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 	// Check for existing localStorage data
 	const hasLocalData = useCallback(() => {
 		try {
-			const stored = localStorage.getItem("todoflare-columns");
-			if (stored) {
-				const parsed = JSON.parse(stored);
-				return Array.isArray(parsed) && parsed.length > 0;
-			}
+			return parseLocalColumns(
+				localStorage.getItem(LOCAL_COLUMNS_STORAGE_KEY),
+			) !== null;
 		} catch {
 			// Ignore errors
 		}

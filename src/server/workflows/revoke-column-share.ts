@@ -1,5 +1,9 @@
 import { normalizeAccountId } from "../../lib/account";
-import { parseColumnMetaRecord } from "../persistence-records";
+import { isColumnOwner } from "../../lib/column-access";
+import {
+	parseColumnMetaRecord,
+	parseSharedColumnIndex,
+} from "../persistence-records";
 import {
 	type ColumnLifecycleBindings,
 	type ColumnLifecycleResult,
@@ -47,7 +51,7 @@ export async function revokeColumnShare<TColumnRoomId>(
 	}
 	const meta = parsedMeta.value;
 
-	if (normalizeAccountId(meta.ownerId) !== normalizeAccountId(accountId)) {
+	if (!isColumnOwner(meta, accountId)) {
 		return {
 			ok: false,
 			failure: {
@@ -77,7 +81,18 @@ export async function revokeColumnShare<TColumnRoomId>(
 	const sharedKey = `shared:${normalizedTargetId}`;
 	const sharedColumnsData = await env.ACCOUNTS.get(sharedKey);
 	if (sharedColumnsData) {
-		const sharedColumns = JSON.parse(sharedColumnsData) as string[];
+		const parsedSharedColumns = parseSharedColumnIndex(sharedColumnsData);
+		if (!parsedSharedColumns.ok) {
+			return {
+				ok: false,
+				failure: {
+					kind: "schema",
+					record: "shared_index",
+					result: parsedSharedColumns,
+				},
+			};
+		}
+		const sharedColumns = parsedSharedColumns.value;
 		const updated = sharedColumns.filter((id) => id !== columnId);
 		if (updated.length !== sharedColumns.length) {
 			await env.ACCOUNTS.put(sharedKey, JSON.stringify(updated));

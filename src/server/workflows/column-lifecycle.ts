@@ -26,7 +26,7 @@ export type ColumnLifecycleFailure =
 	  }
 	| {
 			kind: "schema";
-			record: "account" | "column_meta";
+			record: "account" | "column_meta" | "shared_index";
 			result: Extract<SchemaParseResult<unknown>, { ok: false }>;
 	  }
 	| {

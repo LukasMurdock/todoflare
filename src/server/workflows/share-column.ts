@@ -1,7 +1,9 @@
 import { displayAccountId, normalizeAccountId } from "../../lib/account";
+import { hasColumnAccess, isColumnOwner } from "../../lib/column-access";
 import {
 	parseAccountRecord,
 	parseColumnMetaRecord,
+	parseSharedColumnIndex,
 } from "../persistence-records";
 import {
 	type ColumnLifecycleBindings,
@@ -59,7 +61,7 @@ export async function shareColumn<TColumnRoomId>(
 	}
 	const meta = parsedMeta.value;
 
-	if (normalizeAccountId(meta.ownerId) !== normalizeAccountId(accountId)) {
+	if (!isColumnOwner(meta, accountId)) {
 		return {
 			ok: false,
 			failure: { kind: "owner", meta, message: "Only owner can share" },
@@ -67,7 +69,7 @@ export async function shareColumn<TColumnRoomId>(
 	}
 
 	const formattedTargetId = displayAccountId(targetAccountId);
-	if (!meta.sharedWith.some((id) => normalizeAccountId(id) === normalizedTargetId)) {
+	if (!hasColumnAccess(meta, targetAccountId)) {
 		meta.sharedWith.push(formattedTargetId);
 		const shareResponse = await stub.fetch(
 			new Request("http://do/share", {
@@ -83,9 +85,18 @@ export async function shareColumn<TColumnRoomId>(
 
 	const sharedKey = `shared:${normalizedTargetId}`;
 	const sharedColumnsData = await env.ACCOUNTS.get(sharedKey);
-	const sharedColumns: string[] = sharedColumnsData
-		? JSON.parse(sharedColumnsData)
-		: [];
+	const parsedSharedColumns = parseSharedColumnIndex(sharedColumnsData);
+	if (!parsedSharedColumns.ok) {
+		return {
+			ok: false,
+			failure: {
+				kind: "schema",
+				record: "shared_index",
+				result: parsedSharedColumns,
+			},
+		};
+	}
+	const sharedColumns = parsedSharedColumns.value;
 	if (!sharedColumns.includes(columnId)) {
 		sharedColumns.push(columnId);
 		await env.ACCOUNTS.put(sharedKey, JSON.stringify(sharedColumns));

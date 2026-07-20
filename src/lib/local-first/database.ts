@@ -247,14 +247,3 @@ export async function getLocalFirstDb(): Promise<LocalFirstDatabase> {
 
 	return localFirstDbPromise;
 }
-
-export function resetLocalFirstDbForTests() {
-	if (localFirstDbPromise) {
-		void localFirstDbPromise
-			.then((db) => db.close())
-			.catch(() => {
-				return;
-			});
-	}
-	localFirstDbPromise = null;
-}

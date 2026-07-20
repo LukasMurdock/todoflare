@@ -1,8 +1,48 @@
+import { z } from "zod";
+import { validateAccountId } from "../lib/account";
 import type { Account, ColumnMeta } from "../types/account";
 
 export const ACCOUNT_SCHEMA_VERSION = 1;
 export const COLUMN_META_SCHEMA_VERSION = 1;
 export const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+const recordIdSchema = z.string().min(1).max(128);
+const accountIdSchema = z.string().refine(validateAccountId);
+const finiteTimestampSchema = z.number().finite().nonnegative();
+
+/** Authoritative runtime shape for account records persisted in KV. */
+export const accountRecordSchema = z
+	.object({
+		schemaVersion: z.literal(ACCOUNT_SCHEMA_VERSION).default(ACCOUNT_SCHEMA_VERSION),
+		id: accountIdSchema,
+		columnOrder: z.array(recordIdSchema).max(100),
+		hiddenSharedColumns: z.array(recordIdSchema).max(100),
+		createdAt: finiteTimestampSchema,
+	})
+	.strict();
+
+/** Authoritative runtime shape for metadata persisted by ColumnRoom. */
+export const columnMetaRecordSchema = z
+	.object({
+		schemaVersion: z
+			.literal(COLUMN_META_SCHEMA_VERSION)
+			.default(COLUMN_META_SCHEMA_VERSION),
+		id: recordIdSchema,
+		ownerId: accountIdSchema,
+		sharedWith: z.array(accountIdSchema).max(100),
+		publicId: z.string().regex(/^[0-9A-Za-z]{8}$/).nullable(),
+		createdAt: finiteTimestampSchema,
+	})
+	.strict();
+
+export const deletedColumnRecordSchema = z
+	.object({
+		columnId: recordIdSchema,
+		deletedAt: finiteTimestampSchema,
+	})
+	.strict();
+
+export const sharedColumnIndexSchema = z.array(recordIdSchema).max(100);
 
 export type SchemaParseErrorCode =
 	| "invalid_json"
@@ -19,142 +59,93 @@ export type SchemaParseResult<T> =
 			expectedVersion: number;
 	  };
 
-export type DeletedColumnRecord = {
-	columnId: string;
-	deletedAt: number;
-};
+export type DeletedColumnRecord = z.infer<typeof deletedColumnRecordSchema>;
 
-export function parseAccountRecord(raw: string): SchemaParseResult<Account> {
-	let parsed: unknown;
+function invalidShape(message: string): SchemaParseResult<never> {
+	return {
+		ok: false,
+		code: "invalid_shape",
+		message,
+		expectedVersion: 1,
+	};
+}
+
+function parseJson(raw: string, recordName: string): SchemaParseResult<unknown> {
 	try {
-		parsed = JSON.parse(raw);
+		return { ok: true, value: JSON.parse(raw) as unknown };
 	} catch {
 		return {
 			ok: false,
 			code: "invalid_json",
-			message: "Account record is invalid JSON",
-			expectedVersion: ACCOUNT_SCHEMA_VERSION,
+			message: `${recordName} is invalid JSON`,
+			expectedVersion: 1,
 		};
 	}
-
-	if (!parsed || typeof parsed !== "object") {
-		return {
-			ok: false,
-			code: "invalid_shape",
-			message: "Account record has invalid shape",
-			expectedVersion: ACCOUNT_SCHEMA_VERSION,
-		};
-	}
-
-	const obj = parsed as Partial<Account> & { schemaVersion?: number };
-	const foundVersion = obj.schemaVersion ?? ACCOUNT_SCHEMA_VERSION;
-	if (foundVersion !== ACCOUNT_SCHEMA_VERSION) {
-		return {
-			ok: false,
-			code: "unsupported_schema_version",
-			message: "Account schema version is not supported",
-			foundVersion,
-			expectedVersion: ACCOUNT_SCHEMA_VERSION,
-		};
-	}
-
-	if (
-		typeof obj.id !== "string" ||
-		!Array.isArray(obj.columnOrder) ||
-		!Array.isArray(obj.hiddenSharedColumns) ||
-		typeof obj.createdAt !== "number"
-	) {
-		return {
-			ok: false,
-			code: "invalid_shape",
-			message: "Account record missing required fields",
-			expectedVersion: ACCOUNT_SCHEMA_VERSION,
-		};
-	}
-
-	return {
-		ok: true,
-		value: {
-			schemaVersion: ACCOUNT_SCHEMA_VERSION,
-			id: obj.id,
-			columnOrder: obj.columnOrder,
-			hiddenSharedColumns: obj.hiddenSharedColumns,
-			createdAt: obj.createdAt,
-		},
-	};
 }
 
-export function parseColumnMetaRecord(
+function unsupportedVersion(
 	raw: unknown,
-): SchemaParseResult<ColumnMeta> {
-	if (!raw || typeof raw !== "object") {
-		return {
-			ok: false,
-			code: "invalid_shape",
-			message: "Column metadata has invalid shape",
-			expectedVersion: COLUMN_META_SCHEMA_VERSION,
-		};
+	expectedVersion: number,
+	recordName: string,
+): SchemaParseResult<never> | null {
+	if (!raw || typeof raw !== "object") return null;
+	const foundVersion = (raw as { schemaVersion?: unknown }).schemaVersion;
+	if (typeof foundVersion !== "number" || foundVersion === expectedVersion) {
+		return null;
 	}
-
-	const obj = raw as Partial<ColumnMeta> & { schemaVersion?: number };
-	const foundVersion = obj.schemaVersion ?? COLUMN_META_SCHEMA_VERSION;
-	if (foundVersion !== COLUMN_META_SCHEMA_VERSION) {
-		return {
-			ok: false,
-			code: "unsupported_schema_version",
-			message: "Column metadata schema version is not supported",
-			foundVersion,
-			expectedVersion: COLUMN_META_SCHEMA_VERSION,
-		};
-	}
-
-	if (
-		typeof obj.id !== "string" ||
-		typeof obj.ownerId !== "string" ||
-		!Array.isArray(obj.sharedWith) ||
-		!(typeof obj.publicId === "string" || obj.publicId === null) ||
-		typeof obj.createdAt !== "number"
-	) {
-		return {
-			ok: false,
-			code: "invalid_shape",
-			message: "Column metadata missing required fields",
-			expectedVersion: COLUMN_META_SCHEMA_VERSION,
-		};
-	}
-
 	return {
-		ok: true,
-		value: {
-			schemaVersion: COLUMN_META_SCHEMA_VERSION,
-			id: obj.id,
-			ownerId: obj.ownerId,
-			sharedWith: obj.sharedWith,
-			publicId: obj.publicId,
-			createdAt: obj.createdAt,
-		},
+		ok: false,
+		code: "unsupported_schema_version",
+		message: `${recordName} schema version is not supported`,
+		foundVersion,
+		expectedVersion,
 	};
 }
 
-export function parseDeletedColumnRecords(
-	raw: string | null,
-): DeletedColumnRecord[] {
+export function parseAccountRecord(raw: string): SchemaParseResult<Account> {
+	const json = parseJson(raw, "Account record");
+	if (!json.ok) return json;
+	const versionError = unsupportedVersion(
+		json.value,
+		ACCOUNT_SCHEMA_VERSION,
+		"Account",
+	);
+	if (versionError) return versionError;
+	const parsed = accountRecordSchema.safeParse(json.value);
+	return parsed.success
+		? { ok: true, value: parsed.data satisfies Account }
+		: invalidShape("Account record has invalid shape");
+}
+
+export function parseColumnMetaRecord(raw: unknown): SchemaParseResult<ColumnMeta> {
+	const versionError = unsupportedVersion(
+		raw,
+		COLUMN_META_SCHEMA_VERSION,
+		"Column metadata",
+	);
+	if (versionError) return versionError;
+	const parsed = columnMetaRecordSchema.safeParse(raw);
+	return parsed.success
+		? { ok: true, value: parsed.data satisfies ColumnMeta }
+		: invalidShape("Column metadata has invalid shape");
+}
+
+export function parseDeletedColumnRecords(raw: string | null): DeletedColumnRecord[] {
 	if (!raw) return [];
+	const json = parseJson(raw, "Trash record");
+	if (!json.ok) return [];
+	const parsed = z.array(deletedColumnRecordSchema).max(100).safeParse(json.value);
+	return parsed.success ? parsed.data : [];
+}
 
-	try {
-		const parsed = JSON.parse(raw) as unknown;
-		if (!Array.isArray(parsed)) return [];
-
-		return parsed
-			.filter(
-				(item): item is DeletedColumnRecord =>
-					!!item &&
-					typeof item === "object" &&
-					typeof (item as { columnId?: unknown }).columnId === "string" &&
-					typeof (item as { deletedAt?: unknown }).deletedAt === "number",
-			)
-			.map((item) => ({ columnId: item.columnId, deletedAt: item.deletedAt }));
-	} catch {
-		return [];
-	}
+export function parseSharedColumnIndex(
+	raw: string | null,
+): SchemaParseResult<string[]> {
+	if (raw === null) return { ok: true, value: [] };
+	const json = parseJson(raw, "Shared column index");
+	if (!json.ok) return json;
+	const parsed = sharedColumnIndexSchema.safeParse(json.value);
+	return parsed.success
+		? { ok: true, value: parsed.data }
+		: invalidShape("Shared column index has invalid shape");
 }

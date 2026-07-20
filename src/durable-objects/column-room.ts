@@ -5,6 +5,12 @@ import * as awarenessProtocol from "y-protocols/awareness";
 import type { ColumnMeta, PresenceUser } from "../types/account";
 import { getAccountColor, normalizeAccountId } from "../lib/account";
 import {
+	hasColumnAccess,
+	isColumnOwner,
+	normalizeAccountIdSet,
+} from "../lib/column-access";
+import { parseColumnMetaRecord } from "../server/persistence-records";
+import {
 	decodeWsFrame,
 	encodeWsFrame,
 	encodeWsJsonFrame,
@@ -98,15 +104,19 @@ export class ColumnRoomSql extends DurableObject<unknown> {
 							meta: ColumnMeta;
 					  };
 
-				if (
+				const candidate = (
 					parsed &&
 					typeof parsed === "object" &&
 					"meta" in parsed &&
 					parsed.meta
-				) {
-					this.meta = parsed.meta;
+				)
+					? parsed.meta
+					: parsed;
+				const validated = parseColumnMetaRecord(candidate);
+				if (validated.ok) {
+					this.meta = validated.value;
 				} else {
-					this.meta = parsed as ColumnMeta;
+					console.error("Stored column metadata failed validation", validated);
 				}
 			} catch (err) {
 				console.error("Failed to parse stored meta:", err);
@@ -263,12 +273,7 @@ export class ColumnRoomSql extends DurableObject<unknown> {
 		if (isPublic && this.meta.publicId) return true;
 		if (!accountId) return false;
 
-		const normalizedAccountId = normalizeAccountId(accountId);
-		const normalizedOwnerId = normalizeAccountId(this.meta.ownerId);
-		if (normalizedOwnerId === normalizedAccountId) return true;
-		return this.meta.sharedWith.some(
-			(id) => normalizeAccountId(id) === normalizedAccountId,
-		);
+		return hasColumnAccess(this.meta, accountId);
 	}
 
 	async fetch(request: Request): Promise<Response> {
@@ -293,16 +298,23 @@ export class ColumnRoomSql extends DurableObject<unknown> {
 		}
 
 		if (request.method === "POST" && url.pathname === "/init") {
-			const meta = (await request.json()) as ColumnMeta;
-			this.meta = meta;
+			const parsedMeta = parseColumnMetaRecord(await request.json());
+			if (!parsedMeta.ok) {
+				return Response.json(parsedMeta, { status: 400 });
+			}
+			this.meta = parsedMeta.value;
 			this.persistMeta();
 			return Response.json({ success: true });
 		}
 
 		if (request.method === "POST" && url.pathname === "/import") {
-			const body = (await request.json()) as { meta: ColumnMeta; yjs: number[] | null };
+			const body = (await request.json()) as { meta: unknown; yjs: number[] | null };
+			const parsedMeta = parseColumnMetaRecord(body.meta);
+			if (!parsedMeta.ok) {
+				return Response.json(parsedMeta, { status: 400 });
+			}
 
-			this.meta = body.meta;
+			this.meta = parsedMeta.value;
 			this.persistMeta();
 
 			this.doc = new Y.Doc();
@@ -539,14 +551,14 @@ export class ColumnRoomSql extends DurableObject<unknown> {
 	}
 
 	private notifyAccessChanges(newSharedWith: string[]) {
-		const newSet = new Set(newSharedWith);
+		const newSet = normalizeAccountIdSet(newSharedWith);
 
 		for (const [ws, session] of this.sessions) {
 			if (
 				session.accountId &&
 				!session.isPublic &&
-				session.accountId !== this.meta?.ownerId &&
-				!newSet.has(session.accountId)
+				(!this.meta || !isColumnOwner(this.meta, session.accountId)) &&
+				!newSet.has(normalizeAccountId(session.accountId))
 			) {
 				ws.send(encodeWsFrame(WS_OP_ACCESS_REVOKED));
 				ws.close(1000, "Access revoked");

@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
+import { LOCAL_COLUMNS_STORAGE_KEY } from "@/lib/local-column-storage";
 
 const WELCOME_KEY = "todoflare-welcomed";
-const COLUMNS_KEY = "todoflare-columns";
 
 function hasBeenWelcomed(): boolean {
 	try {
@@ -13,7 +13,7 @@ function hasBeenWelcomed(): boolean {
 
 function hasExistingData(): boolean {
 	try {
-		const stored = localStorage.getItem(COLUMNS_KEY);
+		const stored = localStorage.getItem(LOCAL_COLUMNS_STORAGE_KEY);
 		if (!stored) return false;
 		
 		const parsed = JSON.parse(stored);

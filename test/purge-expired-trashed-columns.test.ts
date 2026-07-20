@@ -17,7 +17,7 @@ afterEach(async () => {
 async function seedTrash(
 	entries: Array<{ columnId: string; deletedAt: number }>,
 ): Promise<string> {
-	const accountId = crypto.randomUUID().replaceAll("-", "");
+	const accountId = "9999999999999999";
 	seededAccountIds.push(accountId);
 	await env.ACCOUNTS.put(`account:${accountId}`, "{}");
 	await env.ACCOUNTS.put(`trash:${accountId}`, JSON.stringify(entries));

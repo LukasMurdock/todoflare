@@ -3,10 +3,13 @@ import * as Y from "yjs";
 import type { Account, ColumnMeta } from "./types/account";
 import { checkRateLimit, getClientIP, ipRateLimitKey, RATE_LIMITS } from "./lib/rate-limit";
 import { normalizeAccountId, validateAccountId } from "./lib/account";
+import { hasColumnAccess, isColumnOwner } from "./lib/column-access";
 import {
 	parseAccountRecord,
+	columnMetaRecordSchema,
 	parseColumnMetaRecord,
 	parseDeletedColumnRecords,
+	parseSharedColumnIndex,
 	TRASH_RETENTION_MS,
 } from "./server/persistence-records";
 
@@ -55,13 +58,7 @@ const errorSchema = z.object({
 	error: z.string(),
 });
 
-const agentColumnMetaSchema = z.object({
-	id: z.string(),
-	ownerId: z.string(),
-	sharedWith: z.array(z.string()),
-	publicId: z.string().nullable(),
-	createdAt: z.number(),
-});
+const agentColumnMetaSchema = columnMetaRecordSchema;
 
 const agentColumnListItemSchema = z.object({
 	id: z.string(),
@@ -154,16 +151,13 @@ async function fetchAccount(
 }
 
 function buildCapabilities(meta: ColumnMeta, accountId: string) {
-	const normalizedAccountId = normalizeAccountId(accountId);
-	const isOwner = normalizeAccountId(meta.ownerId) === normalizedAccountId;
-	const isShared = meta.sharedWith.some(
-		(id) => normalizeAccountId(id) === normalizedAccountId,
-	);
+	const owner = isColumnOwner(meta, accountId);
+	const isShared = !owner && hasColumnAccess(meta, accountId);
 
 	return {
-		canRead: isOwner || isShared,
-		canEdit: isOwner || isShared,
-		isOwner,
+		canRead: owner || isShared,
+		canEdit: owner || isShared,
+		isOwner: owner,
 		isShared,
 		isPublic: meta.publicId !== null,
 	};
@@ -233,7 +227,7 @@ export function registerAgentApi(app: OpenAPIHono<{ Bindings: Bindings }>) {
 		operationId: "listAgentColumns",
 	});
 
-	app.openapi(listColumnsRoute, (async (c: any) => {
+	app.openapi(listColumnsRoute, async (c) => {
 		const rateLimited = await enforceAgentRateLimit(c, "agent-list-columns");
 		if (rateLimited) {
 			return c.json({ error: "rate_limited", retryAfter: rateLimited.retryAfter }, 429);
@@ -248,14 +242,20 @@ export function registerAgentApi(app: OpenAPIHono<{ Bindings: Bindings }>) {
 		}
 
 		const fetched = await fetchAccount(c.env, accountId);
-		if (!fetched.ok) return c.json({ error: fetched.error }, fetched.status);
+		if (!fetched.ok) {
+			return fetched.status === 404
+				? c.json({ error: fetched.error }, 404)
+				: c.json({ error: fetched.error }, 503);
+		}
 
 		const { account, normalizedId } = fetched;
 
 		const sharedColumnsData = await c.env.ACCOUNTS.get(`shared:${normalizedId}`);
-		const sharedColumnIds: string[] = sharedColumnsData
-			? JSON.parse(sharedColumnsData)
-			: [];
+		const parsedSharedColumnIds = parseSharedColumnIndex(sharedColumnsData);
+		if (!parsedSharedColumnIds.ok) {
+			return c.json({ error: "Shared column index is invalid" }, 503);
+		}
+		const sharedColumnIds = parsedSharedColumnIds.value;
 
 		const sharedMetas: ColumnMeta[] = [];
 		for (const columnId of sharedColumnIds) {
@@ -324,8 +324,8 @@ export function registerAgentApi(app: OpenAPIHono<{ Bindings: Bindings }>) {
 		return c.json({
 			accountId: account.id,
 			columns,
-		});
-	}) as any);
+		}, 200);
+	});
 
 	const getColumnRoute = createRoute({
 		method: "get",
@@ -353,7 +353,7 @@ export function registerAgentApi(app: OpenAPIHono<{ Bindings: Bindings }>) {
 		operationId: "getAgentColumn",
 	});
 
-	app.openapi(getColumnRoute, (async (c: any) => {
+	app.openapi(getColumnRoute, async (c) => {
 		const rateLimited = await enforceAgentRateLimit(c, "agent-get-column");
 		if (rateLimited) {
 			return c.json({ error: "rate_limited", retryAfter: rateLimited.retryAfter }, 429);
@@ -364,7 +364,11 @@ export function registerAgentApi(app: OpenAPIHono<{ Bindings: Bindings }>) {
 		const requesterAccountId = header["x-account-id"];
 
 		const fetched = await fetchAccount(c.env, requesterAccountId);
-		if (!fetched.ok) return c.json({ error: fetched.error }, fetched.status);
+		if (!fetched.ok) {
+			return fetched.status === 404
+				? c.json({ error: fetched.error }, 404)
+				: c.json({ error: fetched.error }, 503);
+		}
 
 		const { account, normalizedId } = fetched;
 
@@ -408,8 +412,8 @@ export function registerAgentApi(app: OpenAPIHono<{ Bindings: Bindings }>) {
 			visibility,
 			state: state.state,
 			deletedAt: state.deletedAt,
-		});
-	}) as any);
+		}, 200);
+	});
 
 	const getSnapshotRoute = createRoute({
 		method: "get",
@@ -437,7 +441,7 @@ export function registerAgentApi(app: OpenAPIHono<{ Bindings: Bindings }>) {
 		operationId: "getAgentColumnSnapshot",
 	});
 
-	app.openapi(getSnapshotRoute, (async (c: any) => {
+	app.openapi(getSnapshotRoute, async (c) => {
 		const rateLimited = await enforceAgentRateLimit(c, "agent-get-snapshot");
 		if (rateLimited) {
 			return c.json({ error: "rate_limited", retryAfter: rateLimited.retryAfter }, 429);
@@ -448,7 +452,11 @@ export function registerAgentApi(app: OpenAPIHono<{ Bindings: Bindings }>) {
 		const requesterAccountId = header["x-account-id"];
 
 		const fetched = await fetchAccount(c.env, requesterAccountId);
-		if (!fetched.ok) return c.json({ error: fetched.error }, fetched.status);
+		if (!fetched.ok) {
+			return fetched.status === 404
+				? c.json({ error: fetched.error }, 404)
+				: c.json({ error: fetched.error }, 503);
+		}
 		const { account, normalizedId } = fetched;
 
 		const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
@@ -502,6 +510,6 @@ export function registerAgentApi(app: OpenAPIHono<{ Bindings: Bindings }>) {
 			...(markdownPayload.markdownError
 				? { markdownError: markdownPayload.markdownError }
 				: {}),
-		});
-	}) as any);
+		}, 200);
+	});
 }

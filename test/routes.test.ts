@@ -800,7 +800,7 @@ describe("Agent read API", () => {
 		});
 	}
 
-	it("rejects unsupported column metadata through both column APIs", async () => {
+	it("rejects unsupported column metadata at Durable Object import", async () => {
 		const accountId = await createAccount();
 		const columnId = await createColumn(accountId);
 		const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
@@ -816,27 +816,19 @@ describe("Agent read API", () => {
 				}),
 			}),
 		);
-		expect(importResponse.ok).toBe(true);
+		expect(importResponse.status).toBe(400);
 
 		const browserResponse = await SELF.fetch(
 			`http://example.com/api/column/${columnId}`,
 			{ headers: { "X-Account-ID": accountId } },
 		);
-		expect(browserResponse.status).toBe(503);
-		expect(await browserResponse.json()).toMatchObject({
-			error: "schema_guard_blocked",
-			kind: "column_meta",
-			code: "unsupported_schema_version",
-		});
+		expect(browserResponse.status).toBe(200);
 
 		const agentResponse = await SELF.fetch(
 			`http://example.com/api/agent/v1/columns/${columnId}`,
 			{ headers: { "X-Account-ID": accountId } },
 		);
-		expect(agentResponse.status).toBe(503);
-		expect(await agentResponse.json()).toEqual({
-			error: "Column metadata is invalid",
-		});
+		expect(agentResponse.status).toBe(200);
 	});
 
 	it("serves a public OpenAPI spec for agent endpoints", async () => {

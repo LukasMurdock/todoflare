@@ -1,4 +1,4 @@
-import { normalizeAccountId } from "../../lib/account";
+import { isColumnOwner } from "../../lib/column-access";
 import { parseColumnMetaRecord } from "../persistence-records";
 import {
 	type ColumnLifecycleBindings,
@@ -43,7 +43,7 @@ export async function disablePublicColumn<TColumnRoomId>(
 	}
 	const meta = parsedMeta.value;
 
-	if (normalizeAccountId(meta.ownerId) !== normalizeAccountId(accountId)) {
+	if (!isColumnOwner(meta, accountId)) {
 		return {
 			ok: false,
 			failure: {

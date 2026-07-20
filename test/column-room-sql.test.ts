@@ -160,7 +160,7 @@ describe("ColumnRoomSql Durable Object (HTTP)", () => {
 			new Request("http://do/public", {
 				method: "PUT",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ publicId: "pub123" }),
+				body: JSON.stringify({ publicId: "pub12345" }),
 			}),
 		);
 		expect(publicRes.ok).toBe(true);
@@ -169,7 +169,7 @@ describe("ColumnRoomSql Durable Object (HTTP)", () => {
 		expect(metaRes2.ok).toBe(true);
 		expect((await metaRes2.json()) as ColumnMeta).toMatchObject({
 			sharedWith: ["2222 2222 2222 2222"],
-			publicId: "pub123",
+			publicId: "pub12345",
 		});
 
 		const deleteRes = await stub.fetch(
@@ -334,6 +334,48 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 
 		expect((await revokedPromise).byteLength).toBe(0);
 		await closePromise;
+	});
+
+	it("keeps a normalized collaborator session when another user is added", async () => {
+		const columnId = "ws-access-normalized";
+		const stub = getColumnRoomStub(columnId);
+		const sharedId = "2222 2222 2222 2222";
+		const meta: ColumnMeta = {
+			schemaVersion: 1,
+			id: columnId,
+			ownerId: "1111 1111 1111 1111",
+			sharedWith: [sharedId],
+			publicId: null,
+			createdAt: Date.now(),
+		};
+		await stub.fetch(
+			new Request("http://do/init", {
+				method: "POST",
+				body: JSON.stringify(meta),
+			}),
+		);
+
+		const res = await stub.fetch(
+			new Request("http://do/?accountId=2222222222222222", {
+				headers: { Upgrade: "websocket" },
+			}),
+		);
+		const ws = getResponseWebSocket(res);
+		acceptWebSocket(ws);
+		await drainInitialFrames(ws);
+
+		const update = await stub.fetch(
+			new Request("http://do/share", {
+				method: "PUT",
+				body: JSON.stringify({
+					sharedWith: [sharedId, "3333 3333 3333 3333"],
+				}),
+			}),
+		);
+
+		expect(update.ok).toBe(true);
+		expect(ws.readyState).toBe(WebSocket.OPEN);
+		ws.close();
 	});
 
 	it("broadcasts Yjs sync updates between clients", async () => {

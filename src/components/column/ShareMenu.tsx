@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { Share2, Copy, Check, RefreshCw, X, Link, Unlink } from "lucide-react";
 import {
@@ -33,23 +33,11 @@ export function ShareMenu({ columnId, columnMeta }: ShareMenuProps) {
 	const [copied, setCopied] = useState(false);
 	const [publicLinkCopied, setPublicLinkCopied] = useState(false);
 
-	// Local state for optimistic updates
-	const [localSharedWith, setLocalSharedWith] = useState<string[]>([]);
-	const [localPublicId, setLocalPublicId] = useState<string | null>(null);
-	const [publicUrl, setPublicUrl] = useState<string | null>(null);
-
-	// Sync with props
-	useEffect(() => {
-		if (columnMeta) {
-			setLocalSharedWith(columnMeta.sharedWith || []);
-			setLocalPublicId(columnMeta.publicId || null);
-			if (columnMeta.publicId) {
-				setPublicUrl(`${window.location.origin}/p/${columnMeta.publicId}`);
-			} else {
-				setPublicUrl(null);
-			}
-		}
-	}, [columnMeta]);
+	const sharedWith = columnMeta?.sharedWith ?? [];
+	const publicId = columnMeta?.publicId ?? null;
+	const publicUrl = publicId
+		? `${window.location.origin}/p/${publicId}`
+		: null;
 
 	const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
 		const formatted = formatAccountId(e.target.value);
@@ -69,15 +57,6 @@ export function ShareMenu({ columnId, columnMeta }: ShareMenuProps) {
 		const success = await shareColumn(columnId, shareInput);
 
 		if (success) {
-			setLocalSharedWith((prev) => {
-				const normalizedTarget = shareInput.replace(/\s/g, "");
-				if (
-					prev.some((id) => id.replace(/\s/g, "") === normalizedTarget)
-				) {
-					return prev;
-				}
-				return [...prev, shareInput];
-			});
 			setShareInput("");
 			toast.success("Column shared successfully!");
 		} else {
@@ -90,11 +69,6 @@ export function ShareMenu({ columnId, columnMeta }: ShareMenuProps) {
 	const handleRevoke = async (accountId: string) => {
 		const success = await revokeShare(columnId, accountId);
 		if (success) {
-			setLocalSharedWith((prev) =>
-				prev.filter(
-					(id) => id.replace(/\s/g, "") !== accountId.replace(/\s/g, ""),
-				),
-			);
 			toast.success("Access revoked");
 		}
 	};
@@ -103,8 +77,6 @@ export function ShareMenu({ columnId, columnMeta }: ShareMenuProps) {
 		setIsTogglingPublic(true);
 		const result = await enablePublicLink(columnId);
 		if (result) {
-			setLocalPublicId(result.publicId);
-			setPublicUrl(result.url);
 			toast.success("Public link enabled!");
 		}
 		setIsTogglingPublic(false);
@@ -114,9 +86,7 @@ export function ShareMenu({ columnId, columnMeta }: ShareMenuProps) {
 		setIsTogglingPublic(true);
 		const success = await disablePublicLink(columnId);
 		if (success) {
-			setLocalPublicId(null);
 			toast.success("Public link disabled");
-			setPublicUrl(null);
 		}
 		setIsTogglingPublic(false);
 	};
@@ -176,13 +146,13 @@ export function ShareMenu({ columnId, columnMeta }: ShareMenuProps) {
 						{error && <p className="text-xs text-destructive">{error}</p>}
 					</div>
 
-					{localSharedWith.length > 0 && (
+					{sharedWith.length > 0 && (
 						<div className="space-y-2">
 							<h4 className="font-medium text-sm text-muted-foreground">
 								Shared with
 							</h4>
 							<div className="space-y-1">
-								{localSharedWith.map((accountId) => (
+								{sharedWith.map((accountId) => (
 									<div
 										key={accountId}
 										className="flex items-center justify-between py-1"
@@ -207,7 +177,7 @@ export function ShareMenu({ columnId, columnMeta }: ShareMenuProps) {
 
 					<div className="border-t pt-4 space-y-2">
 						<h4 className="font-medium text-sm">Public link</h4>
-						{localPublicId ? (
+						{publicId ? (
 							<div className="space-y-2">
 								<div className="flex items-center gap-2">
 									<span className="flex-1 text-xs font-mono bg-muted px-2 py-1 rounded truncate">

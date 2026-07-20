@@ -1,4 +1,5 @@
 import { normalizeAccountId } from "../../lib/account";
+import { isColumnOwner } from "../../lib/column-access";
 import type { ColumnMeta } from "../../types/account";
 import {
 	parseAccountRecord,
@@ -83,7 +84,7 @@ export async function restoreColumn<TColumnRoomId>(
 
 		const completedMeta = await loadMeta();
 		if (!completedMeta.ok) return completedMeta;
-		if (normalizeAccountId(completedMeta.value.ownerId) !== normalizedAccountId) {
+		if (!isColumnOwner(completedMeta.value, accountId)) {
 			return lifecycleNotFound("Column not in garbage can");
 		}
 		return { ok: true, value: { success: true, column: completedMeta.value } };
@@ -96,7 +97,7 @@ export async function restoreColumn<TColumnRoomId>(
 	const loadedMeta = await loadMeta();
 	if (!loadedMeta.ok) return loadedMeta;
 	const meta = loadedMeta.value;
-	if (normalizeAccountId(meta.ownerId) !== normalizedAccountId) {
+	if (!isColumnOwner(meta, accountId)) {
 		return {
 			ok: false,
 			failure: { kind: "owner", meta, message: "Only owner can restore" },

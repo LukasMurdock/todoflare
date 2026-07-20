@@ -10,6 +10,60 @@ import {
 } from "./helpers/local-first-readers";
 
 test.describe("collaborative editing", () => {
+	test("stale account hydration cannot erase a newly shared column", async ({
+		browser,
+		request,
+		baseURL,
+	}) => {
+		const appUrl = baseURL ?? "http://127.0.0.1:4173";
+		const ownerId = await createAccount(request, appUrl);
+		const collaboratorId = await createAccount(request, appUrl);
+		const context = await browser.newContext();
+		const page = await context.newPage();
+
+		await bootstrapAuthenticatedPage(page, ownerId);
+		await addColumnAndGetId(page);
+
+		let markStaleResponseCaptured!: () => void;
+		const staleResponseCaptured = new Promise<void>((resolve) => {
+			markStaleResponseCaptured = resolve;
+		});
+		let releaseStaleResponse!: () => void;
+		const staleResponseRelease = new Promise<void>((resolve) => {
+			releaseStaleResponse = resolve;
+		});
+		const accountUrl = `**/api/account/${ownerId.replace(/\D/g, "")}`;
+		await page.route(accountUrl, async (route) => {
+			const staleResponse = await route.fetch();
+			markStaleResponseCaptured();
+			await staleResponseRelease;
+			await route.fulfill({ response: staleResponse });
+		}, { times: 1 });
+
+		await page.reload();
+		await staleResponseCaptured;
+		await expect(page.getByRole("button", { name: "Add column" })).toBeVisible();
+		await addColumnAndGetId(page);
+
+		await page.getByRole("button", { name: "Share column" }).last().click();
+		await page.getByRole("textbox", { name: "Account ID" }).fill(collaboratorId);
+		const shareResponsePromise = page.waitForResponse(
+			(response) =>
+				response.request().method() === "POST" &&
+				response.url().includes("/share"),
+		);
+		await page.getByRole("button", { name: "Share", exact: true }).click();
+		expect((await shareResponsePromise).ok()).toBe(true);
+
+		releaseStaleResponse();
+		const compactId = collaboratorId.replace(/\D/g, "");
+		const shortId = `${compactId.slice(0, 4)}...${compactId.slice(-4)}`;
+		await expect(page.getByRole("button", { name: "Collapse column" })).toHaveCount(2);
+		await expect(page.getByText(shortId)).toBeVisible();
+
+		await context.close();
+	});
+
 	test("owner can share a column and collaborator can see it", async ({
 		browser,
 		request,

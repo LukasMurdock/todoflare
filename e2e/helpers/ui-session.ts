@@ -1,8 +1,9 @@
 import { expect, type Page } from "@playwright/test";
+import { LOCAL_COLUMNS_STORAGE_KEY } from "../../src/lib/local-column-storage";
 
 export const ACCOUNT_STORAGE_KEY = "todoflare-account";
 export const WELCOME_KEY = "todoflare-welcomed";
-export const LOCAL_COLUMNS_KEY = "todoflare-columns";
+export const LOCAL_COLUMNS_KEY = LOCAL_COLUMNS_STORAGE_KEY;
 
 export async function bootstrapAuthenticatedPage(
 	page: Page,
