@@ -1,8 +1,8 @@
 import {
 	parseDeletedColumnRecords,
 	TRASH_RETENTION_MS,
-	type DeletedColumnRecord,
 } from "../persistence-records";
+import { accountRecordStore, mutateAccountRecord } from "../account-record-store";
 
 interface AccountKey {
 	name: string;
@@ -18,6 +18,7 @@ export interface PurgeExpiredTrashBindings<TColumnRoomId> {
 	ACCOUNTS: {
 		get(key: string): Promise<string | null>;
 		put(key: string, value: string): Promise<void>;
+		delete?(key: string): Promise<void>;
 		list(options: {
 			prefix: string;
 			cursor?: string;
@@ -25,6 +26,10 @@ export interface PurgeExpiredTrashBindings<TColumnRoomId> {
 		}): Promise<AccountKeyPage>;
 	};
 	COLUMN_ROOM: {
+		idFromName(name: string): TColumnRoomId;
+		get(id: TColumnRoomId): { fetch(request: Request): Promise<Response> };
+	};
+	ACCOUNT_COORDINATOR?: {
 		idFromName(name: string): TColumnRoomId;
 		get(id: TColumnRoomId): { fetch(request: Request): Promise<Response> };
 	};
@@ -83,10 +88,8 @@ export async function purgeExpiredTrashedColumns<TColumnRoomId>(
 			const trash = parseDeletedColumnRecords(await env.ACCOUNTS.get(trashKey));
 			if (trash.length === 0) continue;
 
-			const keep: DeletedColumnRecord[] = [];
 			for (const entry of trash) {
 				if (now - entry.deletedAt < retentionMs) {
-					keep.push(entry);
 					continue;
 				}
 
@@ -94,19 +97,22 @@ export async function purgeExpiredTrashedColumns<TColumnRoomId>(
 					const deleteResponse = await deleteColumn(entry.columnId);
 					if (!deleteResponse.ok) {
 						columnsFailed += 1;
-						keep.push(entry);
 						continue;
 					}
 
+					// Remove discoverability before the trash commit record. If the
+					// invocation stops here, the retained trash entry safely retries.
+					await env.ACCOUNTS.delete?.(`column-registry:${entry.columnId}`);
+					await mutateAccountRecord(env, trashKey, {
+						kind: "trash-remove",
+						columnId: entry.columnId,
+					});
 					columnsPurged += 1;
 					trashEntriesRemoved += 1;
 				} catch {
 					columnsFailed += 1;
-					keep.push(entry);
 				}
 			}
-
-			await env.ACCOUNTS.put(trashKey, JSON.stringify(keep));
 		}
 
 		if (page.list_complete) break;

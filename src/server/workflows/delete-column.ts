@@ -1,9 +1,10 @@
 import { normalizeAccountId } from "../../lib/account";
 import { isColumnOwner } from "../../lib/column-access";
+import { accountRecordStore, mutateAccountRecord } from "../account-record-store";
+import { releasePublicId } from "../public-id-registry";
 import {
 	parseAccountRecord,
 	parseColumnMetaRecord,
-	parseDeletedColumnRecords,
 	parseSharedColumnIndex,
 	TRASH_RETENTION_MS,
 } from "../persistence-records";
@@ -48,6 +49,7 @@ export async function deleteColumn<TColumnRoomId>(
 	input: DeleteColumnInput<TColumnRoomId>,
 ): Promise<ColumnLifecycleResult<DeleteColumnOutput>> {
 	const { env, columnId, accountId, afterWrite } = input;
+	const records = accountRecordStore(env);
 	const now = input.now ?? Date.now;
 	const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
 	const metaResponse = await stub.fetch(new Request("http://do/meta"));
@@ -72,7 +74,7 @@ export async function deleteColumn<TColumnRoomId>(
 
 	const normalizedOwnerId = normalizeAccountId(meta.ownerId);
 	const ownerKey = `account:${normalizedOwnerId}`;
-	const ownerData = await env.ACCOUNTS.get(ownerKey);
+	const ownerData = await records.get(ownerKey);
 	if (ownerData) {
 		const parsedOwner = parseAccountRecord(ownerData);
 		if (!parsedOwner.ok) {
@@ -81,18 +83,17 @@ export async function deleteColumn<TColumnRoomId>(
 				failure: { kind: "schema", record: "account", result: parsedOwner },
 			};
 		}
-		const ownerAccount = parsedOwner.value;
-		ownerAccount.columnOrder = ownerAccount.columnOrder.filter(
-			(id) => id !== columnId,
-		);
-		await env.ACCOUNTS.put(ownerKey, JSON.stringify(ownerAccount));
+		await mutateAccountRecord(env, ownerKey, {
+			kind: "account-remove-column",
+			columnId,
+		});
 		await afterWrite?.("owner-account");
 	}
 
 	for (const sharedAccountId of meta.sharedWith) {
 		const normalizedSharedId = normalizeAccountId(sharedAccountId);
 		const sharedKey = `shared:${normalizedSharedId}`;
-		const sharedColumnsData = await env.ACCOUNTS.get(sharedKey);
+		const sharedColumnsData = await records.get(sharedKey);
 		if (!sharedColumnsData) continue;
 
 		const parsedSharedColumns = parseSharedColumnIndex(sharedColumnsData);
@@ -106,44 +107,45 @@ export async function deleteColumn<TColumnRoomId>(
 				},
 			};
 		}
-		const sharedColumns = parsedSharedColumns.value;
-		const updated = sharedColumns.filter((id) => id !== columnId);
-		await env.ACCOUNTS.put(sharedKey, JSON.stringify(updated));
+		await mutateAccountRecord(env, sharedKey, { kind: "shared-remove", columnId });
 		await afterWrite?.(`shared-account:${normalizedSharedId}`);
 	}
 
 	if (meta.publicId) {
-		await env.ACCOUNTS.delete(`public:${meta.publicId}`);
+		await releasePublicId(env, meta.publicId, columnId);
 		await afterWrite?.("public-mapping");
 	}
 
-	await stub.fetch(
+	const shareResponse = await stub.fetch(
 		new Request("http://do/share", {
 			method: "PUT",
 			body: JSON.stringify({ sharedWith: [] }),
 		}),
 	);
+	if (!shareResponse.ok) {
+		throw new Error(`Failed to clear column shares: ${shareResponse.status}`);
+	}
 	await afterWrite?.("column-shares");
 
-	await stub.fetch(
+	const publicResponse = await stub.fetch(
 		new Request("http://do/public", {
 			method: "PUT",
 			body: JSON.stringify({ publicId: null }),
 		}),
 	);
+	if (!publicResponse.ok) {
+		throw new Error(`Failed to clear public column ID: ${publicResponse.status}`);
+	}
 	await afterWrite?.("column-public");
 
 	const deletedAt = now();
 	const trashKey = `trash:${normalizedOwnerId}`;
-	const trashRaw = await env.ACCOUNTS.get(trashKey);
-	const trash = parseDeletedColumnRecords(trashRaw).filter(
-		(entry) => deletedAt - entry.deletedAt < TRASH_RETENTION_MS,
-	);
-	const updatedTrash = [
-		{ columnId, deletedAt },
-		...trash.filter((entry) => entry.columnId !== columnId),
-	];
-	await env.ACCOUNTS.put(trashKey, JSON.stringify(updatedTrash));
+	await mutateAccountRecord(env, trashKey, {
+		kind: "trash-upsert",
+		columnId,
+		deletedAt,
+		retentionMs: TRASH_RETENTION_MS,
+	});
 	await afterWrite?.("trash");
 
 	return {

@@ -1,5 +1,6 @@
 import { normalizeAccountId } from "../../lib/account";
 import { isColumnOwner } from "../../lib/column-access";
+import { accountRecordStore, mutateAccountRecord } from "../account-record-store";
 import type { ColumnMeta } from "../../types/account";
 import {
 	parseAccountRecord,
@@ -40,10 +41,11 @@ export async function restoreColumn<TColumnRoomId>(
 	input: RestoreColumnInput<TColumnRoomId>,
 ): Promise<ColumnLifecycleResult<RestoreColumnOutput>> {
 	const { env, columnId, accountId, afterWrite } = input;
+	const records = accountRecordStore(env);
 	const now = input.now ?? Date.now;
 	const normalizedAccountId = normalizeAccountId(accountId);
 	const accountKey = `account:${normalizedAccountId}`;
-	const accountData = await env.ACCOUNTS.get(accountKey);
+	const accountData = await records.get(accountKey);
 	if (!accountData) return lifecycleNotFound("Account not found");
 
 	const parsedAccount = parseAccountRecord(accountData);
@@ -55,7 +57,7 @@ export async function restoreColumn<TColumnRoomId>(
 	}
 	const account = parsedAccount.value;
 	const trashKey = `trash:${normalizedAccountId}`;
-	const trashRaw = await env.ACCOUNTS.get(trashKey);
+	const trashRaw = await records.get(trashKey);
 	const trash = parseDeletedColumnRecords(trashRaw);
 	const entry = trash.find((item) => item.columnId === columnId);
 
@@ -105,13 +107,14 @@ export async function restoreColumn<TColumnRoomId>(
 	}
 
 	if (!account.columnOrder.includes(columnId)) {
-		account.columnOrder.push(columnId);
-		await env.ACCOUNTS.put(accountKey, JSON.stringify(account));
+		await mutateAccountRecord(env, accountKey, {
+			kind: "account-add-column",
+			columnId,
+		});
 		await afterWrite?.("owner-account");
 	}
 
-	const updatedTrash = trash.filter((item) => item.columnId !== columnId);
-	await env.ACCOUNTS.put(trashKey, JSON.stringify(updatedTrash));
+	await mutateAccountRecord(env, trashKey, { kind: "trash-remove", columnId });
 	await afterWrite?.("trash");
 
 	return { ok: true, value: { success: true, column: meta } };

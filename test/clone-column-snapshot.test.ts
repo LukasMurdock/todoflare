@@ -25,10 +25,11 @@ function bindings(importStatus = 200) {
 	const put = vi.fn(async () => undefined);
 	const fetch = vi.fn(async () => new Response(null, { status: importStatus }));
 	return {
-		env: {
-			ACCOUNTS: {
-				get: vi.fn(async () => JSON.stringify(account)),
-				put,
+			env: {
+				ACCOUNTS: {
+					get: vi.fn(async () => JSON.stringify(account)),
+					put,
+					delete: vi.fn(async () => undefined),
 			},
 			COLUMN_ROOM: {
 				idFromName: (id: string) => id,
@@ -51,7 +52,10 @@ describe("cloneColumnSnapshot", () => {
 			now: () => 2,
 		});
 		expect(result).toEqual({ ok: false, code: "column_import_failed" });
-		expect(failed.put).not.toHaveBeenCalled();
+		expect(failed.put).toHaveBeenCalledWith(
+			"column-registry:new-column",
+			expect.any(String),
+		);
 
 		const successful = bindings();
 		const writes: string[] = [];

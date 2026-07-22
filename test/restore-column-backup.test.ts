@@ -66,12 +66,13 @@ function bindings(importStatus: number) {
 			},
 		},
 		put,
+		records,
 	};
 }
 
 describe("restoreColumnBackup", () => {
 	it("does not commit KV projections when the DO import fails", async () => {
-		const { env, put } = bindings(500);
+		const { env, records } = bindings(500);
 		const result = await restoreColumnBackup({
 			env,
 			columnId,
@@ -79,7 +80,8 @@ describe("restoreColumnBackup", () => {
 			createPreRestoreBackup: async () => ({ key: "pre-backup" }),
 		});
 		expect(result).toEqual({ ok: false, code: "restore_failed" });
-		expect(put).not.toHaveBeenCalled();
+		expect(records.has("public:AbCd1234")).toBe(false);
+		expect(records.get("account:1111222233334444")).toBeDefined();
 	});
 
 	it("repairs owner, collaborator, and public projections after import", async () => {

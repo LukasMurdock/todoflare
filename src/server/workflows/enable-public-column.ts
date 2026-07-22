@@ -4,6 +4,7 @@ import {
 } from "../../lib/account";
 import { isColumnOwner } from "../../lib/column-access";
 import { parseColumnMetaRecord } from "../persistence-records";
+import { claimPublicId } from "../public-id-registry";
 import {
 	type ColumnLifecycleBindings,
 	type ColumnLifecycleResult,
@@ -66,12 +67,12 @@ export async function enablePublicColumn<TColumnRoomId>(
 		meta.publicId ??
 		(await allocateGeneratedId({
 			createId: createPublicId,
-			isInUse: async (candidate) => {
-				const mappedColumnId = await env.ACCOUNTS.get(`public:${candidate}`);
-				return mappedColumnId !== null && mappedColumnId !== columnId;
-			},
+			isInUse: async (candidate) => !(await claimPublicId(env, candidate, columnId)),
 			maxAttempts: input.maxPublicIdAttempts,
 		}));
+	if (!(await claimPublicId(env, publicId, columnId))) {
+		throw new Error(`Public ID ${publicId} is already mapped to another column`);
+	}
 	if (meta.publicId === null) {
 		const publicResponse = await stub.fetch(
 			new Request("http://do/public", {
@@ -84,16 +85,7 @@ export async function enablePublicColumn<TColumnRoomId>(
 		}
 		await afterWrite?.("column-public");
 	}
-
-	const publicKey = `public:${publicId}`;
-	const mappedColumnId = await env.ACCOUNTS.get(publicKey);
-	if (mappedColumnId !== null && mappedColumnId !== columnId) {
-		throw new Error(`Public ID ${publicId} is already mapped to another column`);
-	}
-	if (mappedColumnId !== columnId) {
-		await env.ACCOUNTS.put(publicKey, columnId);
-		await afterWrite?.("public-mapping");
-	}
+	await afterWrite?.("public-mapping");
 
 	return { ok: true, value: { publicId } };
 }

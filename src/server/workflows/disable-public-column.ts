@@ -1,5 +1,6 @@
 import { isColumnOwner } from "../../lib/column-access";
 import { parseColumnMetaRecord } from "../persistence-records";
+import { releasePublicId } from "../public-id-registry";
 import {
 	type ColumnLifecycleBindings,
 	type ColumnLifecycleResult,
@@ -55,11 +56,8 @@ export async function disablePublicColumn<TColumnRoomId>(
 	}
 
 	if (meta.publicId) {
-		const publicKey = `public:${meta.publicId}`;
-		if ((await env.ACCOUNTS.get(publicKey)) === columnId) {
-			await env.ACCOUNTS.delete(publicKey);
-			await afterWrite?.("public-mapping");
-		}
+		await releasePublicId(env, meta.publicId, columnId);
+		await afterWrite?.("public-mapping");
 
 		const publicResponse = await stub.fetch(
 			new Request("http://do/public", {

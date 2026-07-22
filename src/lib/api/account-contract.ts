@@ -93,3 +93,43 @@ export const getAccountResponseSchema = z
 export const createAccountResponseSchema = z
 	.object({ account: accountContractSchema })
 	.strict();
+
+const successfulMutationSchema = z.object({ success: z.literal(true) });
+
+export const createColumnResponseSchema = z.object({
+	column: columnMetaContractSchema,
+});
+
+export const updateAccountColumnsResponseSchema = successfulMutationSchema;
+export const updateHiddenColumnsResponseSchema = successfulMutationSchema;
+
+export const deleteColumnResponseSchema = successfulMutationSchema.extend({
+	trashed: z.literal(true),
+	deleteAfter: timestampContractSchema,
+});
+
+export const restoreColumnResponseSchema = successfulMutationSchema.extend({
+	column: columnMetaContractSchema,
+});
+
+export const updateColumnSharingResponseSchema = successfulMutationSchema
+	.extend({
+		sharedWith: z.array(accountIdContractSchema).max(100),
+	})
+	.superRefine((response, context) => {
+		const normalizedIds = response.sharedWith.map(normalizeAccountId);
+		if (new Set(normalizedIds).size !== normalizedIds.length) {
+			context.addIssue({
+				code: "custom",
+				path: ["sharedWith"],
+				message: "Shared account IDs must be unique",
+			});
+		}
+	});
+
+export const enablePublicColumnResponseSchema = z.object({
+	publicId: z.string().regex(/^[0-9A-Za-z]{8}$/),
+	url: z.url(),
+});
+
+export const disablePublicColumnResponseSchema = successfulMutationSchema;

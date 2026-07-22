@@ -1,6 +1,9 @@
 import { normalizeAccountId } from "../../lib/account";
 import { normalizeAccountIdSet } from "../../lib/column-access";
 import type { ColumnMeta } from "../../types/account";
+import { accountRecordStore, mutateAccountRecord } from "../account-record-store";
+import { registerColumn } from "../lifecycle-journal";
+import { claimPublicId, releasePublicId } from "../public-id-registry";
 import {
 	parseAccountRecord,
 	parseColumnMetaRecord,
@@ -29,6 +32,14 @@ export interface RestoreColumnBackupBindings<TColumnRoomId> {
 		get(key: string): Promise<string | null>;
 		put(key: string, value: string): Promise<void>;
 		delete(key: string): Promise<void>;
+	};
+	ACCOUNT_COORDINATOR?: {
+		idFromName(name: string): TColumnRoomId;
+		get(id: TColumnRoomId): { fetch(request: Request): Promise<Response> };
+	};
+	PUBLIC_ID_COORDINATOR?: {
+		idFromName(name: string): TColumnRoomId;
+		get(id: TColumnRoomId): { fetch(request: Request): Promise<Response> };
 	};
 	COLUMN_ROOM: {
 		idFromName(name: string): TColumnRoomId;
@@ -79,6 +90,7 @@ export async function restoreColumnBackup<TColumnRoomId>(
 	input: RestoreColumnBackupInput<TColumnRoomId>,
 ): Promise<RestoreColumnBackupResult> {
 	const { env, columnId, payload, afterWrite } = input;
+	const records = accountRecordStore(env);
 	if (payload.schemaVersion !== 1 || payload.columnId !== columnId) {
 		return { ok: false, code: "invalid_backup_payload" };
 	}
@@ -105,6 +117,12 @@ export async function restoreColumnBackup<TColumnRoomId>(
 		if (!parsedCurrent.ok) return { ok: false, code: "column_meta_invalid" };
 		currentMeta = parsedCurrent.value;
 	}
+	if (
+		backupMeta.publicId &&
+		!(await claimPublicId(env, backupMeta.publicId, columnId))
+	) {
+		return { ok: false, code: "restore_failed" };
+	}
 
 	const imported = await stub.fetch(
 		new Request("http://do/import", {
@@ -112,18 +130,26 @@ export async function restoreColumnBackup<TColumnRoomId>(
 			body: JSON.stringify({ meta: backupMeta, yjs: payload.yjs }),
 		}),
 	);
-	if (!imported.ok) return { ok: false, code: "restore_failed" };
+	if (!imported.ok) {
+		if (backupMeta.publicId && currentMeta?.publicId !== backupMeta.publicId) {
+			await releasePublicId(env, backupMeta.publicId, columnId);
+		}
+		return { ok: false, code: "restore_failed" };
+	}
 	await afterWrite?.("column-import");
+	await registerColumn(env.ACCOUNTS, backupMeta);
 
 	const ownerId = normalizeAccountId(backupMeta.ownerId);
 	const ownerKey = `account:${ownerId}`;
-	const ownerRaw = await env.ACCOUNTS.get(ownerKey);
+	const ownerRaw = await records.get(ownerKey);
 	if (ownerRaw) {
 		const parsedOwner = parseAccountRecord(ownerRaw);
 		if (!parsedOwner.ok) return { ok: false, code: "account_invalid" };
 		if (!parsedOwner.value.columnOrder.includes(columnId)) {
-			parsedOwner.value.columnOrder.push(columnId);
-			await env.ACCOUNTS.put(ownerKey, JSON.stringify(parsedOwner.value));
+			await mutateAccountRecord(env, ownerKey, {
+				kind: "account-add-column",
+				columnId,
+			});
 			await afterWrite?.("owner-account");
 		}
 	}
@@ -132,23 +158,25 @@ export async function restoreColumnBackup<TColumnRoomId>(
 	const previousShared = normalizeAccountIdSet(currentMeta?.sharedWith ?? []);
 	for (const accountId of new Set([...desiredShared, ...previousShared])) {
 		const key = `shared:${accountId}`;
-		const parsedIndex = parseSharedColumnIndex(await env.ACCOUNTS.get(key));
+		const parsedIndex = parseSharedColumnIndex(await records.get(key));
 		if (!parsedIndex.ok) return { ok: false, code: "shared_index_invalid" };
 		const next = desiredShared.has(accountId)
 			? Array.from(new Set([...parsedIndex.value, columnId]))
 			: parsedIndex.value.filter((id) => id !== columnId);
 		if (JSON.stringify(next) !== JSON.stringify(parsedIndex.value)) {
-			await env.ACCOUNTS.put(key, JSON.stringify(next));
+			await mutateAccountRecord(env, key, {
+				kind: desiredShared.has(accountId) ? "shared-add" : "shared-remove",
+				columnId,
+			});
 			await afterWrite?.(`shared-account:${accountId}`);
 		}
 	}
 
 	if (currentMeta?.publicId && currentMeta.publicId !== backupMeta.publicId) {
-		await env.ACCOUNTS.delete(`public:${currentMeta.publicId}`);
+		await releasePublicId(env, currentMeta.publicId, columnId);
 		await afterWrite?.("old-public-mapping");
 	}
 	if (backupMeta.publicId) {
-		await env.ACCOUNTS.put(`public:${backupMeta.publicId}`, columnId);
 		await afterWrite?.("public-mapping");
 	}
 

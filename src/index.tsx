@@ -24,8 +24,20 @@ import {
 import { ColumnRoomSql } from "./durable-objects/column-room";
 import { IdempotencyCoordinatorSql } from "./durable-objects/idempotency-coordinator";
 import { RateLimitCoordinatorSql } from "./durable-objects/rate-limit-coordinator";
+import { AccountCoordinatorSql } from "./durable-objects/account-coordinator";
+import { PublicIdCoordinatorSql } from "./durable-objects/public-id-coordinator";
 import { registerAgentApi } from "./agent-api";
 import type { ApiErrorCode } from "./lib/api/errors";
+import {
+	createColumnResponseSchema,
+	deleteColumnResponseSchema,
+	disablePublicColumnResponseSchema,
+	enablePublicColumnResponseSchema,
+	restoreColumnResponseSchema,
+	updateAccountColumnsResponseSchema,
+	updateColumnSharingResponseSchema,
+	updateHiddenColumnsResponseSchema,
+} from "./lib/api/account-contract";
 import {
 	ACCOUNT_SCHEMA_VERSION,
 	COLUMN_META_SCHEMA_VERSION,
@@ -50,21 +62,48 @@ import {
 	restoreColumnBackup,
 	type ColumnBackupPayload,
 } from "./server/workflows/restore-column-backup";
+import {
+	accountRecordStore,
+	mutateAccountRecord,
+} from "./server/account-record-store";
+import {
+	beginLifecycleOperation,
+	completeLifecycleOperation,
+	registerColumn,
+	type LifecycleOperation,
+} from "./server/lifecycle-journal";
+import { reconcileColumnLifecycle } from "./server/workflows/reconcile-column-lifecycle";
+import { resolvePublicId } from "./server/public-id-registry";
 
 // Re-export Durable Objects for Cloudflare
-export { ColumnRoomSql, IdempotencyCoordinatorSql, RateLimitCoordinatorSql };
+export {
+	AccountCoordinatorSql,
+	ColumnRoomSql,
+	IdempotencyCoordinatorSql,
+	PublicIdCoordinatorSql,
+	RateLimitCoordinatorSql,
+};
 
 export type Bindings = {
 	ACCOUNTS: KVNamespace;
 	COLUMN_ROOM: DurableObjectNamespace;
 	IDEMPOTENCY_COORDINATOR: DurableObjectNamespace;
 	RATE_LIMIT_COORDINATOR: DurableObjectNamespace;
+	ACCOUNT_COORDINATOR: DurableObjectNamespace;
+	PUBLIC_ID_COORDINATOR: DurableObjectNamespace;
 	RATE_LIMIT_DISABLED?: string;
 	READ_ONLY_MODE?: string;
 	BACKUPS?: R2Bucket;
 	BACKUP_ADMIN_TOKEN?: string;
 	AUTO_BACKUP_ENABLED?: string;
 	BACKUP_MAX_COLUMNS?: string;
+	LIFECYCLE_METRICS?: {
+		writeDataPoint(event: {
+			blobs?: string[];
+			doubles?: number[];
+			indexes?: string[];
+		}): void;
+	};
 };
 
 const app = new OpenAPIHono<{ Bindings: Bindings }>();
@@ -77,6 +116,27 @@ const IDEMPOTENCY_CACHE_TTL_SECONDS = 24 * 60 * 60;
 const IDEMPOTENCY_PENDING_WAIT_MS = 1500;
 const IDEMPOTENCY_PENDING_POLL_MS = 50;
 const ACCOUNT_METADATA_CONCURRENCY = 6;
+
+async function runJournaledLifecycle<T extends { ok: boolean }>(
+	env: Bindings,
+	operation: LifecycleOperation,
+	handler: () => Promise<T>,
+): Promise<T> {
+	await beginLifecycleOperation(env.ACCOUNTS, operation);
+	try {
+		const result = await handler();
+		await completeLifecycleOperation(env.ACCOUNTS, operation.operationId);
+		return result;
+	} catch (error) {
+		console.error("Lifecycle operation retained for scheduled retry", {
+			operationId: operation.operationId,
+			kind: operation.kind,
+			columnId: operation.kind === "create" ? operation.meta.id : operation.columnId,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		throw error;
+	}
+}
 
 type ColumnMetadataFetchResult =
 	| { columnId: string; response: Response }
@@ -334,6 +394,29 @@ interface IdempotentWriteOptions {
 	scope: string;
 	accountId?: string | null;
 	requestFingerprintSource?: string;
+	successSchema?: z.ZodType;
+}
+
+function serverContractInvalidResponse(): Response {
+	return apiErrorResponse(
+		"server_contract_invalid",
+		"Mutation handler returned an invalid success response",
+		503,
+	);
+}
+
+async function validateSuccessfulWriteResponse(
+	response: Response,
+	schema?: z.ZodType,
+): Promise<Response> {
+	if (!response.ok || !schema) return response;
+	const body = await response
+		.clone()
+		.json()
+		.catch(() => null);
+	return schema.safeParse(body).success
+		? response
+		: serverContractInvalidResponse();
 }
 
 async function withIdempotentWrite(
@@ -343,7 +426,7 @@ async function withIdempotentWrite(
 ): Promise<Response> {
 	const idempotencyKey = parseIdempotencyKey(c.req.header(IDEMPOTENCY_HEADER));
 	if (!idempotencyKey) {
-		return handler();
+		return validateSuccessfulWriteResponse(await handler(), options.successSchema);
 	}
 
 	const accountScope =
@@ -371,14 +454,20 @@ async function withIdempotentWrite(
 	}
 	if (outcome.kind === "conflict") return idempotencyKeyConflictResponse();
 	if (outcome.kind === "completed") {
-		return toIdempotentReplayResponse(outcome.status, outcome.body);
+		return validateSuccessfulWriteResponse(
+			toIdempotentReplayResponse(outcome.status, outcome.body),
+			options.successSchema,
+		);
 	}
 	if (outcome.kind === "indeterminate") return idempotencyOutcomeUnknownResponse();
 	if (outcome.kind === "pending") {
 		try {
-			return (
+			const response =
 				(await waitForPendingIdempotentCompletion(stub, fingerprint)) ??
-				idempotencyRequestInProgressResponse()
+				idempotencyRequestInProgressResponse();
+			return validateSuccessfulWriteResponse(
+				response,
+				options.successSchema,
 			);
 		} catch (error) {
 			console.error("Idempotency coordinator unavailable while waiting", error);
@@ -387,7 +476,10 @@ async function withIdempotentWrite(
 	}
 
 	try {
-		const response = await handler();
+		const response = await validateSuccessfulWriteResponse(
+			await handler(),
+			options.successSchema,
+		);
 		const body = await response.clone().json().catch(() => undefined);
 		if (response.status < 500 && typeof body !== "undefined") {
 			await finishIdempotentRequest(stub, "complete", {
@@ -651,7 +743,7 @@ async function rebuildSharedIndexesForColumns(env: Bindings, columns: ColumnMeta
 	}
 
 	for (const [normalizedAccountId, expectedColumnsSet] of byAccount) {
-		const sharedColumnsData = await env.ACCOUNTS.get(`shared:${normalizedAccountId}`);
+		const sharedColumnsData = await accountRecordStore(env).get(`shared:${normalizedAccountId}`);
 		const parsedExistingColumns = parseSharedColumnIndex(sharedColumnsData);
 		if (!parsedExistingColumns.ok) {
 			throw new Error(
@@ -660,9 +752,14 @@ async function rebuildSharedIndexesForColumns(env: Bindings, columns: ColumnMeta
 		}
 		const existingColumns = parsedExistingColumns.value;
 
-		const expectedColumns = Array.from(expectedColumnsSet);
-		const merged = Array.from(new Set([...existingColumns, ...expectedColumns]));
-		await env.ACCOUNTS.put(`shared:${normalizedAccountId}`, JSON.stringify(merged));
+		for (const columnId of expectedColumnsSet) {
+			if (!existingColumns.includes(columnId)) {
+				await mutateAccountRecord(env, `shared:${normalizedAccountId}`, {
+					kind: "shared-add",
+					columnId,
+				});
+			}
+		}
 	}
 }
 
@@ -725,7 +822,7 @@ async function collectColumnIdsForBackup(env: Bindings): Promise<string[]> {
 		});
 
 		for (const key of page.keys) {
-			const raw = await env.ACCOUNTS.get(key.name);
+			const raw = await accountRecordStore(env).get(key.name);
 			if (!raw) continue;
 
 			const parsedAccount = parseAccountRecord(raw);
@@ -804,7 +901,7 @@ app.post("/api/account", async (c) => {
 	const accountId = await allocateGeneratedId({
 		createId: generateAccountId,
 		isInUse: async (candidate) =>
-			(await c.env.ACCOUNTS.get(`account:${normalizeAccountId(candidate)}`)) !== null,
+			(await accountRecordStore(c.env).get(`account:${normalizeAccountId(candidate)}`)) !== null,
 	});
 	const normalizedId = normalizeAccountId(accountId);
 
@@ -816,7 +913,7 @@ app.post("/api/account", async (c) => {
 		createdAt: Date.now(),
 	};
 
-	await c.env.ACCOUNTS.put(`account:${normalizedId}`, JSON.stringify(account));
+	await accountRecordStore(c.env).put(`account:${normalizedId}`, JSON.stringify(account));
 
 	return c.json({ account });
 });
@@ -847,7 +944,7 @@ app.get("/api/account", async (c) => {
 	}
 
 	const normalizedId = normalizeAccountId(accountId);
-	const accountData = await c.env.ACCOUNTS.get(`account:${normalizedId}`);
+	const accountData = await accountRecordStore(c.env).get(`account:${normalizedId}`);
 
 	if (!accountData) {
 		return apiErrorResponse("not_found", "Account not found", 404);
@@ -893,7 +990,7 @@ app.get("/api/account", async (c) => {
 	}
 
 	// Get shared columns (columns where this account is in sharedWith)
-	const sharedColumnsData = await c.env.ACCOUNTS.get(
+	const sharedColumnsData = await accountRecordStore(c.env).get(
 		`shared:${normalizedId}`,
 	);
 	const parsedSharedColumnIds = parseSharedColumnIndex(sharedColumnsData);
@@ -940,22 +1037,35 @@ app.get("/api/account", async (c) => {
 		!isReadOnlyMode(c) &&
 		JSON.stringify(reconciledSharedColumnIds) !== JSON.stringify(sharedColumnIds)
 	) {
-		await c.env.ACCOUNTS.put(
-			`shared:${normalizedId}`,
-			JSON.stringify(reconciledSharedColumnIds),
-		);
+		const reconciled = new Set(reconciledSharedColumnIds);
+		for (const columnId of sharedColumnIds) {
+			if (!reconciled.has(columnId)) {
+				await mutateAccountRecord(c.env, `shared:${normalizedId}`, {
+					kind: "shared-remove",
+					columnId,
+				});
+			}
+		}
 	}
 
 	const now = Date.now();
 	const trashKey = `trash:${normalizedId}`;
-	const deletedColumnsRaw = await c.env.ACCOUNTS.get(trashKey);
+	const deletedColumnsRaw = await accountRecordStore(c.env).get(trashKey);
 	const deletedColumns = parseDeletedColumnRecords(deletedColumnsRaw)
 		.filter((entry) => now - entry.deletedAt < TRASH_RETENTION_MS)
 		.sort((a, b) => b.deletedAt - a.deletedAt);
 
 	const originalDeleted = parseDeletedColumnRecords(deletedColumnsRaw);
 	if (deletedColumns.length !== originalDeleted.length) {
-		await c.env.ACCOUNTS.put(trashKey, JSON.stringify(deletedColumns));
+		const retained = new Set(deletedColumns.map((entry) => entry.columnId));
+		for (const entry of originalDeleted) {
+			if (!retained.has(entry.columnId)) {
+				await mutateAccountRecord(c.env, trashKey, {
+					kind: "trash-remove",
+					columnId: entry.columnId,
+				});
+			}
+		}
 	}
 
 	return c.json(
@@ -980,10 +1090,14 @@ app.put("/api/account/columns", async (c) => {
 
 	return withIdempotentWrite(
 		c,
-		{ scope: `account:${normalizeAccountId(accountId)}:columns`, accountId },
+		{
+			scope: `account:${normalizeAccountId(accountId)}:columns`,
+			accountId,
+			successSchema: updateAccountColumnsResponseSchema,
+		},
 		async () => {
 			const normalizedId = normalizeAccountId(accountId);
-			const accountData = await c.env.ACCOUNTS.get(`account:${normalizedId}`);
+			const accountData = await accountRecordStore(c.env).get(`account:${normalizedId}`);
 
 			if (!accountData) {
 				return apiErrorResponse("not_found", "Account not found", 404);
@@ -993,9 +1107,10 @@ app.put("/api/account/columns", async (c) => {
 			if (!parsedAccount.ok) {
 				return schemaErrorResponse("account", parsedAccount);
 			}
-			const account = parsedAccount.value;
-			account.columnOrder = body.data.columnOrder;
-			await c.env.ACCOUNTS.put(`account:${normalizedId}`, JSON.stringify(account));
+			await mutateAccountRecord(c.env, `account:${normalizedId}`, {
+				kind: "account-reorder",
+				columnOrder: body.data.columnOrder,
+			});
 
 			return c.json({ success: true });
 		},
@@ -1017,10 +1132,14 @@ app.put("/api/account/hidden", async (c) => {
 
 	return withIdempotentWrite(
 		c,
-		{ scope: `account:${normalizeAccountId(accountId)}:hidden`, accountId },
+		{
+			scope: `account:${normalizeAccountId(accountId)}:hidden`,
+			accountId,
+			successSchema: updateHiddenColumnsResponseSchema,
+		},
 		async () => {
 			const normalizedId = normalizeAccountId(accountId);
-			const accountData = await c.env.ACCOUNTS.get(`account:${normalizedId}`);
+			const accountData = await accountRecordStore(c.env).get(`account:${normalizedId}`);
 
 			if (!accountData) {
 				return apiErrorResponse("not_found", "Account not found", 404);
@@ -1030,9 +1149,10 @@ app.put("/api/account/hidden", async (c) => {
 			if (!parsedAccount.ok) {
 				return schemaErrorResponse("account", parsedAccount);
 			}
-			const account = parsedAccount.value;
-			account.hiddenSharedColumns = body.data.hiddenSharedColumns;
-			await c.env.ACCOUNTS.put(`account:${normalizedId}`, JSON.stringify(account));
+			await mutateAccountRecord(c.env, `account:${normalizedId}`, {
+				kind: "account-set-hidden",
+				hiddenSharedColumns: body.data.hiddenSharedColumns,
+			});
 
 			return c.json({ success: true });
 		},
@@ -1047,7 +1167,7 @@ app.get("/api/account/export", async (c) => {
 	if (!auth.ok) return auth.response;
 	const accountId = auth.accountId;
 	const normalizedId = normalizeAccountId(accountId);
-	const accountData = await c.env.ACCOUNTS.get(`account:${normalizedId}`);
+	const accountData = await accountRecordStore(c.env).get(`account:${normalizedId}`);
 	if (!accountData) {
 		return apiErrorResponse("not_found", "Account not found", 404);
 	}
@@ -1110,7 +1230,7 @@ app.post("/api/account/import", async (c) => {
 		{ scope: `account:${normalizeAccountId(accountId)}:import`, accountId },
 		async () => {
 			const normalizedId = normalizeAccountId(accountId);
-			const accountData = await c.env.ACCOUNTS.get(`account:${normalizedId}`);
+			const accountData = await accountRecordStore(c.env).get(`account:${normalizedId}`);
 			if (!accountData) {
 				return apiErrorResponse("not_found", "Account not found", 404);
 			}
@@ -1167,9 +1287,10 @@ app.post("/api/column", async (c) => {
 				: `account:${normalizedAccountId}:column:create`,
 			accountId,
 			requestFingerprintSource: JSON.stringify(body.data),
+			successSchema: createColumnResponseSchema,
 		},
 		async () => {
-			const accountData = await c.env.ACCOUNTS.get(
+			const accountData = await accountRecordStore(c.env).get(
 				`account:${normalizedAccountId}`,
 			);
 
@@ -1219,31 +1340,26 @@ app.post("/api/column", async (c) => {
 				}
 
 				if (!alreadyInOrder) {
-					if (account.columnOrder.length >= 100) {
-						return apiErrorResponse(
-							"invalid_request",
-							"Column limit reached (100)",
-							400,
-						);
+					try {
+						await mutateAccountRecord(c.env, `account:${normalizedAccountId}`, {
+							kind: "account-add-column",
+							columnId,
+							maxColumns: 100,
+						});
+					} catch (error) {
+						if (error instanceof Error && error.message === "Column limit reached") {
+							return apiErrorResponse(
+								"invalid_request",
+								"Column limit reached (100)",
+								400,
+							);
+						}
+						throw error;
 					}
-
-					account.columnOrder.push(columnId);
-					await c.env.ACCOUNTS.put(
-						`account:${normalizedAccountId}`,
-						JSON.stringify(account),
-					);
 				}
+				await registerColumn(c.env.ACCOUNTS, existingMeta);
 
 				return c.json({ column: existingMeta });
-			}
-
-			// Check column limit (100 per account)
-			if (!alreadyInOrder && account.columnOrder.length >= 100) {
-				return apiErrorResponse(
-					"invalid_request",
-					"Column limit reached (100)",
-					400,
-				);
 			}
 
 			const meta: ColumnMeta = {
@@ -1254,6 +1370,34 @@ app.post("/api/column", async (c) => {
 				publicId: null,
 				createdAt: Date.now(),
 			};
+			const createOperation: LifecycleOperation = {
+				kind: "create",
+				operationId: crypto.randomUUID(),
+				createdAt: Date.now(),
+				meta,
+			};
+			await beginLifecycleOperation(c.env.ACCOUNTS, createOperation);
+			await registerColumn(c.env.ACCOUNTS, meta);
+			if (!alreadyInOrder) {
+				try {
+					await mutateAccountRecord(c.env, `account:${normalizedAccountId}`, {
+						kind: "account-add-column",
+						columnId,
+						maxColumns: 100,
+					});
+				} catch (error) {
+					await completeLifecycleOperation(c.env.ACCOUNTS, createOperation.operationId);
+					await c.env.ACCOUNTS.delete(`column-registry:${columnId}`);
+					if (error instanceof Error && error.message === "Column limit reached") {
+						return apiErrorResponse(
+							"invalid_request",
+							"Column limit reached (100)",
+							400,
+						);
+					}
+					throw error;
+				}
+			}
 
 			// Initialize the Durable Object
 			try {
@@ -1281,14 +1425,7 @@ app.post("/api/column", async (c) => {
 				throw err;
 			}
 
-			if (!alreadyInOrder) {
-				// Add to account's column order
-				account.columnOrder.push(columnId);
-				await c.env.ACCOUNTS.put(
-					`account:${normalizedAccountId}`,
-					JSON.stringify(account),
-				);
-			}
+			await completeLifecycleOperation(c.env.ACCOUNTS, createOperation.operationId);
 
 			return c.json({ column: meta });
 		},
@@ -1314,9 +1451,20 @@ app.delete("/api/column/:id", async (c) => {
 		{
 			scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:delete`,
 			accountId,
+			successSchema: deleteColumnResponseSchema,
 		},
 		async () => {
-			const result = await deleteColumn({ env: c.env, columnId, accountId });
+			const result = await runJournaledLifecycle(
+				c.env,
+				{
+					kind: "delete",
+					operationId: crypto.randomUUID(),
+					createdAt: Date.now(),
+					columnId,
+					accountId,
+				},
+				() => deleteColumn({ env: c.env, columnId, accountId }),
+			);
 			return result.ok
 				? c.json(result.value)
 				: columnLifecycleFailureResponse(result.failure, accountId);
@@ -1343,9 +1491,20 @@ app.post("/api/column/:id/restore", async (c) => {
 		{
 			scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:restore`,
 			accountId,
+			successSchema: restoreColumnResponseSchema,
 		},
 		async () => {
-			const result = await restoreColumn({ env: c.env, columnId, accountId });
+			const result = await runJournaledLifecycle(
+				c.env,
+				{
+					kind: "restore",
+					operationId: crypto.randomUUID(),
+					createdAt: Date.now(),
+					columnId,
+					accountId,
+				},
+				() => restoreColumn({ env: c.env, columnId, accountId }),
+			);
 			return result.ok
 				? c.json(result.value)
 				: columnLifecycleFailureResponse(result.failure, accountId);
@@ -1441,14 +1600,27 @@ app.post("/api/column/:id/share", async (c) => {
 			scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:share:${normalizeAccountId(targetAccountId)}`,
 			accountId,
 			requestFingerprintSource: JSON.stringify({ targetAccountId }),
+			successSchema: updateColumnSharingResponseSchema,
 		},
 		async () => {
-			const result = await shareColumn({
-				env: c.env,
-				columnId,
-				accountId,
-				targetAccountId,
-			});
+			const result = await runJournaledLifecycle(
+				c.env,
+				{
+					kind: "share",
+					operationId: crypto.randomUUID(),
+					createdAt: Date.now(),
+					columnId,
+					accountId,
+					targetAccountId,
+				},
+				() =>
+					shareColumn({
+						env: c.env,
+						columnId,
+						accountId,
+						targetAccountId,
+					}),
+			);
 			return result.ok
 				? c.json(result.value)
 				: columnLifecycleFailureResponse(result.failure, accountId);
@@ -1478,14 +1650,27 @@ app.delete("/api/column/:id/share", async (c) => {
 		{
 			scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:revoke:${normalizeAccountId(targetAccountId)}`,
 			accountId,
+			successSchema: updateColumnSharingResponseSchema,
 		},
 		async () => {
-			const result = await revokeColumnShare({
-				env: c.env,
-				columnId,
-				accountId,
-				targetAccountId,
-			});
+			const result = await runJournaledLifecycle(
+				c.env,
+				{
+					kind: "revoke",
+					operationId: crypto.randomUUID(),
+					createdAt: Date.now(),
+					columnId,
+					accountId,
+					targetAccountId,
+				},
+				() =>
+					revokeColumnShare({
+						env: c.env,
+						columnId,
+						accountId,
+						targetAccountId,
+					}),
+			);
 			return result.ok
 				? c.json(result.value)
 				: columnLifecycleFailureResponse(result.failure, accountId);
@@ -1516,13 +1701,20 @@ app.post("/api/column/:id/public", async (c) => {
 		{
 			scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:public:enable`,
 			accountId,
+			successSchema: enablePublicColumnResponseSchema,
 		},
 		async () => {
-			const result = await enablePublicColumn({
-				env: c.env,
-				columnId,
-				accountId,
-			});
+			const result = await runJournaledLifecycle(
+				c.env,
+				{
+					kind: "enable-public",
+					operationId: crypto.randomUUID(),
+					createdAt: Date.now(),
+					columnId,
+					accountId,
+				},
+				() => enablePublicColumn({ env: c.env, columnId, accountId }),
+			);
 			if (!result.ok) {
 				return columnLifecycleFailureResponse(result.failure, accountId);
 			}
@@ -1554,13 +1746,20 @@ app.delete("/api/column/:id/public", async (c) => {
 		{
 			scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:public:disable`,
 			accountId,
+			successSchema: disablePublicColumnResponseSchema,
 		},
 		async () => {
-			const result = await disablePublicColumn({
-				env: c.env,
-				columnId,
-				accountId,
-			});
+			const result = await runJournaledLifecycle(
+				c.env,
+				{
+					kind: "disable-public",
+					operationId: crypto.randomUUID(),
+					createdAt: Date.now(),
+					columnId,
+					accountId,
+				},
+				() => disablePublicColumn({ env: c.env, columnId, accountId }),
+			);
 			return result.ok
 				? c.json(result.value)
 				: columnLifecycleFailureResponse(result.failure, accountId);
@@ -1593,7 +1792,7 @@ app.get("/api/p/:publicId", async (c) => {
 		}
 	}
 
-	const columnId = await c.env.ACCOUNTS.get(`public:${publicId}`);
+	const columnId = await resolvePublicId(c.env, publicId);
 	if (!columnId) {
 		return c.json({ error: "Public link not found" }, 404);
 	}
@@ -1629,7 +1828,7 @@ app.get("/api/p/:publicId/ws", async (c) => {
 	if (!request.ok) return request.response;
 	const publicId = request.data.publicId;
 
-	const columnId = await c.env.ACCOUNTS.get(`public:${publicId}`);
+	const columnId = await resolvePublicId(c.env, publicId);
 	if (!columnId) {
 		return c.json({ error: "Public link not found" }, 404);
 	}
@@ -1651,7 +1850,7 @@ app.post("/api/admin/backups/account/restore", async (c) => {
 	const accountId = body.data.accountId;
 
 	const normalizedId = normalizeAccountId(accountId);
-	const accountData = await c.env.ACCOUNTS.get(`account:${normalizedId}`);
+	const accountData = await accountRecordStore(c.env).get(`account:${normalizedId}`);
 	if (!accountData) {
 		return apiErrorResponse("not_found", "Account not found", 404);
 	}
@@ -1907,6 +2106,33 @@ export default {
 	) => {
 		executionCtx.waitUntil(
 			(async () => {
+				const reconciliationResult = await reconcileColumnLifecycle(env);
+				env.LIFECYCLE_METRICS?.writeDataPoint({
+					indexes: ["scheduled-reconciliation"],
+					blobs: [controller.cron],
+					doubles: [
+						reconciliationResult.registryScanned,
+						reconciliationResult.operationsRetried,
+						reconciliationResult.operationsCompleted,
+						reconciliationResult.operationsFailed,
+						reconciliationResult.columnsInitialized,
+						reconciliationResult.ownerMembershipRepaired,
+						reconciliationResult.ownerMembershipRemoved,
+						reconciliationResult.sharedMembershipRepaired,
+						reconciliationResult.sharedMembershipRemoved,
+						reconciliationResult.publicMappingsRepaired,
+						reconciliationResult.publicMappingsRemoved,
+						reconciliationResult.publicMappingConflicts,
+						reconciliationResult.invalidRecords,
+					],
+				});
+				console.log(
+					JSON.stringify({
+						event: "scheduled_column_lifecycle_reconciliation",
+						cron: controller.cron,
+						...reconciliationResult,
+					}),
+				);
 				const purgeResult = await purgeExpiredTrashedColumns({ env });
 				console.log(
 					JSON.stringify({

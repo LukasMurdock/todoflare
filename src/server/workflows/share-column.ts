@@ -1,5 +1,6 @@
 import { displayAccountId, normalizeAccountId } from "../../lib/account";
 import { hasColumnAccess, isColumnOwner } from "../../lib/column-access";
+import { accountRecordStore, mutateAccountRecord } from "../account-record-store";
 import {
 	parseAccountRecord,
 	parseColumnMetaRecord,
@@ -36,8 +37,9 @@ export async function shareColumn<TColumnRoomId>(
 	input: ShareColumnInput<TColumnRoomId>,
 ): Promise<ColumnLifecycleResult<ShareColumnOutput>> {
 	const { env, columnId, accountId, targetAccountId, afterWrite } = input;
+	const records = accountRecordStore(env);
 	const normalizedTargetId = normalizeAccountId(targetAccountId);
-	const targetData = await env.ACCOUNTS.get(`account:${normalizedTargetId}`);
+	const targetData = await records.get(`account:${normalizedTargetId}`);
 	if (!targetData) return lifecycleNotFound("Target account not found");
 
 	const parsedTarget = parseAccountRecord(targetData);
@@ -84,7 +86,7 @@ export async function shareColumn<TColumnRoomId>(
 	}
 
 	const sharedKey = `shared:${normalizedTargetId}`;
-	const sharedColumnsData = await env.ACCOUNTS.get(sharedKey);
+	const sharedColumnsData = await records.get(sharedKey);
 	const parsedSharedColumns = parseSharedColumnIndex(sharedColumnsData);
 	if (!parsedSharedColumns.ok) {
 		return {
@@ -97,11 +99,8 @@ export async function shareColumn<TColumnRoomId>(
 		};
 	}
 	const sharedColumns = parsedSharedColumns.value;
-	if (!sharedColumns.includes(columnId)) {
-		sharedColumns.push(columnId);
-		await env.ACCOUNTS.put(sharedKey, JSON.stringify(sharedColumns));
-		await afterWrite?.("shared-account");
-	}
+	await mutateAccountRecord(env, sharedKey, { kind: "shared-add", columnId });
+	if (!sharedColumns.includes(columnId)) await afterWrite?.("shared-account");
 
 	return { ok: true, value: { success: true, sharedWith: meta.sharedWith } };
 }

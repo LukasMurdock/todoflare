@@ -36,6 +36,12 @@
 			"id": "b2a26a39720746e2b67d8a07ee1a2d68",
 		},
 	],
+	"analytics_engine_datasets": [
+		{
+			"binding": "LIFECYCLE_METRICS",
+			"dataset": "todoflare_lifecycle_invariants",
+		},
+	],
 	"r2_buckets": [
 		{
 			"binding": "BACKUPS",
@@ -56,6 +62,14 @@
 				"name": "RATE_LIMIT_COORDINATOR",
 				"class_name": "RateLimitCoordinatorSql",
 			},
+			{
+				"name": "ACCOUNT_COORDINATOR",
+				"class_name": "AccountCoordinatorSql",
+			},
+			{
+				"name": "PUBLIC_ID_COORDINATOR",
+				"class_name": "PublicIdCoordinatorSql",
+			},
 		],
 	},
 	"migrations": [
@@ -66,6 +80,14 @@
 		{
 			"tag": "v2",
 			"new_sqlite_classes": ["IdempotencyCoordinatorSql", "RateLimitCoordinatorSql"],
+		},
+		{
+			"tag": "v3",
+			"new_sqlite_classes": ["AccountCoordinatorSql"],
+		},
+		{
+			"tag": "v4",
+			"new_sqlite_classes": ["PublicIdCoordinatorSql"],
 		},
 	],
 	"triggers": {

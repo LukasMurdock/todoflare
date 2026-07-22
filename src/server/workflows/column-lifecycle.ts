@@ -11,6 +11,14 @@ export interface ColumnLifecycleBindings<TColumnRoomId> {
 		idFromName(name: string): TColumnRoomId;
 		get(id: TColumnRoomId): { fetch(request: Request): Promise<Response> };
 	};
+	ACCOUNT_COORDINATOR?: {
+		idFromName(name: string): TColumnRoomId;
+		get(id: TColumnRoomId): { fetch(request: Request): Promise<Response> };
+	};
+	PUBLIC_ID_COORDINATOR?: {
+		idFromName(name: string): TColumnRoomId;
+		get(id: TColumnRoomId): { fetch(request: Request): Promise<Response> };
+	};
 }
 
 export type ColumnLifecycleWriteObserver<TBoundary extends string> = (

@@ -1,5 +1,15 @@
-import { validateAccountId } from "../account";
-import type { ColumnMeta, PublicLinkResponse } from "../../types/account";
+import { normalizeAccountId, validateAccountId } from "../account";
+import type { ZodType } from "zod";
+import {
+	createColumnResponseSchema,
+	deleteColumnResponseSchema,
+	disablePublicColumnResponseSchema,
+	enablePublicColumnResponseSchema,
+	restoreColumnResponseSchema,
+	updateAccountColumnsResponseSchema,
+	updateColumnSharingResponseSchema,
+	updateHiddenColumnsResponseSchema,
+} from "../api/account-contract";
 import type {
 	AccountCommandEffect,
 	QueuedMutation,
@@ -23,18 +33,46 @@ interface AccountCommandExecutorOptions {
 	fetch?: typeof globalThis.fetch;
 }
 
-function asString(value: unknown): string | null {
-	return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function asStringArray(value: unknown): string[] | null {
-	if (!Array.isArray(value)) return null;
-	if (!value.every((item) => typeof item === "string")) return null;
-	return value;
-}
-
 function invalidPayload(error: string): AccountCommandExecutionResult {
 	return { kind: "drop", reason: "validation_failed", error };
+}
+
+function invalidSuccessfulResponse(
+	operation: QueuedMutation["opType"],
+): AccountCommandExecutionResult {
+	return {
+		kind: "retry",
+		error: `Invalid successful response for ${operation}`,
+	};
+}
+
+async function parseSuccessfulResponse<T>(
+	response: Response,
+	schema: ZodType<T>,
+	operation: QueuedMutation["opType"],
+): Promise<
+	| { ok: true; data: T }
+	| { ok: false; result: AccountCommandExecutionResult }
+> {
+	const body = await response
+		.clone()
+		.json()
+		.catch(() => null);
+	const parsed = schema.safeParse(body);
+	return parsed.success
+		? { ok: true, data: parsed.data }
+		: { ok: false, result: invalidSuccessfulResponse(operation) };
+}
+
+function isExpectedColumn(
+	column: { id: string; ownerId: string },
+	columnId: string,
+	accountId: string,
+): boolean {
+	return (
+		column.id === columnId &&
+		normalizeAccountId(column.ownerId) === normalizeAccountId(accountId)
+	);
 }
 
 async function classifyResponse(
@@ -71,89 +109,122 @@ export function createAccountCommandExecutor(
 					});
 					if (!response.ok) return classifyResponse(response);
 
-					const payload = (await response.json()) as { column?: ColumnMeta };
-					const effects =
-						payload.column?.id === columnId
-							? ([
-									{
-										type: "column.created",
-										queueId: mutation.queueId,
-										column: payload.column,
-									},
-								] satisfies AccountCommandEffect[])
-							: [];
-					return { kind: "ack", effects };
+					const parsed = await parseSuccessfulResponse(
+						response,
+						createColumnResponseSchema,
+						mutation.opType,
+					);
+					if (!parsed.ok) return parsed.result;
+					if (!isExpectedColumn(parsed.data.column, columnId, activeAccountId)) {
+						return invalidSuccessfulResponse(mutation.opType);
+					}
+					return {
+						kind: "ack",
+						effects: [
+							{
+								type: "column.created",
+								queueId: mutation.queueId,
+								column: parsed.data.column,
+							},
+						],
+					};
 				}
 
 				case "column.reorder": {
 					const { columnOrder } = mutation.payload;
-					return classifyResponse(
-						await fetchRequest(
-							"/api/account/columns",
-							{
-								method: "PUT",
-								signal,
-								headers: {
-									"Content-Type": "application/json",
-									Authorization: authorization,
-									"X-Idempotency-Key": mutation.idempotencyKey,
-								},
-								body: JSON.stringify({ columnOrder }),
+					const response = await fetchRequest(
+						"/api/account/columns",
+						{
+							method: "PUT",
+							signal,
+							headers: {
+								"Content-Type": "application/json",
+								Authorization: authorization,
+								"X-Idempotency-Key": mutation.idempotencyKey,
 							},
-						),
+							body: JSON.stringify({ columnOrder }),
+						},
 					);
+					if (!response.ok) return classifyResponse(response);
+					const parsed = await parseSuccessfulResponse(
+						response,
+						updateAccountColumnsResponseSchema,
+						mutation.opType,
+					);
+					return parsed.ok ? { kind: "ack" } : parsed.result;
 				}
 
 				case "column.hide_shared": {
 					const { hiddenSharedColumns } = mutation.payload;
-					return classifyResponse(
-						await fetchRequest(
-							"/api/account/hidden",
-							{
-								method: "PUT",
-								signal,
-									headers: {
-										"Content-Type": "application/json",
-										Authorization: authorization,
-									"X-Idempotency-Key": mutation.idempotencyKey,
-								},
-								body: JSON.stringify({ hiddenSharedColumns }),
+					const response = await fetchRequest(
+						"/api/account/hidden",
+						{
+							method: "PUT",
+							signal,
+							headers: {
+								"Content-Type": "application/json",
+								Authorization: authorization,
+								"X-Idempotency-Key": mutation.idempotencyKey,
 							},
-						),
+							body: JSON.stringify({ hiddenSharedColumns }),
+						},
 					);
+					if (!response.ok) return classifyResponse(response);
+					const parsed = await parseSuccessfulResponse(
+						response,
+						updateHiddenColumnsResponseSchema,
+						mutation.opType,
+					);
+					return parsed.ok ? { kind: "ack" } : parsed.result;
 				}
 
 				case "column.delete": {
 					const { columnId } = mutation.payload;
 					if (!columnId) return invalidPayload("Invalid columnId payload");
-					const result = await classifyResponse(
-						await fetchRequest(`/api/column/${columnId}`, {
-							method: "DELETE",
-							signal,
-							headers: {
-								Authorization: authorization,
-								"X-Idempotency-Key": mutation.idempotencyKey,
-							},
-						}),
+					const response = await fetchRequest(`/api/column/${columnId}`, {
+						method: "DELETE",
+						signal,
+						headers: {
+							Authorization: authorization,
+							"X-Idempotency-Key": mutation.idempotencyKey,
+						},
+					});
+					if (!response.ok) return classifyResponse(response);
+					const parsed = await parseSuccessfulResponse(
+						response,
+						deleteColumnResponseSchema,
+						mutation.opType,
 					);
-					return result.kind === "ack"
-						? { ...result, effects: [{ type: "column.deleted", columnId }] }
-						: result;
+					return parsed.ok
+						? { kind: "ack", effects: [{ type: "column.deleted", columnId }] }
+						: parsed.result;
 				}
 
 				case "column.restore": {
 					const { columnId } = mutation.payload;
 					if (!columnId) return invalidPayload("Invalid columnId payload");
-					return classifyResponse(
-						await fetchRequest(`/api/column/${columnId}/restore`, {
-							method: "POST",
-							signal,
-							headers: {
-								Authorization: authorization,
-								"X-Idempotency-Key": mutation.idempotencyKey,
-							},
-						}),
+					const response = await fetchRequest(`/api/column/${columnId}/restore`, {
+						method: "POST",
+						signal,
+						headers: {
+							Authorization: authorization,
+							"X-Idempotency-Key": mutation.idempotencyKey,
+						},
+					});
+					if (!response.ok) return classifyResponse(response);
+					const parsed = await parseSuccessfulResponse(
+						response,
+						restoreColumnResponseSchema,
+						mutation.opType,
 					);
+					if (!parsed.ok) return parsed.result;
+					return isExpectedColumn(
+						parsed.data.column,
+						columnId,
+						activeAccountId,
+					)
+						? { kind: "ack" }
+						: invalidSuccessfulResponse(mutation.opType);
 				}
 
 				case "column.share":
@@ -187,13 +258,28 @@ export function createAccountCommandExecutor(
 					);
 					if (!response.ok) return classifyResponse(response);
 
-					const payload = (await response.json()) as { sharedWith?: unknown };
-					const sharedWith = asStringArray(payload.sharedWith);
+					const parsed = await parseSuccessfulResponse(
+						response,
+						updateColumnSharingResponseSchema,
+						mutation.opType,
+					);
+					if (!parsed.ok) return parsed.result;
+					const normalizedTarget = normalizeAccountId(targetAccountId);
+					const containsTarget = parsed.data.sharedWith.some(
+						(accountId) => normalizeAccountId(accountId) === normalizedTarget,
+					);
+					if (containsTarget !== isShare) {
+						return invalidSuccessfulResponse(mutation.opType);
+					}
 					return {
 						kind: "ack",
-						effects: sharedWith
-							? [{ type: "column.sharing.updated", columnId, sharedWith }]
-							: [],
+						effects: [
+							{
+								type: "column.sharing.updated",
+								columnId,
+								sharedWith: parsed.data.sharedWith,
+							},
+						],
 					};
 				}
 
@@ -210,44 +296,52 @@ export function createAccountCommandExecutor(
 					});
 					if (!response.ok) return classifyResponse(response);
 
-					const payload = (await response.json()) as Partial<PublicLinkResponse>;
-					const publicId = asString(payload.publicId);
-					const url = asString(payload.url);
+					const parsed = await parseSuccessfulResponse(
+						response,
+						enablePublicColumnResponseSchema,
+						mutation.opType,
+					);
+					if (!parsed.ok) return parsed.result;
+					const { publicId, url } = parsed.data;
+					if (new URL(url).pathname !== `/p/${publicId}`) {
+						return invalidSuccessfulResponse(mutation.opType);
+					}
 					return {
 						kind: "ack",
-						effects:
-							publicId && url
-								? [
-										{
-											type: "column.public.enabled",
-											queueId: mutation.queueId,
-											columnId,
-											publicLink: { publicId, url },
-										},
-									]
-								: [],
+						effects: [
+							{
+								type: "column.public.enabled",
+								queueId: mutation.queueId,
+								columnId,
+								publicLink: { publicId, url },
+							},
+						],
 					};
 				}
 
 				case "column.public.disable": {
 					const { columnId } = mutation.payload;
 					if (!columnId) return invalidPayload("Invalid columnId payload");
-					const result = await classifyResponse(
-						await fetchRequest(`/api/column/${columnId}/public`, {
-							method: "DELETE",
-							signal,
-							headers: {
-								Authorization: authorization,
-								"X-Idempotency-Key": mutation.idempotencyKey,
-							},
-						}),
+					const response = await fetchRequest(`/api/column/${columnId}/public`, {
+						method: "DELETE",
+						signal,
+						headers: {
+							Authorization: authorization,
+							"X-Idempotency-Key": mutation.idempotencyKey,
+						},
+					});
+					if (!response.ok) return classifyResponse(response);
+					const parsed = await parseSuccessfulResponse(
+						response,
+						disablePublicColumnResponseSchema,
+						mutation.opType,
 					);
-					return result.kind === "ack"
+					return parsed.ok
 						? {
-								...result,
+								kind: "ack",
 								effects: [{ type: "column.public.disabled", columnId }],
 							}
-						: result;
+						: parsed.result;
 				}
 			}
 		},

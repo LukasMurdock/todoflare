@@ -13,12 +13,15 @@ import {
 	parseSharedColumnIndex,
 	TRASH_RETENTION_MS,
 } from "./server/persistence-records";
+import { accountRecordStore, mutateAccountRecord } from "./server/account-record-store";
 
 type Bindings = {
 	ACCOUNTS: KVNamespace;
 	IDEMPOTENCY_COORDINATOR: DurableObjectNamespace;
 	RATE_LIMIT_COORDINATOR: DurableObjectNamespace;
 	COLUMN_ROOM: DurableObjectNamespace;
+	ACCOUNT_COORDINATOR: DurableObjectNamespace;
+	PUBLIC_ID_COORDINATOR: DurableObjectNamespace;
 };
 
 const columnIdPathSchema = z.object({
@@ -125,7 +128,7 @@ async function fetchAccount(
 	| { ok: false; status: 404 | 503; error: string }
 > {
 	const normalizedId = normalizeAccountId(accountId);
-	const accountData = await env.ACCOUNTS.get(`account:${normalizedId}`);
+	const accountData = await accountRecordStore(env).get(`account:${normalizedId}`);
 
 	if (!accountData) {
 		return { ok: false, status: 404, error: "Account not found" };
@@ -234,7 +237,7 @@ export function registerAgentApi(app: OpenAPIHono<{ Bindings: Bindings }>) {
 
 		const { account, normalizedId } = fetched;
 
-		const sharedColumnsData = await c.env.ACCOUNTS.get(`shared:${normalizedId}`);
+		const sharedColumnsData = await accountRecordStore(c.env).get(`shared:${normalizedId}`);
 		const parsedSharedColumnIds = parseSharedColumnIndex(sharedColumnsData);
 		if (!parsedSharedColumnIds.ok) {
 			return c.json({ error: "Shared column index is invalid" }, 503);
@@ -252,14 +255,22 @@ export function registerAgentApi(app: OpenAPIHono<{ Bindings: Bindings }>) {
 
 		const now = Date.now();
 		const trashKey = `trash:${normalizedId}`;
-		const deletedColumnsRaw = await c.env.ACCOUNTS.get(trashKey);
+		const deletedColumnsRaw = await accountRecordStore(c.env).get(trashKey);
 		const deletedColumns = parseDeletedColumnRecords(deletedColumnsRaw)
 			.filter((entry) => now - entry.deletedAt < TRASH_RETENTION_MS)
 			.sort((a, b) => b.deletedAt - a.deletedAt);
 
 		const originalDeleted = parseDeletedColumnRecords(deletedColumnsRaw);
 		if (deletedColumns.length !== originalDeleted.length) {
-			await c.env.ACCOUNTS.put(trashKey, JSON.stringify(deletedColumns));
+			const retained = new Set(deletedColumns.map((entry) => entry.columnId));
+			for (const entry of originalDeleted) {
+				if (!retained.has(entry.columnId)) {
+					await mutateAccountRecord(c.env, trashKey, {
+						kind: "trash-remove",
+						columnId: entry.columnId,
+					});
+				}
+			}
 		}
 
 		const hiddenSet = new Set(account.hiddenSharedColumns);
@@ -375,7 +386,7 @@ export function registerAgentApi(app: OpenAPIHono<{ Bindings: Bindings }>) {
 		}
 
 		const hiddenSet = new Set(account.hiddenSharedColumns);
-		const trashRaw = await c.env.ACCOUNTS.get(`trash:${normalizedId}`);
+		const trashRaw = await accountRecordStore(c.env).get(`trash:${normalizedId}`);
 		const deletedMap = new Map<string, number>();
 		for (const entry of parseDeletedColumnRecords(trashRaw)) {
 			if (Date.now() - entry.deletedAt < TRASH_RETENTION_MS) {
@@ -467,7 +478,7 @@ export function registerAgentApi(app: OpenAPIHono<{ Bindings: Bindings }>) {
 		}
 
 		const hiddenSet = new Set(account.hiddenSharedColumns);
-		const trashRaw = await c.env.ACCOUNTS.get(`trash:${normalizedId}`);
+		const trashRaw = await accountRecordStore(c.env).get(`trash:${normalizedId}`);
 		const deletedMap = new Map<string, number>();
 		for (const entry of parseDeletedColumnRecords(trashRaw)) {
 			if (Date.now() - entry.deletedAt < TRASH_RETENTION_MS) {

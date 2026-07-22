@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createAccountCommandExecutor } from "../src/lib/sync/account-command-executor";
+import {
+	createMemoryMutationQueueStorage,
+	LocalMutationQueueService,
+} from "../src/lib/sync/mutation-queue-service";
 import type {
 	AccountCommandPayloadMap,
 	AccountCommandType,
@@ -47,10 +51,36 @@ describe("account command executor", () => {
 				});
 			}
 			if (url.endsWith("/share") || url.includes("/share/")) {
-				return Response.json({ success: true, sharedWith: [TARGET_ID] });
+				return Response.json({
+					success: true,
+					sharedWith: init?.method === "POST" ? [TARGET_ID] : [],
+				});
 			}
 			if (url.endsWith("/public") && init?.method === "POST") {
-				return Response.json({ publicId: "AbCd1234", url: "/p/AbCd1234" });
+				return Response.json({
+					publicId: "AbCd1234",
+					url: "https://example.com/p/AbCd1234",
+				});
+			}
+			if (url.endsWith("/restore")) {
+				return Response.json({
+					success: true,
+					column: {
+						schemaVersion: 1,
+						id: COLUMN_ID,
+						ownerId: ACCOUNT_ID,
+						sharedWith: [],
+						publicId: null,
+						createdAt: 1,
+					},
+				});
+			}
+			if (url === `/api/column/${COLUMN_ID}` && init?.method === "DELETE") {
+				return Response.json({
+					success: true,
+					trashed: true,
+					deleteAfter: 1,
+				});
 			}
 			return Response.json({ success: true });
 		}) as typeof globalThis.fetch;
@@ -155,5 +185,111 @@ describe("account command executor", () => {
 				mutation("column.delete", { columnId: COLUMN_ID }),
 			),
 		).toMatchObject({ kind: "drop", reason: "not_owner" });
+	});
+
+	it.each([
+		mutation("column.create", { columnId: COLUMN_ID }),
+		mutation("column.reorder", { columnOrder: [COLUMN_ID] }),
+		mutation("column.hide_shared", { hiddenSharedColumns: [COLUMN_ID] }),
+		mutation("column.delete", { columnId: COLUMN_ID }),
+		mutation("column.restore", { columnId: COLUMN_ID }),
+		mutation("column.share", {
+			columnId: COLUMN_ID,
+			targetAccountId: TARGET_ID,
+		}),
+		mutation("column.revoke", {
+			columnId: COLUMN_ID,
+			targetAccountId: TARGET_ID,
+		}),
+		mutation("column.public.enable", { columnId: COLUMN_ID }),
+		mutation("column.public.disable", { columnId: COLUMN_ID }),
+	])("retries a malformed 2xx response for $opType", async (command) => {
+		const executor = createAccountCommandExecutor({
+			fetch: (async () => Response.json({})) as typeof globalThis.fetch,
+		});
+
+		expect(await executor.execute(command)).toEqual({
+			kind: "retry",
+			error: `Invalid successful response for ${command.opType}`,
+		});
+	});
+
+	it.each([
+		{
+			command: mutation("column.create", { columnId: COLUMN_ID }),
+			body: {
+				column: {
+					schemaVersion: 1,
+					id: "00000000-0000-4000-8000-000000000002",
+					ownerId: ACCOUNT_ID,
+					sharedWith: [],
+					publicId: null,
+					createdAt: 1,
+				},
+			},
+		},
+		{
+			command: mutation("column.share", {
+				columnId: COLUMN_ID,
+				targetAccountId: TARGET_ID,
+			}),
+			body: { success: true, sharedWith: [] },
+		},
+		{
+			command: mutation("column.revoke", {
+				columnId: COLUMN_ID,
+				targetAccountId: TARGET_ID,
+			}),
+			body: { success: true, sharedWith: [TARGET_ID] },
+		},
+		{
+			command: mutation("column.public.enable", { columnId: COLUMN_ID }),
+			body: {
+				publicId: "AbCd1234",
+				url: "https://example.com/p/Different",
+			},
+		},
+	])("retries a command-mismatched 2xx response for $command.opType", async ({
+		command,
+		body,
+	}) => {
+		const executor = createAccountCommandExecutor({
+			fetch: (async () => Response.json(body)) as typeof globalThis.fetch,
+		});
+
+		expect(await executor.execute(command)).toMatchObject({ kind: "retry" });
+	});
+
+	it("keeps a command durable when a 2xx response violates its contract", async () => {
+		const storage = createMemoryMutationQueueStorage();
+		const executor = createAccountCommandExecutor({
+			fetch: (async () => Response.json({ success: "yes" })) as typeof globalThis.fetch,
+		});
+		const queue = new LocalMutationQueueService({
+			executor: executor.execute.bind(executor),
+			storage,
+		});
+		await queue.enqueue(
+			createAccountEditCommand(
+				"column.reorder",
+				{ columnOrder: [COLUMN_ID] },
+				{
+					idempotencyKey: "key:durability",
+					entityId: ACCOUNT_ID,
+					createdAt: 1,
+					attemptCount: 0,
+					nextRetryAt: 0,
+				},
+			),
+		);
+
+		const report = await queue.replay({ accountId: ACCOUNT_ID });
+
+		expect(report).toMatchObject({ acked: 0, retried: 1 });
+		expect(storage.read()).toHaveLength(1);
+		expect(storage.read()[0]).toMatchObject({
+			attemptCount: 1,
+			lastError: "Invalid successful response for column.reorder",
+		});
 	});
 });

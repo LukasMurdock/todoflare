@@ -891,10 +891,20 @@ describe("Agent read API", () => {
 		it(`rejects ${persistedAccountCase.name} through both account APIs`, async () => {
 			const accountId = await createAccount();
 			const normalizedId = normalizeAccountId(accountId);
-			await env.ACCOUNTS.put(
-				`account:${normalizedId}`,
-				persistedAccountCase.record,
+			const accountCoordinator = env.ACCOUNT_COORDINATOR.get(
+				env.ACCOUNT_COORDINATOR.idFromName(normalizedId),
 			);
+			const corruptResponse = await accountCoordinator.fetch(
+				new Request("http://account-coordinator/put", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						key: `account:${normalizedId}`,
+						value: persistedAccountCase.record,
+					}),
+				}),
+			);
+			expect(corruptResponse.ok).toBe(true);
 
 			const browserResponse = await SELF.fetch("http://example.com/api/account", {
 				headers: accountHeaders(accountId),

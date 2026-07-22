@@ -1,5 +1,6 @@
 import { normalizeAccountId } from "../../lib/account";
 import { isColumnOwner } from "../../lib/column-access";
+import { accountRecordStore, mutateAccountRecord } from "../account-record-store";
 import {
 	parseColumnMetaRecord,
 	parseSharedColumnIndex,
@@ -37,6 +38,7 @@ export async function revokeColumnShare<TColumnRoomId>(
 	input: RevokeColumnShareInput<TColumnRoomId>,
 ): Promise<ColumnLifecycleResult<RevokeColumnShareOutput>> {
 	const { env, columnId, accountId, targetAccountId, afterWrite } = input;
+	const records = accountRecordStore(env);
 	const normalizedTargetId = normalizeAccountId(targetAccountId);
 	const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
 	const metaResponse = await stub.fetch(new Request("http://do/meta"));
@@ -79,7 +81,7 @@ export async function revokeColumnShare<TColumnRoomId>(
 	}
 
 	const sharedKey = `shared:${normalizedTargetId}`;
-	const sharedColumnsData = await env.ACCOUNTS.get(sharedKey);
+	const sharedColumnsData = await records.get(sharedKey);
 	if (sharedColumnsData) {
 		const parsedSharedColumns = parseSharedColumnIndex(sharedColumnsData);
 		if (!parsedSharedColumns.ok) {
@@ -94,10 +96,8 @@ export async function revokeColumnShare<TColumnRoomId>(
 		}
 		const sharedColumns = parsedSharedColumns.value;
 		const updated = sharedColumns.filter((id) => id !== columnId);
-		if (updated.length !== sharedColumns.length) {
-			await env.ACCOUNTS.put(sharedKey, JSON.stringify(updated));
-			await afterWrite?.("shared-account");
-		}
+		await mutateAccountRecord(env, sharedKey, { kind: "shared-remove", columnId });
+		if (updated.length !== sharedColumns.length) await afterWrite?.("shared-account");
 	}
 
 	return { ok: true, value: { success: true, sharedWith } };

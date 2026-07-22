@@ -1,5 +1,7 @@
 import { displayAccountId, normalizeAccountId } from "../../lib/account";
 import type { ColumnMeta } from "../../types/account";
+import { accountRecordStore, mutateAccountRecord } from "../account-record-store";
+import { registerColumn } from "../lifecycle-journal";
 import {
 	parseAccountRecord,
 	parseColumnMetaRecord,
@@ -11,6 +13,11 @@ export interface CloneColumnSnapshotBindings<TColumnRoomId> {
 	ACCOUNTS: {
 		get(key: string): Promise<string | null>;
 		put(key: string, value: string): Promise<void>;
+		delete?(key: string): Promise<void>;
+	};
+	ACCOUNT_COORDINATOR?: {
+		idFromName(name: string): TColumnRoomId;
+		get(id: TColumnRoomId): { fetch(request: Request): Promise<Response> };
 	};
 	COLUMN_ROOM: {
 		idFromName(name: string): TColumnRoomId;
@@ -41,9 +48,9 @@ export type CloneColumnSnapshotResult =
 	  };
 
 /**
- * Clones a snapshot into a new private column. The owner projection is the
- * commit record and is written only after the Durable Object accepted the
- * complete metadata/Yjs import.
+ * Clones a snapshot into a new private column. An enumerable registry record
+ * is written before import so a crash cannot leave an undiscoverable Durable
+ * Object; owner membership is committed after the complete import succeeds.
  */
 export async function cloneColumnSnapshot<TColumnRoomId>(
 	input: CloneColumnSnapshotInput<TColumnRoomId>,
@@ -52,7 +59,8 @@ export async function cloneColumnSnapshot<TColumnRoomId>(
 	if (!parsedMeta.ok) return { ok: false, code: "column_meta_invalid" };
 
 	const ownerKey = `account:${normalizeAccountId(input.ownerId)}`;
-	const ownerRaw = await input.env.ACCOUNTS.get(ownerKey);
+	const records = accountRecordStore(input.env);
+	const ownerRaw = await records.get(ownerKey);
 	if (!ownerRaw) return { ok: false, code: "account_not_found" };
 	const parsedOwner = parseAccountRecord(ownerRaw);
 	if (!parsedOwner.ok) return { ok: false, code: "account_invalid" };
@@ -66,6 +74,7 @@ export async function cloneColumnSnapshot<TColumnRoomId>(
 		publicId: null,
 		createdAt: (input.now ?? Date.now)(),
 	};
+	await registerColumn(input.env.ACCOUNTS, column);
 
 	const stub = input.env.COLUMN_ROOM.get(
 		input.env.COLUMN_ROOM.idFromName(columnId),
@@ -76,13 +85,18 @@ export async function cloneColumnSnapshot<TColumnRoomId>(
 			body: JSON.stringify({ meta: column, yjs: input.snapshot.yjs }),
 		}),
 	);
-	if (!imported.ok) return { ok: false, code: "column_import_failed" };
+	if (!imported.ok) {
+		await input.env.ACCOUNTS.delete?.(`column-registry:${columnId}`);
+		return { ok: false, code: "column_import_failed" };
+	}
 	await input.afterWrite?.("column-import");
 
 	const owner = parsedOwner.value;
 	if (!owner.columnOrder.includes(columnId)) {
-		owner.columnOrder.push(columnId);
-		await input.env.ACCOUNTS.put(ownerKey, JSON.stringify(owner));
+		await mutateAccountRecord(input.env, ownerKey, {
+			kind: "account-add-column",
+			columnId,
+		});
 		await input.afterWrite?.("owner-account");
 	}
 
