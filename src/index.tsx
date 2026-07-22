@@ -73,6 +73,10 @@ import {
 } from "./server/lifecycle-journal";
 import { reconcileColumnLifecycle } from "./server/workflows/reconcile-column-lifecycle";
 import { resolvePublicId } from "./server/public-id-registry";
+import {
+	isReadOnlyMode,
+	readOnlyModeResponse,
+} from "./server/read-only-mode";
 
 // Re-export Durable Objects for Cloudflare
 export {
@@ -210,10 +214,6 @@ function shouldSkipRateLimit(c: Context<{ Bindings: Bindings }>): boolean {
 
 	const hostname = new URL(c.req.url).hostname;
 	return hostname === "localhost" || hostname === "127.0.0.1";
-}
-
-function isReadOnlyMode(c: Context<{ Bindings: Bindings }>): boolean {
-	return c.env.READ_ONLY_MODE === "true" || c.env.READ_ONLY_MODE === "1";
 }
 
 function parseIdempotencyKey(value: string | null | undefined): string | null {
@@ -493,17 +493,7 @@ async function withIdempotentWrite(
 }
 
 function blockWritesIfReadOnly(c: Context<{ Bindings: Bindings }>): Response | null {
-	if (!isReadOnlyMode(c)) return null;
-
-	return c.json(
-		{
-			error: "read_only_mode",
-			code: "read_only_mode",
-			message:
-				"Writes are temporarily disabled while we protect data. Please try again later.",
-		},
-		503,
-	);
+	return isReadOnlyMode(c.env) ? readOnlyModeResponse() : null;
 }
 
 function requireBackupAdmin(c: Context<{ Bindings: Bindings }>): Response | null {
@@ -1022,7 +1012,7 @@ app.get("/api/account", async (c) => {
 		}
 	}
 	if (
-		!isReadOnlyMode(c) &&
+		!isReadOnlyMode(c.env) &&
 		JSON.stringify(reconciledSharedColumnIds) !== JSON.stringify(sharedColumnIds)
 	) {
 		const reconciled = new Set(reconciledSharedColumnIds);
@@ -1535,6 +1525,9 @@ app.get("/api/column/:id", async (c) => {
  * WebSocket connection for column sync
  */
 app.post("/api/column/:id/ws-ticket", async (c) => {
+	const readOnlyResponse = blockWritesIfReadOnly(c);
+	if (readOnlyResponse) return readOnlyResponse;
+
 	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
 	if (!path.ok) return path.response;
 	const auth = requireAccountCredential(c.req.raw);
@@ -1548,6 +1541,9 @@ app.post("/api/column/:id/ws-ticket", async (c) => {
 });
 
 app.get("/api/column/:id/ws", async (c) => {
+	const readOnlyResponse = blockWritesIfReadOnly(c);
+	if (readOnlyResponse) return readOnlyResponse;
+
 	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
 	if (!path.ok) return path.response;
 	const ticket = c.req.query("ticket");
@@ -2078,11 +2074,15 @@ app.post("/api/admin/backups/column/:id/restore", async (c) => {
 
 // Keep the clock endpoint for testing
 app.get("/api/clock", (c) => {
-	return c.json({
-		time: new Date().toLocaleTimeString(),
-		readOnlyMode: isReadOnlyMode(c),
-		autoBackupEnabled: isAutoBackupEnabled(c.env),
-	});
+	return c.json(
+		{
+			time: new Date().toLocaleTimeString(),
+			readOnlyMode: isReadOnlyMode(c.env),
+			autoBackupEnabled: isAutoBackupEnabled(c.env),
+		},
+		200,
+		{ "Cache-Control": "no-store" },
+	);
 });
 
 export default {

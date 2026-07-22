@@ -6,5 +6,6 @@ declare module "cloudflare:test" {
 		COLUMN_ROOM: DurableObjectNamespace;
 		IDEMPOTENCY_COORDINATOR: DurableObjectNamespace;
 		RATE_LIMIT_COORDINATOR: DurableObjectNamespace;
+		READ_ONLY_MODE?: string;
 	}
 }

@@ -11,6 +11,12 @@ import {
 } from "../lib/column-access";
 import { parseColumnMetaRecord } from "../server/persistence-records";
 import {
+	isReadOnlyMode,
+	readOnlyModeResponse,
+	readOnlyModeWebSocketMessage,
+	type ReadOnlyModeEnv,
+} from "../server/read-only-mode";
+import {
 	decodeDurableSyncSubmission,
 	decodeWsFrame,
 	encodeDurableSyncAck,
@@ -61,7 +67,7 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 	return bytes.slice().buffer;
 }
 
-export class ColumnRoomSql extends DurableObject<unknown> {
+export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 	private sessions: Map<WebSocket, SessionInfo> = new Map();
 	private awarenessClientsBySocket: Map<WebSocket, Set<number>> = new Map();
 	private doc: Y.Doc;
@@ -69,7 +75,7 @@ export class ColumnRoomSql extends DurableObject<unknown> {
 	private meta: ColumnMeta | null = null;
 	private nextCompactionAlarmAt = 0;
 
-	constructor(ctx: DurableObjectState, env: unknown) {
+	constructor(ctx: DurableObjectState, env: ReadOnlyModeEnv) {
 		super(ctx, env);
 		this.doc = new Y.Doc();
 
@@ -183,7 +189,12 @@ export class ColumnRoomSql extends DurableObject<unknown> {
 			for (const ws of this.ctx.getWebSockets()) {
 				const attachment = ws.deserializeAttachment();
 				if (attachment) {
-					this.sessions.set(ws, attachment as SessionInfo);
+					const session = attachment as SessionInfo;
+					if (isReadOnlyMode(this.env) && !session.readOnly) {
+						this.rejectWritableSocket(ws);
+						continue;
+					}
+					this.sessions.set(ws, session);
 				}
 			}
 
@@ -324,6 +335,8 @@ export class ColumnRoomSql extends DurableObject<unknown> {
 		}
 
 		if (request.method === "POST" && url.pathname === "/ws-ticket") {
+			if (isReadOnlyMode(this.env)) return readOnlyModeResponse();
+
 			const accountId = request.headers.get("X-Authenticated-Account-ID");
 			if (!this.hasAccess(accountId, false)) {
 				return new Response("Access denied", { status: 403 });
@@ -435,6 +448,8 @@ export class ColumnRoomSql extends DurableObject<unknown> {
 				return new Response("Invalid public link", { status: 403 });
 			}
 		} else {
+			if (isReadOnlyMode(this.env)) return readOnlyModeResponse();
+
 			const ticket = url.searchParams.get("ticket");
 			if (!ticket) return new Response("WebSocket ticket required", { status: 403 });
 			const hash = await ticketHash(ticket);
@@ -488,6 +503,14 @@ export class ColumnRoomSql extends DurableObject<unknown> {
 		this.sendPresence(ws);
 	}
 
+	private rejectWritableSocket(ws: WebSocket) {
+		const message = readOnlyModeWebSocketMessage();
+		if (ws.readyState === WebSocket.OPEN) {
+			ws.send(encodeWsTextFrame(WS_OP_ERROR, message));
+		}
+		ws.close(1013, "Read-only mode");
+	}
+
 	webSocketMessage(ws: WebSocket, message: ArrayBuffer | string) {
 		let session = this.sessions.get(ws);
 		if (!session) {
@@ -510,6 +533,10 @@ export class ColumnRoomSql extends DurableObject<unknown> {
 			switch (op) {
 				case WS_OP_SYNC_SUBMIT:
 					if (!session.readOnly) {
+						if (isReadOnlyMode(this.env)) {
+							this.rejectWritableSocket(ws);
+							break;
+						}
 						const submission = decodeDurableSyncSubmission(payload);
 						if (!submission) {
 							ws.send(
@@ -542,6 +569,11 @@ export class ColumnRoomSql extends DurableObject<unknown> {
 		outboxId: string,
 		origin: WebSocket,
 	) {
+		if (isReadOnlyMode(this.env)) {
+			this.rejectWritableSocket(origin);
+			return;
+		}
+
 		applyUpdate(this.doc, update, origin);
 		this.insertUpdate(update);
 		origin.send(encodeDurableSyncAck(outboxId));

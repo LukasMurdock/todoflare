@@ -10,6 +10,7 @@ import {
 	encodeWsFrame,
 	WS_OP_ACCESS_REVOKED,
 	WS_OP_AWARENESS,
+	WS_OP_ERROR,
 	WS_OP_PRESENCE,
 	WS_OP_SYNC,
 	WS_OP_SYNC_ACK,
@@ -38,6 +39,20 @@ async function issueWsTicket(
 	});
 	expect(response.ok).toBe(true);
 	return ((await response.json()) as { ticket: string }).ticket;
+}
+
+async function setColumnRoomReadOnly(
+	stub: ReturnType<typeof getColumnRoomStub>,
+	enabled: boolean,
+) {
+	await runInDurableObject(stub, async (instance) => {
+		const durableObjectEnv = (
+			instance as unknown as {
+				env: { READ_ONLY_MODE?: string };
+			}
+		).env;
+		durableObjectEnv.READ_ONLY_MODE = enabled ? "true" : "false";
+	});
 }
 
 function decodeFrame(
@@ -472,5 +487,113 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 
 		// The update schedules a compaction alarm; run it to avoid cross-test leaks.
 		await runDurableObjectAlarm(stub);
+	});
+
+	it("does not persist an existing socket submission after read-only activation", async () => {
+		const columnId = "ws-read-only-existing-socket";
+		const stub = getColumnRoomStub(columnId);
+		const ownerId = "1111 1111 1111 1111";
+		const meta: ColumnMeta = {
+			schemaVersion: 1,
+			id: columnId,
+			ownerId,
+			sharedWith: [],
+			publicId: null,
+			createdAt: Date.now(),
+		};
+
+		await stub.fetch(
+			new Request("http://do/init", {
+				method: "POST",
+				body: JSON.stringify(meta),
+			}),
+		);
+
+		const ticket = await issueWsTicket(stub, ownerId);
+		const unusedTicket = await issueWsTicket(stub, ownerId);
+		const upgrade = await stub.fetch(
+			new Request(`http://do/?ticket=${encodeURIComponent(ticket)}`, {
+				headers: { Upgrade: "websocket" },
+			}),
+		);
+		expect(upgrade.status).toBe(101);
+		const ws = getResponseWebSocket(upgrade);
+		acceptWebSocket(ws);
+		await drainInitialFrames(ws);
+
+		const baselineDoc = new Y.Doc();
+		baselineDoc.getText("t").insert(0, "baseline");
+		const baselineAck = waitForPayloadWithOp(ws, WS_OP_SYNC_ACK);
+		ws.send(
+			encodeDurableSyncSubmission(
+				"read-only-baseline",
+				encodeStateAsUpdate(baselineDoc),
+			),
+		);
+		await baselineAck;
+
+		const beforeExport = await stub.fetch(new Request("http://do/export"));
+		const before = (await beforeExport.json()) as { yjs: number[] | null };
+		const beforeUpdateCount = await runInDurableObject(
+			stub,
+			async (_instance, state) =>
+				state.storage.sql
+					.exec<{ count: number }>("SELECT COUNT(*) AS count FROM yjs_updates")
+					.toArray()[0]?.count ?? 0,
+		);
+
+		try {
+			await setColumnRoomReadOnly(stub, true);
+
+			const ticketResponse = await stub.fetch("http://do/ws-ticket", {
+				method: "POST",
+				headers: { "X-Authenticated-Account-ID": ownerId },
+			});
+			expect(ticketResponse.status).toBe(503);
+			expect(await ticketResponse.json()).toMatchObject({
+				error: "read_only_mode",
+				code: "read_only_mode",
+			});
+
+			const staleUpgrade = await stub.fetch(
+				new Request(`http://do/?ticket=${encodeURIComponent(unusedTicket)}`, {
+					headers: { Upgrade: "websocket" },
+				}),
+			);
+			expect(staleUpgrade.status).toBe(503);
+
+			const errorPromise = waitForPayloadWithOp(ws, WS_OP_ERROR);
+			const closePromise = waitForWsEvent(ws, "close", 2000);
+			const rejectedDoc = new Y.Doc();
+			rejectedDoc.getText("t").insert(0, "must-not-persist");
+			ws.send(
+				encodeDurableSyncSubmission(
+					"read-only-rejected",
+					encodeStateAsUpdate(rejectedDoc),
+				),
+			);
+
+			expect(new TextDecoder().decode(await errorPromise)).toContain(
+				"Writes are temporarily disabled",
+			);
+			const close = await closePromise;
+			expect(close.code).toBe(1013);
+
+			const afterExport = await stub.fetch(new Request("http://do/export"));
+			const after = (await afterExport.json()) as { yjs: number[] | null };
+			expect(after.yjs).toEqual(before.yjs);
+
+			const afterUpdateCount = await runInDurableObject(
+				stub,
+				async (_instance, state) =>
+					state.storage.sql
+						.exec<{ count: number }>("SELECT COUNT(*) AS count FROM yjs_updates")
+						.toArray()[0]?.count ?? 0,
+			);
+			expect(afterUpdateCount).toBe(beforeUpdateCount);
+		} finally {
+			await setColumnRoomReadOnly(stub, false);
+			if (ws.readyState === WebSocket.OPEN) ws.close();
+		}
 	});
 });

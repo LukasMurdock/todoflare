@@ -792,6 +792,45 @@ describe("Worker routes", () => {
 });
 
 describe("WebSocket upgrade routing", () => {
+	it("blocks private ticket issuance and upgrades in read-only mode", async () => {
+		const accountId = await createAccount();
+		const columnId = await createColumn(accountId);
+		const ticketResponse = await SELF.fetch(
+			`http://example.com/api/column/${columnId}/ws-ticket`,
+			{ method: "POST", headers: accountHeaders(accountId) },
+		);
+		expect(ticketResponse.ok).toBe(true);
+		const { ticket } = (await ticketResponse.json()) as { ticket: string };
+		const previousReadOnlyMode = env.READ_ONLY_MODE;
+
+		try {
+			env.READ_ONLY_MODE = "true";
+
+			const blockedTicket = await SELF.fetch(
+				`http://example.com/api/column/${columnId}/ws-ticket`,
+				{ method: "POST", headers: accountHeaders(accountId) },
+			);
+			expect(blockedTicket.status).toBe(503);
+			expect(blockedTicket.headers.get("Cache-Control")).toBe("no-store");
+			expect(await blockedTicket.json()).toMatchObject({
+				error: "read_only_mode",
+				code: "read_only_mode",
+			});
+
+			const blockedUpgrade = await SELF.fetch(
+				`http://example.com/api/column/${columnId}/ws?ticket=${encodeURIComponent(ticket)}`,
+				{ headers: { Upgrade: "websocket" } },
+			);
+			expect(blockedUpgrade.status).toBe(503);
+
+			const clock = await SELF.fetch("http://example.com/api/clock");
+			expect(clock.headers.get("Cache-Control")).toBe("no-store");
+			expect(await clock.json()).toMatchObject({ readOnlyMode: true });
+		} finally {
+			env.READ_ONLY_MODE = previousReadOnlyMode;
+		}
+	});
+
 	it("upgrades /api/column/:id/ws and reaches the DO", async () => {
 		const accountId = await createAccount();
 		const columnId = await createColumn(accountId);

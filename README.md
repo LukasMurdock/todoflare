@@ -163,7 +163,15 @@ Authenticated users can self-serve export/import from the account menu
 
 Set `READ_ONLY_MODE=true` in your deployed Worker vars, then redeploy.
 
-`GET /api/clock` returns `readOnlyMode` so you can verify state.
+Use a full deployment rather than a gradual rollout. Wait for the deployment to
+finish before starting a backup or in-place restore. The deployment closes
+authenticated realtime sessions, and both the Worker and ColumnRoom reject new
+private WebSocket tickets, upgrades, and sync submissions while the flag is set.
+Public read-only WebSockets remain available.
+
+`GET /api/clock` returns `readOnlyMode` with `Cache-Control: no-store` so you can
+verify the version serving that request. Treat this as a local smoke check, not
+as proof that an incomplete deployment has reached every location.
 
 ### 2) Configure backup auth secret
 
