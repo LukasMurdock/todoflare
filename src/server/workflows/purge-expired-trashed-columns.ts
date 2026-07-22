@@ -18,7 +18,7 @@ export interface PurgeExpiredTrashBindings<TColumnRoomId> {
 	ACCOUNTS: {
 		get(key: string): Promise<string | null>;
 		put(key: string, value: string): Promise<void>;
-		delete?(key: string): Promise<void>;
+		delete(key: string): Promise<void>;
 		list(options: {
 			prefix: string;
 			cursor?: string;
@@ -58,6 +58,7 @@ export async function purgeExpiredTrashedColumns<TColumnRoomId>(
 	input: PurgeExpiredTrashedColumnsInput<TColumnRoomId>,
 ): Promise<PurgeExpiredTrashedColumnsResult> {
 	const { env } = input;
+	const records = accountRecordStore(env);
 	const now = input.now?.() ?? Date.now();
 	const retentionMs = input.retentionMs ?? TRASH_RETENTION_MS;
 	const deleteColumn =
@@ -85,7 +86,7 @@ export async function purgeExpiredTrashedColumns<TColumnRoomId>(
 			accountsScanned += 1;
 
 			const trashKey = `trash:${normalizedId}`;
-			const trash = parseDeletedColumnRecords(await env.ACCOUNTS.get(trashKey));
+			const trash = parseDeletedColumnRecords(await records.get(trashKey));
 			if (trash.length === 0) continue;
 
 			for (const entry of trash) {
@@ -94,15 +95,17 @@ export async function purgeExpiredTrashedColumns<TColumnRoomId>(
 				}
 
 				try {
+					// Remove the registry entry before deleting the Durable Object. If
+					// this fails, the column remains intact; if a later step fails, the
+					// retained trash entry safely retries without reconciliation being
+					// able to recreate a successfully purged column from stale metadata.
+					await env.ACCOUNTS.delete(`column-registry:${entry.columnId}`);
 					const deleteResponse = await deleteColumn(entry.columnId);
 					if (!deleteResponse.ok) {
 						columnsFailed += 1;
 						continue;
 					}
 
-					// Remove discoverability before the trash commit record. If the
-					// invocation stops here, the retained trash entry safely retries.
-					await env.ACCOUNTS.delete?.(`column-registry:${entry.columnId}`);
 					await mutateAccountRecord(env, trashKey, {
 						kind: "trash-remove",
 						columnId: entry.columnId,

@@ -8,6 +8,10 @@ import {
 	encodeWsFrame,
 	encodeWsJsonFrame,
 	encodeWsTextFrame,
+	isWsFrameWithinLimits,
+	MAX_AWARENESS_BYTES,
+	MAX_OUTBOX_ID_BYTES,
+	MAX_SYNC_UPDATE_BYTES,
 	WS_OP_ACCESS_REVOKED,
 	WS_OP_AWARENESS,
 	WS_OP_COLUMN_DELETED,
@@ -55,6 +59,32 @@ describe("WebSocket protocol", () => {
 			decodeDurableSyncSubmission(new Uint8Array([1, 2, 0x61])),
 		).toBeNull();
 		expect(decodeWsMessage(encodeWsFrame(WS_OP_SYNC_ACK))).toBeNull();
+	});
+
+	it("enforces delivery ID and opcode-specific payload limits", () => {
+		expect(() =>
+			encodeDurableSyncSubmission(
+				"x".repeat(MAX_OUTBOX_ID_BYTES + 1),
+				new Uint8Array([1]),
+			),
+		).toThrow(/delivery ID/i);
+		expect(() =>
+			encodeDurableSyncSubmission(
+				"delivery",
+				new Uint8Array(MAX_SYNC_UPDATE_BYTES + 1),
+			),
+		).toThrow(/size limit/i);
+
+		const oversizedAwareness = new Uint8Array(2 + MAX_AWARENESS_BYTES);
+		oversizedAwareness[0] = WS_OP_AWARENESS;
+		expect(isWsFrameWithinLimits(oversizedAwareness.buffer)).toBe(false);
+		expect(decodeWsMessage(oversizedAwareness.buffer)).toBeNull();
+		expect(() =>
+			encodeWsFrame(
+				WS_OP_AWARENESS,
+				new Uint8Array(MAX_AWARENESS_BYTES + 1),
+			),
+		).toThrow(/size limit/i);
 	});
 
 	it("round-trips binary frames", () => {

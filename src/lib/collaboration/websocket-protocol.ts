@@ -9,6 +9,16 @@ export const WS_OP_ERROR = 0x06;
 export const WS_OP_SYNC_SUBMIT = 0x07;
 export const WS_OP_SYNC_ACK = 0x08;
 
+export const WS_PROTOCOL_V1 = "todoflare-yjs-v1";
+
+export const MAX_SYNC_UPDATE_BYTES = 4 * 1024 * 1024;
+export const MAX_AWARENESS_BYTES = 64 * 1024;
+export const MAX_PRESENCE_BYTES = 64 * 1024;
+export const MAX_OUTBOX_ID_BYTES = 64;
+export const MAX_ERROR_BYTES = 8 * 1024;
+export const MAX_WS_FRAME_BYTES =
+	1 + 2 + MAX_OUTBOX_ID_BYTES + MAX_SYNC_UPDATE_BYTES;
+
 const SYNC_DELIVERY_VERSION = 1;
 const SYNC_DELIVERY_HEADER_BYTES = 2;
 
@@ -31,8 +41,10 @@ function encodeSyncDeliveryPayload(
 	update: Uint8Array = new Uint8Array(),
 ): Uint8Array {
 	const idBytes = textEncoder.encode(outboxId);
-	if (idBytes.byteLength === 0 || idBytes.byteLength > 0xff) {
-		throw new Error("Sync delivery ID must contain between 1 and 255 UTF-8 bytes");
+	if (idBytes.byteLength === 0 || idBytes.byteLength > MAX_OUTBOX_ID_BYTES) {
+		throw new Error(
+			`Sync delivery ID must contain between 1 and ${MAX_OUTBOX_ID_BYTES} UTF-8 bytes`,
+		);
 	}
 
 	const payload = new Uint8Array(
@@ -53,7 +65,13 @@ function decodeSyncDeliveryPayload(
 
 	const idLength = payload[1] ?? 0;
 	const updateOffset = SYNC_DELIVERY_HEADER_BYTES + idLength;
-	if (idLength === 0 || updateOffset > payload.byteLength) return null;
+	if (
+		idLength === 0 ||
+		idLength > MAX_OUTBOX_ID_BYTES ||
+		updateOffset > payload.byteLength
+	) {
+		return null;
+	}
 
 	try {
 		const outboxId = strictTextDecoder.decode(
@@ -73,6 +91,9 @@ export function encodeDurableSyncSubmission(
 	if (update.byteLength === 0) {
 		throw new Error("Durable sync submissions require a Yjs update");
 	}
+	if (update.byteLength > MAX_SYNC_UPDATE_BYTES) {
+		throw new Error("Durable sync submission exceeds the update size limit");
+	}
 	return encodeWsFrame(
 		WS_OP_SYNC_SUBMIT,
 		encodeSyncDeliveryPayload(outboxId, update),
@@ -83,7 +104,13 @@ export function decodeDurableSyncSubmission(
 	payload: Uint8Array,
 ): DurableSyncSubmission | null {
 	const decoded = decodeSyncDeliveryPayload(payload);
-	if (!decoded || decoded.update.byteLength === 0) return null;
+	if (
+		!decoded ||
+		decoded.update.byteLength === 0 ||
+		decoded.update.byteLength > MAX_SYNC_UPDATE_BYTES
+	) {
+		return null;
+	}
 	return decoded;
 }
 
@@ -95,6 +122,9 @@ export function encodeWsFrame(
 	op: number,
 	payload: Uint8Array = new Uint8Array(),
 ): ArrayBuffer {
+	if (!isWsPayloadWithinLimit(op, payload.byteLength)) {
+		throw new Error(`WebSocket payload for opcode ${op} exceeds its size limit`);
+	}
 	const frame = new Uint8Array(1 + payload.byteLength);
 	frame[0] = op;
 	frame.set(payload, 1);
@@ -114,7 +144,41 @@ export function decodeWsFrame(data: ArrayBuffer): WebSocketFrame {
 	return { op: frame[0] ?? 0, payload: frame.subarray(1) };
 }
 
+export function isWsFrameWithinLimits(data: ArrayBuffer): boolean {
+	if (data.byteLength === 0 || data.byteLength > MAX_WS_FRAME_BYTES) return false;
+	const { op, payload } = decodeWsFrame(data);
+	return isWsPayloadWithinLimit(op, payload.byteLength);
+}
+
+export function isWsPayloadWithinLimit(
+	op: number,
+	payloadBytes: number,
+): boolean {
+	if (payloadBytes < 0 || payloadBytes + 1 > MAX_WS_FRAME_BYTES) return false;
+
+	switch (op) {
+		case WS_OP_SYNC:
+			return payloadBytes <= MAX_SYNC_UPDATE_BYTES;
+		case WS_OP_SYNC_SUBMIT:
+			return payloadBytes <= 2 + MAX_OUTBOX_ID_BYTES + MAX_SYNC_UPDATE_BYTES;
+		case WS_OP_SYNC_ACK:
+			return payloadBytes <= 2 + MAX_OUTBOX_ID_BYTES;
+		case WS_OP_AWARENESS:
+			return payloadBytes <= MAX_AWARENESS_BYTES;
+		case WS_OP_PRESENCE:
+			return payloadBytes <= MAX_PRESENCE_BYTES;
+		case WS_OP_ERROR:
+			return payloadBytes <= MAX_ERROR_BYTES;
+		case WS_OP_COLUMN_DELETED:
+		case WS_OP_ACCESS_REVOKED:
+			return payloadBytes === 0;
+		default:
+			return true;
+	}
+}
+
 export function decodeWsMessage(data: ArrayBuffer): SyncMessage | null {
+	if (!isWsFrameWithinLimits(data)) return null;
 	const { op, payload } = decodeWsFrame(data);
 
 	switch (op) {

@@ -210,4 +210,51 @@ describe("scheduled lifecycle recovery", () => {
 		expect((await stub.fetch(new Request("http://do/meta"))).ok).toBe(true);
 		expect(await env.ACCOUNTS.get(`lifecycle-operation:${operationId}`)).toBeNull();
 	});
+
+	it("repairs stale public KV without reporting an authoritative conflict", async () => {
+		const account = await createAccount();
+		const columnId = crypto.randomUUID();
+		const publicId = `P${crypto.randomUUID().replaceAll("-", "").slice(0, 7)}`;
+		const meta: ColumnMeta = {
+			schemaVersion: 1,
+			id: columnId,
+			ownerId: account.id,
+			sharedWith: [],
+			publicId,
+			createdAt: Date.now(),
+		};
+		await registerColumn(env.ACCOUNTS, meta);
+		const column = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
+		expect(
+			(
+				await column.fetch(
+					new Request("http://do/init", {
+						method: "POST",
+						body: JSON.stringify(meta),
+					}),
+				)
+			).ok,
+		).toBe(true);
+		const coordinator = env.PUBLIC_ID_COORDINATOR.get(
+			env.PUBLIC_ID_COORDINATOR.idFromName(publicId),
+		);
+		expect(
+			(
+				await coordinator.fetch(
+					new Request("http://public-id/claim", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ publicId, columnId }),
+					}),
+				)
+			).ok,
+		).toBe(true);
+		await env.ACCOUNTS.put(`public:${publicId}`, crypto.randomUUID());
+
+		const result = await reconcileColumnLifecycle(env);
+
+		expect(result.publicMappingConflicts).toBe(0);
+		expect(result.publicMappingsRepaired).toBeGreaterThanOrEqual(1);
+		expect(await env.ACCOUNTS.get(`public:${publicId}`)).toBe(columnId);
+	});
 });

@@ -2,7 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import * as Y from "yjs";
 import { yTextToSlateElement } from "@slate-yjs/core";
 import type { Value } from "platejs";
-import { decodeWsMessage } from "@/lib/collaboration/websocket-protocol";
+import {
+	decodeWsMessage,
+	isWsFrameWithinLimits,
+	WS_PROTOCOL_V1,
+} from "@/lib/collaboration/websocket-protocol";
 import { EMPTY_COLUMN_VALUE } from "@/types/column";
 
 /**
@@ -41,7 +45,7 @@ export function usePublicColumnSync(publicId: string) {
 		const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
 		const wsUrl = `${wsProtocol}//${window.location.host}/api/p/${publicId}/ws`;
 
-		const ws = new WebSocket(wsUrl);
+		const ws = new WebSocket(wsUrl, [WS_PROTOCOL_V1]);
 		ws.binaryType = "arraybuffer";
 		wsRef.current = ws;
 
@@ -52,7 +56,13 @@ export function usePublicColumnSync(publicId: string) {
 		ws.onmessage = (event) => {
 			try {
 				if (typeof event.data === "string") return;
-				const message = decodeWsMessage(event.data as ArrayBuffer);
+				const data = event.data as ArrayBuffer;
+				if (!isWsFrameWithinLimits(data)) {
+					setError("Received an oversized collaboration message");
+					ws.close();
+					return;
+				}
+				const message = decodeWsMessage(data);
 				if (!message) return;
 
 				if (message.type === "sync") {

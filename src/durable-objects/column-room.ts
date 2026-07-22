@@ -31,11 +31,16 @@ import {
 	WS_OP_PRESENCE,
 	WS_OP_SYNC,
 	WS_OP_SYNC_SUBMIT,
+	WS_PROTOCOL_V1,
+	MAX_WS_FRAME_BYTES,
+	isWsPayloadWithinLimit,
 } from "../lib/collaboration/websocket-protocol";
 
 const DO_PERSIST_SCHEMA_VERSION = 1;
 const DO_MIGRATION_TAG = "column-room-sql-v1";
 const WS_TICKET_TTL_MS = 45_000;
+const RECEIVED_OUTBOX_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const RECEIVED_OUTBOX_MAX_ROWS = 100_000;
 
 function base64Url(bytes: Uint8Array): string {
 	let binary = "";
@@ -48,6 +53,11 @@ async function ticketHash(ticket: string): Promise<string> {
 		"SHA-256",
 		new TextEncoder().encode(ticket),
 	);
+	return base64Url(new Uint8Array(digest));
+}
+
+async function updateDigest(update: Uint8Array): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", update.slice().buffer);
 	return base64Url(new Uint8Array(digest));
 }
 
@@ -107,6 +117,17 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 			);
 
 			CREATE INDEX IF NOT EXISTS idx_yjs_updates_ts ON yjs_updates(ts);
+
+			CREATE TABLE IF NOT EXISTS received_outbox (
+				account_id TEXT NOT NULL,
+				outbox_id TEXT NOT NULL,
+				update_digest TEXT NOT NULL,
+				received_at INTEGER NOT NULL,
+				PRIMARY KEY (account_id, outbox_id)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_received_outbox_received_at
+				ON received_outbox(received_at);
 
 			CREATE TABLE IF NOT EXISTS ws_tickets (
 				token_hash TEXT PRIMARY KEY,
@@ -275,13 +296,12 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		);
 	}
 
-	private insertUpdate(update: Uint8Array) {
+	private insertUpdateRow(update: Uint8Array) {
 		this.ctx.storage.sql.exec(
 			"INSERT INTO yjs_updates (update_blob, ts) VALUES (?, ?)",
 			toArrayBuffer(update),
 			Date.now(),
 		);
-		this.scheduleCompaction();
 	}
 
 	private persistSnapshot() {
@@ -306,11 +326,39 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 
 	async alarm() {
 		try {
-			this.persistSnapshot();
-			this.ctx.storage.sql.exec("DELETE FROM yjs_updates");
+			this.ctx.storage.transactionSync(() => {
+				this.persistSnapshot();
+				this.ctx.storage.sql.exec("DELETE FROM yjs_updates");
+				this.pruneReceivedOutbox();
+			});
 		} catch (err) {
 			console.error("Compaction failed:", err);
 		}
+	}
+
+	private pruneReceivedOutbox() {
+		this.ctx.storage.sql.exec(
+			"DELETE FROM received_outbox WHERE received_at < ?",
+			Date.now() - RECEIVED_OUTBOX_RETENTION_MS,
+		);
+
+		const count =
+			this.ctx.storage.sql
+				.exec<{ count: number }>(
+					"SELECT COUNT(*) AS count FROM received_outbox",
+				)
+				.toArray()[0]?.count ?? 0;
+		const overflow = count - RECEIVED_OUTBOX_MAX_ROWS;
+		if (overflow <= 0) return;
+
+		this.ctx.storage.sql.exec(
+			`DELETE FROM received_outbox WHERE rowid IN (
+				SELECT rowid FROM received_outbox
+				ORDER BY received_at ASC
+				LIMIT ?
+			)`,
+			overflow,
+		);
 	}
 
 	private hasAccess(accountId: string | null, isPublic: boolean): boolean {
@@ -459,6 +507,19 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 	private async handleWebSocket(request: Request): Promise<Response> {
 		const url = new URL(request.url);
 		let accountId: string | null = null;
+		const requestedProtocols = (request.headers.get("Sec-WebSocket-Protocol") ?? "")
+			.split(",")
+			.map((protocol) => protocol.trim())
+			.filter(Boolean);
+		const selectedProtocol = requestedProtocols.includes(WS_PROTOCOL_V1)
+			? WS_PROTOCOL_V1
+			: null;
+		if (requestedProtocols.length > 0 && !selectedProtocol) {
+			return new Response("Unsupported WebSocket protocol", {
+				status: 426,
+				headers: { "Sec-WebSocket-Protocol": WS_PROTOCOL_V1 },
+			});
+		}
 
 		// Public websockets are routed via `/api/p/:publicId/ws`.
 		// Keep query-param support as a fallback for older clients.
@@ -515,7 +576,13 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		this.sendInitialSync(server);
 		this.broadcastPresence();
 
-		return new Response(null, { status: 101, webSocket: client });
+		return new Response(null, {
+			status: 101,
+			webSocket: client,
+			headers: selectedProtocol
+				? { "Sec-WebSocket-Protocol": selectedProtocol }
+				: undefined,
+		});
 	}
 
 	private sendInitialSync(ws: WebSocket) {
@@ -540,7 +607,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		ws.close(1013, "Read-only mode");
 	}
 
-	webSocketMessage(ws: WebSocket, message: ArrayBuffer | string) {
+	async webSocketMessage(ws: WebSocket, message: ArrayBuffer | string) {
 		let session = this.sessions.get(ws);
 		if (!session) {
 			const attachment = ws.deserializeAttachment();
@@ -556,9 +623,17 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 			ws.close(1003, "Binary WebSocket required");
 			return;
 		}
+		if (message.byteLength > MAX_WS_FRAME_BYTES) {
+			ws.close(1009, "WebSocket frame too large");
+			return;
+		}
 
 		try {
 			const { op, payload } = decodeWsFrame(message);
+			if (!isWsPayloadWithinLimit(op, payload.byteLength)) {
+				ws.close(1009, "WebSocket payload too large");
+				return;
+			}
 			switch (op) {
 				case WS_OP_SYNC_SUBMIT:
 					if (!session.readOnly) {
@@ -573,9 +648,14 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 							);
 							break;
 						}
-						this.applyDurableUpdate(
+						if (!session.accountId) {
+							ws.close(1008, "Authenticated account required");
+							break;
+						}
+						await this.applyDurableUpdate(
 							submission.update,
 							submission.outboxId,
+							normalizeAccountId(session.accountId),
 							ws,
 						);
 					}
@@ -593,25 +673,76 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		}
 	}
 
-	private applyDurableUpdate(
+	private async applyDurableUpdate(
 		update: Uint8Array,
 		outboxId: string,
+		accountId: string,
 		origin: WebSocket,
-	) {
+	): Promise<void> {
 		if (isReadOnlyMode(this.env)) {
 			this.rejectWritableSocket(origin);
 			return;
 		}
 
+		try {
+			Y.decodeUpdate(update);
+		} catch {
+			origin.send(encodeWsTextFrame(WS_OP_ERROR, "Malformed Yjs update"));
+			origin.close(1007, "Malformed Yjs update");
+			return;
+		}
+
+		const digest = await updateDigest(update);
+		const outcome = this.ctx.storage.transactionSync<
+			"inserted" | "duplicate" | "conflict"
+		>(() => {
+			const existing = this.ctx.storage.sql
+				.exec<{ update_digest: string }>(
+					`SELECT update_digest FROM received_outbox
+					 WHERE account_id = ? AND outbox_id = ?`,
+					accountId,
+					outboxId,
+				)
+				.toArray()[0];
+			if (existing) {
+				return existing.update_digest === digest ? "duplicate" : "conflict";
+			}
+
+			this.ctx.storage.sql.exec(
+				`INSERT INTO received_outbox
+				 (account_id, outbox_id, update_digest, received_at)
+				 VALUES (?, ?, ?, ?)`,
+				accountId,
+				outboxId,
+				digest,
+				Date.now(),
+			);
+			this.insertUpdateRow(update);
+			return "inserted";
+		});
+
+		if (outcome === "duplicate") {
+			origin.send(encodeDurableSyncAck(outboxId));
+			return;
+		}
+		if (outcome === "conflict") {
+			origin.send(
+				encodeWsTextFrame(WS_OP_ERROR, "Sync delivery ID reused with different content"),
+			);
+			origin.close(1008, "Conflicting sync delivery ID");
+			return;
+		}
+
 		applyUpdate(this.doc, update, origin);
-		this.insertUpdate(update);
-		origin.send(encodeDurableSyncAck(outboxId));
+		this.scheduleCompaction();
 
 		for (const [ws] of this.sessions) {
 			if (ws !== origin && ws.readyState === WebSocket.OPEN) {
 				ws.send(encodeWsFrame(WS_OP_SYNC, update));
 			}
 		}
+
+		origin.send(encodeDurableSyncAck(outboxId));
 	}
 
 	private applyAwareness(update: Uint8Array, origin: WebSocket) {

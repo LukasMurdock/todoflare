@@ -1,5 +1,5 @@
 import { env } from "cloudflare:test";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { purgeExpiredTrashedColumns } from "../src/server/workflows/purge-expired-trashed-columns";
 import { TRASH_RETENTION_MS } from "../src/server/persistence-records";
 import type { ColumnMeta } from "../src/types/account";
@@ -115,6 +115,67 @@ describe("purgeExpiredTrashedColumns workflow", () => {
 		expect(result.columnsPurged).toBe(0);
 		expect(result.trashEntriesRemoved).toBe(0);
 		expect(await loadTrash(accountId)).toEqual([entry]);
+	});
+
+	it("does not delete column data when registry removal fails", async () => {
+		const entry = {
+			columnId: crypto.randomUUID(),
+			deletedAt: FIXED_NOW - TRASH_RETENTION_MS,
+		};
+		const accountId = await seedTrash([entry]);
+		const deleteColumn = vi.fn(async () => Response.json({ success: true }));
+		const accounts = {
+			get: (key: string) => env.ACCOUNTS.get(key),
+			put: (key: string, value: string) => env.ACCOUNTS.put(key, value),
+			list: (options: Parameters<typeof env.ACCOUNTS.list>[0]) =>
+				env.ACCOUNTS.list(options),
+			delete: async (key: string) => {
+				if (key === `column-registry:${entry.columnId}`) {
+					throw new Error("registry unavailable");
+				}
+				await env.ACCOUNTS.delete(key);
+			},
+		};
+
+		const result = await purgeExpiredTrashedColumns({
+			env: { ACCOUNTS: accounts, COLUMN_ROOM: env.COLUMN_ROOM },
+			now: () => FIXED_NOW,
+			deleteColumn,
+		});
+
+		expect(result.columnsFailed).toBe(1);
+		expect(deleteColumn).not.toHaveBeenCalled();
+		expect(await loadTrash(accountId)).toEqual([entry]);
+	});
+
+	it("reads trash from the account coordinator instead of stale KV", async () => {
+		const entry = {
+			columnId: crypto.randomUUID(),
+			deletedAt: FIXED_NOW - TRASH_RETENTION_MS,
+		};
+		const accountId = await seedTrash([]);
+		const trashKey = `trash:${accountId}`;
+		const coordinator = env.ACCOUNT_COORDINATOR.get(
+			env.ACCOUNT_COORDINATOR.idFromName(accountId),
+		);
+		await coordinator.fetch(
+			new Request("http://account-coordinator/put", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ key: trashKey, value: JSON.stringify([entry]) }),
+			}),
+		);
+		await env.ACCOUNTS.put(trashKey, "[]");
+		const deleteColumn = vi.fn(async () => Response.json({ success: true }));
+
+		const result = await purgeExpiredTrashedColumns({
+			env,
+			now: () => FIXED_NOW,
+			deleteColumn,
+		});
+
+		expect(deleteColumn).toHaveBeenCalledWith(entry.columnId);
+		expect(result.columnsPurged).toBe(1);
 	});
 
 	it("continues partial batches and retains only fresh or failed entries", async () => {

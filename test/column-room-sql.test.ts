@@ -14,6 +14,7 @@ import {
 	WS_OP_PRESENCE,
 	WS_OP_SYNC,
 	WS_OP_SYNC_ACK,
+	WS_PROTOCOL_V1,
 } from "../src/lib/collaboration/websocket-protocol";
 
 function getColumnRoomStub(columnId: string) {
@@ -140,6 +141,46 @@ async function waitForOp(
 }
 
 describe("ColumnRoomSql Durable Object (HTTP)", () => {
+	it("negotiates the supported WebSocket protocol and rejects unknown versions", async () => {
+		const columnId = "ws-protocol-negotiation";
+		const stub = getColumnRoomStub(columnId);
+		const ownerId = "1111 1111 1111 1111";
+		await stub.fetch("http://do/init", {
+			method: "POST",
+			body: JSON.stringify({
+				schemaVersion: 1,
+				id: columnId,
+				ownerId,
+				sharedWith: [],
+				publicId: null,
+				createdAt: Date.now(),
+			} satisfies ColumnMeta),
+		});
+
+		const unsupported = await stub.fetch("http://do/", {
+			headers: {
+				Upgrade: "websocket",
+				"Sec-WebSocket-Protocol": "todoflare-yjs-v999",
+			},
+		});
+		expect(unsupported.status).toBe(426);
+
+		const ticket = await issueWsTicket(stub, ownerId);
+		const accepted = await stub.fetch(
+			new Request(`http://do/?ticket=${encodeURIComponent(ticket)}`, {
+				headers: {
+					Upgrade: "websocket",
+					"Sec-WebSocket-Protocol": WS_PROTOCOL_V1,
+				},
+			}),
+		);
+		expect(accepted.status).toBe(101);
+		expect(accepted.headers.get("Sec-WebSocket-Protocol")).toBe(WS_PROTOCOL_V1);
+		const ws = getResponseWebSocket(accepted);
+		acceptWebSocket(ws);
+		ws.close();
+	});
+
 	it("returns 404 for /meta before init", async () => {
 		const stub = getColumnRoomStub("meta-before-init");
 		const res = await stub.fetch(new Request("http://do/meta"));
@@ -531,6 +572,151 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 		wsB.close();
 
 		// The update schedules a compaction alarm; run it to avoid cross-test leaks.
+		await runDurableObjectAlarm(stub);
+	});
+
+	it("deduplicates durable submissions before and after compaction", async () => {
+		const columnId = "ws-yjs-dedup";
+		const stub = getColumnRoomStub(columnId);
+		const ownerId = "1111 1111 1111 1111";
+		await stub.fetch(
+			new Request("http://do/init", {
+				method: "POST",
+				body: JSON.stringify({
+					schemaVersion: 1,
+					id: columnId,
+					ownerId,
+					sharedWith: [],
+					publicId: null,
+					createdAt: Date.now(),
+				} satisfies ColumnMeta),
+			}),
+		);
+
+		const connect = async () => {
+			const ticket = await issueWsTicket(stub, ownerId);
+			const response = await stub.fetch(
+				new Request(`http://do/?ticket=${encodeURIComponent(ticket)}`, {
+					headers: { Upgrade: "websocket" },
+				}),
+			);
+			const ws = getResponseWebSocket(response);
+			acceptWebSocket(ws);
+			await drainInitialFrames(ws);
+			return ws;
+		};
+
+		const sender = await connect();
+		const peer = await connect();
+		let peerSyncCount = 0;
+		const countPeerSync = (event: MessageEvent) => {
+			if (decodeOp(event.data) === WS_OP_SYNC) peerSyncCount += 1;
+		};
+		peer.addEventListener("message", countPeerSync);
+
+		const doc = new Y.Doc();
+		doc.getText("t").insert(0, "deduplicated");
+		const update = encodeStateAsUpdate(doc);
+		const submission = encodeDurableSyncSubmission("stable-delivery", update);
+
+		for (let attempt = 0; attempt < 2; attempt += 1) {
+			const ack = waitForPayloadWithOp(sender, WS_OP_SYNC_ACK);
+			sender.send(submission);
+			expect(
+				decodeWsMessage(encodeWsFrame(WS_OP_SYNC_ACK, await ack)),
+			).toEqual({ type: "sync-ack", outboxId: "stable-delivery" });
+		}
+		await new Promise((resolve) => setTimeout(resolve, 25));
+
+		await runInDurableObject(stub, async (_instance, state) => {
+			const updateCount = state.storage.sql
+				.exec<{ count: number }>("SELECT COUNT(*) AS count FROM yjs_updates")
+				.toArray()[0]?.count;
+			const receiptCount = state.storage.sql
+				.exec<{ count: number }>("SELECT COUNT(*) AS count FROM received_outbox")
+				.toArray()[0]?.count;
+			expect(updateCount).toBe(1);
+			expect(receiptCount).toBe(1);
+		});
+		expect(peerSyncCount).toBe(1);
+
+		await runDurableObjectAlarm(stub);
+		const replayAck = waitForPayloadWithOp(sender, WS_OP_SYNC_ACK);
+		sender.send(submission);
+		await replayAck;
+		await new Promise((resolve) => setTimeout(resolve, 25));
+
+		await runInDurableObject(stub, async (_instance, state) => {
+			const updateCount = state.storage.sql
+				.exec<{ count: number }>("SELECT COUNT(*) AS count FROM yjs_updates")
+				.toArray()[0]?.count;
+			const receiptCount = state.storage.sql
+				.exec<{ count: number }>("SELECT COUNT(*) AS count FROM received_outbox")
+				.toArray()[0]?.count;
+			expect(updateCount).toBe(0);
+			expect(receiptCount).toBe(1);
+		});
+		expect(peerSyncCount).toBe(1);
+
+		peer.removeEventListener("message", countPeerSync);
+		sender.close();
+		peer.close();
+		doc.destroy();
+	});
+
+	it("rejects reuse of a delivery ID with different update bytes", async () => {
+		const columnId = "ws-yjs-delivery-conflict";
+		const stub = getColumnRoomStub(columnId);
+		const ownerId = "1111 1111 1111 1111";
+		await stub.fetch("http://do/init", {
+			method: "POST",
+			body: JSON.stringify({
+				schemaVersion: 1,
+				id: columnId,
+				ownerId,
+				sharedWith: [],
+				publicId: null,
+				createdAt: Date.now(),
+			} satisfies ColumnMeta),
+		});
+
+		const ticket = await issueWsTicket(stub, ownerId);
+		const response = await stub.fetch(
+			new Request(`http://do/?ticket=${encodeURIComponent(ticket)}`, {
+				headers: { Upgrade: "websocket" },
+			}),
+		);
+		const ws = getResponseWebSocket(response);
+		acceptWebSocket(ws);
+		await drainInitialFrames(ws);
+
+		const first = new Y.Doc();
+		first.getText("t").insert(0, "first");
+		const firstAck = waitForPayloadWithOp(ws, WS_OP_SYNC_ACK);
+		ws.send(
+			encodeDurableSyncSubmission("reused-delivery", encodeStateAsUpdate(first)),
+		);
+		await firstAck;
+
+		const second = new Y.Doc();
+		second.getText("t").insert(0, "second");
+		const error = waitForPayloadWithOp(ws, WS_OP_ERROR);
+		const closed = waitForWsEvent(ws, "close", 2000);
+		ws.send(
+			encodeDurableSyncSubmission("reused-delivery", encodeStateAsUpdate(second)),
+		);
+		expect(new TextDecoder().decode(await error)).toContain("different content");
+		expect((await closed).code).toBe(1008);
+
+		await runInDurableObject(stub, async (_instance, state) => {
+			expect(
+				state.storage.sql
+					.exec<{ count: number }>("SELECT COUNT(*) AS count FROM yjs_updates")
+					.toArray()[0]?.count,
+			).toBe(1);
+		});
+		first.destroy();
+		second.destroy();
 		await runDurableObjectAlarm(stub);
 	});
 

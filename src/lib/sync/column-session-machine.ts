@@ -66,7 +66,7 @@ export type ColumnSessionEvent =
 	| { type: "COLUMN_DELETED" };
 
 export interface ColumnSessionDependencies {
-	createSocket: (url: string) => ColumnSocketLike;
+	createSocket: (url: string, protocols: string[]) => ColumnSocketLike;
 	getSocketUrl: (
 		accountId: string,
 		columnId: string,

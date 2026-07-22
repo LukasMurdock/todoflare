@@ -562,8 +562,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			realtimeEnabled: true,
 			onStatusChange: setConnectionStatus,
 			dependencies: {
-				createSocket: (url) =>
-					new WebSocket(url) as unknown as ColumnSocketLike,
+				createSocket: (url, protocols) =>
+					new WebSocket(url, protocols) as unknown as ColumnSocketLike,
 				getSocketUrl: async (activeAccountId, columnId, signal) => {
 					const response = await fetch(`/api/column/${columnId}/ws-ticket`, {
 						method: "POST",

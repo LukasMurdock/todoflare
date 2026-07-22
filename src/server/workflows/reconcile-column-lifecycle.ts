@@ -1,8 +1,11 @@
 import { normalizeAccountId } from "../../lib/account";
 import type { ColumnMeta } from "../../types/account";
 import { accountRecordStore, mutateAccountRecord } from "../account-record-store";
-import { claimPublicId } from "../public-id-registry";
-import { releasePublicId } from "../public-id-registry";
+import {
+	claimPublicId,
+	releasePublicId,
+	resolvePublicId,
+} from "../public-id-registry";
 import type { LifecycleOperation } from "../lifecycle-journal";
 import {
 	parseAccountRecord,
@@ -227,11 +230,18 @@ export async function reconcileColumnLifecycle<TDurableObjectId>(
 		}
 
 		if (meta.publicId) {
-			const mapped = await env.ACCOUNTS.get(`public:${meta.publicId}`);
+			const publicKey = `public:${meta.publicId}`;
+			const mapped = await resolvePublicId(env, meta.publicId);
 			if (mapped === null && (await claimPublicId(env, meta.publicId, meta.id))) {
 				result.publicMappingsRepaired += 1;
 			} else if (mapped !== null && mapped !== meta.id) {
 				result.publicMappingConflicts += 1;
+			} else if (
+				mapped === meta.id &&
+				(await env.ACCOUNTS.get(publicKey)) !== meta.id &&
+				(await claimPublicId(env, meta.publicId, meta.id))
+			) {
+				result.publicMappingsRepaired += 1;
 			}
 		}
 	}
@@ -297,8 +307,14 @@ export async function reconcileColumnLifecycle<TDurableObjectId>(
 
 	for (const publicKey of await listAll(env, "public:")) {
 		const publicId = publicKey.slice("public:".length);
-		const columnId = await env.ACCOUNTS.get(publicKey);
-		if (!columnId) continue;
+		const projectedColumnId = await env.ACCOUNTS.get(publicKey);
+		if (!projectedColumnId) continue;
+		const columnId = await resolvePublicId(env, publicId);
+		if (columnId === null) {
+			await env.ACCOUNTS.delete(publicKey);
+			result.publicMappingsRemoved += 1;
+			continue;
+		}
 		const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
 		const response = await stub.fetch(new Request("http://do/meta"));
 		let matches = false;
@@ -309,6 +325,9 @@ export async function reconcileColumnLifecycle<TDurableObjectId>(
 		if (!matches) {
 			await releasePublicId(env, publicId, columnId);
 			result.publicMappingsRemoved += 1;
+		} else if (projectedColumnId !== columnId) {
+			await claimPublicId(env, publicId, columnId);
+			result.publicMappingsRepaired += 1;
 		}
 	}
 

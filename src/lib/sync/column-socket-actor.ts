@@ -1,5 +1,10 @@
 import { fromCallback } from "xstate";
-import { decodeWsMessage } from "../collaboration/websocket-protocol";
+import {
+	decodeWsMessage,
+	isWsFrameWithinLimits,
+	MAX_WS_FRAME_BYTES,
+	WS_PROTOCOL_V1,
+} from "../collaboration/websocket-protocol";
 import type { SyncMessage } from "../../types/account";
 
 export interface ColumnSocketLike {
@@ -12,7 +17,7 @@ export interface ColumnSocketLike {
 		| null;
 	onerror: (() => void) | null;
 	send(data: ArrayBuffer): void;
-	close(): void;
+	close(code?: number, reason?: string): void;
 }
 
 export interface ColumnSocketFrame {
@@ -42,18 +47,18 @@ export type ColumnSocketEvent =
 
 export interface ColumnSocketInput {
 	url: string;
-	createSocket: (url: string) => ColumnSocketLike;
+	createSocket: (url: string, protocols: string[]) => ColumnSocketLike;
 	loadReplayFrames: () => ColumnSocketFrame[];
 	onBestEffortFrameWritten: (frame: ColumnSocketFrame) => void;
 }
 
-async function decodeSocketData(data: unknown): Promise<SyncMessage | null> {
+async function normalizeSocketData(data: unknown): Promise<ArrayBuffer | null> {
 	if (data instanceof ArrayBuffer) {
-		return decodeWsMessage(data);
+		return data;
 	}
 
 	if (typeof Blob !== "undefined" && data instanceof Blob) {
-		return decodeWsMessage(await data.arrayBuffer());
+		return data.arrayBuffer();
 	}
 
 	return null;
@@ -63,7 +68,7 @@ export const columnSocketActor = fromCallback<
 	ColumnSocketCommand,
 	ColumnSocketInput
 >(({ input, receive, sendBack }) => {
-	const socket = input.createSocket(input.url);
+	const socket = input.createSocket(input.url, [WS_PROTOCOL_V1]);
 	socket.binaryType = "arraybuffer";
 
 	const writeFrame = (frame: ColumnSocketFrame) => {
@@ -94,8 +99,22 @@ export const columnSocketActor = fromCallback<
 	};
 
 	socket.onmessage = (event) => {
-		void decodeSocketData(event.data)
-			.then((message) => {
+		if (
+			typeof Blob !== "undefined" &&
+			event.data instanceof Blob &&
+			event.data.size > MAX_WS_FRAME_BYTES
+		) {
+			socket.close(1009, "WebSocket payload too large");
+			return;
+		}
+		void normalizeSocketData(event.data)
+			.then((data) => {
+				if (!data) return;
+				if (!isWsFrameWithinLimits(data)) {
+					socket.close(1009, "WebSocket payload too large");
+					return;
+				}
+				const message = decodeWsMessage(data);
 				if (!message) return;
 				if (message.type === "sync-ack") {
 					sendBack({
