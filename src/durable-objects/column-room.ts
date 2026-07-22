@@ -394,8 +394,25 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 			if (isReadOnlyMode(this.env)) return readOnlyModeResponse();
 
 			const accountId = request.headers.get("X-Authenticated-Account-ID");
+			if (!this.meta) {
+				return Response.json(
+					{
+						error: "Column not found",
+						code: "not_found",
+						message: "Column not found",
+					},
+					{ status: 404 },
+				);
+			}
 			if (!this.hasAccess(accountId, false)) {
-				return new Response("Access denied", { status: 403 });
+				return Response.json(
+					{
+						error: "Access denied",
+						code: "access_revoked",
+						message: "Access denied",
+					},
+					{ status: 403 },
+				);
 			}
 
 			const bytes = new Uint8Array(32);

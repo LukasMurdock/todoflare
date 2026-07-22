@@ -109,6 +109,32 @@ async function loadMeta(columnId: string): Promise<ColumnMeta> {
 describe("deleteColumn lifecycle workflow", () => {
 	const fixedNow = 1_800_000_000_000;
 
+	it("fails before removing access when existing trash is malformed", async () => {
+		const ownerId = await createAccount();
+		const columnId = await createColumn(ownerId);
+		const normalizedOwnerId = normalizeAccountId(ownerId);
+		const trashKey = `trash:${normalizedOwnerId}`;
+		const coordinator = env.ACCOUNT_COORDINATOR.get(
+			env.ACCOUNT_COORDINATOR.idFromName(normalizedOwnerId),
+		);
+		await coordinator.fetch(
+			new Request("http://account-coordinator/put", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ key: trashKey, value: "{" }),
+			}),
+		);
+
+		const result = await deleteColumn({ env, columnId, accountId: ownerId });
+
+		expect(result).toMatchObject({
+			ok: false,
+			failure: { kind: "schema", record: "trash", result: { code: "invalid_json" } },
+		});
+		expect((await loadAccount(ownerId)).columnOrder).toContain(columnId);
+		expect((await loadMeta(columnId)).id).toBe(columnId);
+	});
+
 	for (const boundaryName of [
 		"owner-account",
 		"shared-account",
@@ -170,6 +196,40 @@ describe("deleteColumn lifecycle workflow", () => {
 });
 
 describe("restoreColumn lifecycle workflow", () => {
+	it("fails closed and preserves malformed trash", async () => {
+		const ownerId = await createAccount();
+		const columnId = await createColumn(ownerId);
+		await routeDelete(ownerId, columnId);
+		const normalizedOwnerId = normalizeAccountId(ownerId);
+		const trashKey = `trash:${normalizedOwnerId}`;
+		const coordinator = env.ACCOUNT_COORDINATOR.get(
+			env.ACCOUNT_COORDINATOR.idFromName(normalizedOwnerId),
+		);
+		await coordinator.fetch(
+			new Request("http://account-coordinator/put", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ key: trashKey, value: "{" }),
+			}),
+		);
+
+		const result = await restoreColumn({ env, columnId, accountId: ownerId });
+
+		expect(result).toMatchObject({
+			ok: false,
+			failure: { kind: "schema", record: "trash", result: { code: "invalid_json" } },
+		});
+		expect((await loadAccount(ownerId)).columnOrder).not.toContain(columnId);
+		const rawResponse = await coordinator.fetch(
+			new Request("http://account-coordinator/get", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ key: trashKey }),
+			}),
+		);
+		expect(((await rawResponse.json()) as { value: string }).value).toBe("{");
+	});
+
 	for (const boundary of [
 		"owner-account",
 		"trash",

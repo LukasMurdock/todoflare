@@ -76,12 +76,23 @@ export interface AccountExportColumn {
 	yjs: number[] | null;
 }
 
-export interface AccountExportPayload {
+export interface AccountExportPayloadV1 {
 	schemaVersion: 1;
 	exportedAt: number;
 	account: Account;
 	ownedColumns: AccountExportColumn[];
 }
+
+export interface AccountExportPayload {
+	schemaVersion: 2;
+	exportedAt: number;
+	complete: true;
+	expectedColumnIds: string[];
+	account: Account;
+	ownedColumns: AccountExportColumn[];
+}
+
+export type AccountImportPayload = AccountExportPayloadV1 | AccountExportPayload;
 
 /**
  * Rate limit error response

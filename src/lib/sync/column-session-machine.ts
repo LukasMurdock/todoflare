@@ -11,9 +11,20 @@ import type { YjsOutboxKind } from "./yjs-update-outbox";
 export type ColumnTerminationReason = "revoked" | "column_deleted";
 
 export class ColumnSocketAuthorizationError extends Error {
-	constructor(readonly status: number) {
+	constructor(
+		readonly status: number,
+		readonly reason: ColumnTerminationReason =
+			status === 404 ? "column_deleted" : "revoked",
+	) {
 		super(`WebSocket authorization failed: ${status}`);
 		this.name = "ColumnSocketAuthorizationError";
+	}
+}
+
+export class ColumnSocketProvisioningError extends Error {
+	constructor(readonly status: number) {
+		super(`Column is still being provisioned: ${status}`);
+		this.name = "ColumnSocketProvisioningError";
 	}
 }
 
@@ -370,7 +381,14 @@ export function createColumnSessionMachine(dependencies: ColumnSessionDependenci
 								{
 									guard: ({ event }) =>
 										event.error instanceof ColumnSocketAuthorizationError &&
-										[401, 403, 404].includes(event.error.status),
+										event.error.reason === "column_deleted",
+									target: "#columnSession.terminating",
+									actions: "setDeleted",
+								},
+								{
+									guard: ({ event }) =>
+										event.error instanceof ColumnSocketAuthorizationError &&
+										event.error.reason === "revoked",
 									target: "#columnSession.terminating",
 									actions: "setRevoked",
 								},

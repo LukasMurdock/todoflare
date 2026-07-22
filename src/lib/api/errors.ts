@@ -6,6 +6,7 @@ export const API_ERROR_CODES = [
 	"read_only_mode",
 	"rate_limited",
 	"durable_object_unavailable",
+	"account_export_incomplete",
 	"server_contract_invalid",
 	"idempotency_conflict",
 	"idempotency_in_progress",

@@ -113,12 +113,16 @@ export function parseColumnMetaRecord(raw: unknown): SchemaParseResult<ColumnMet
 		: invalidShape("Column metadata has invalid shape");
 }
 
-export function parseDeletedColumnRecords(raw: string | null): DeletedColumnRecord[] {
-	if (!raw) return [];
+export function parseDeletedColumnRecords(
+	raw: string | null,
+): SchemaParseResult<DeletedColumnRecord[]> {
+	if (raw === null) return { ok: true, value: [] };
 	const json = parseJson(raw, "Trash record");
-	if (!json.ok) return [];
+	if (!json.ok) return json;
 	const parsed = z.array(deletedColumnRecordSchema).max(100).safeParse(json.value);
-	return parsed.success ? parsed.data : [];
+	return parsed.success
+		? { ok: true, value: parsed.data }
+		: invalidShape("Trash record has invalid shape");
 }
 
 export function parseSharedColumnIndex(

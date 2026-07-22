@@ -44,6 +44,7 @@ export interface PurgeExpiredTrashedColumnsInput<TColumnRoomId> {
 
 export interface PurgeExpiredTrashedColumnsResult {
 	accountsScanned: number;
+	trashRecordsInvalid: number;
 	columnsPurged: number;
 	columnsFailed: number;
 	trashEntriesRemoved: number;
@@ -69,6 +70,7 @@ export async function purgeExpiredTrashedColumns<TColumnRoomId>(
 		});
 
 	let accountsScanned = 0;
+	let trashRecordsInvalid = 0;
 	let columnsPurged = 0;
 	let columnsFailed = 0;
 	let trashEntriesRemoved = 0;
@@ -86,7 +88,18 @@ export async function purgeExpiredTrashedColumns<TColumnRoomId>(
 			accountsScanned += 1;
 
 			const trashKey = `trash:${normalizedId}`;
-			const trash = parseDeletedColumnRecords(await records.get(trashKey));
+			const parsedTrash = parseDeletedColumnRecords(await records.get(trashKey));
+			if (!parsedTrash.ok) {
+				trashRecordsInvalid += 1;
+				console.error("Trash schema guard blocked scheduled purge", {
+					accountId: normalizedId,
+					code: parsedTrash.code,
+					expectedVersion: parsedTrash.expectedVersion,
+					foundVersion: parsedTrash.foundVersion ?? null,
+				});
+				continue;
+			}
+			const trash = parsedTrash.value;
 			if (trash.length === 0) continue;
 
 			for (const entry of trash) {
@@ -124,6 +137,7 @@ export async function purgeExpiredTrashedColumns<TColumnRoomId>(
 
 	return {
 		accountsScanned,
+		trashRecordsInvalid,
 		columnsPurged,
 		columnsFailed,
 		trashEntriesRemoved,

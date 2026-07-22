@@ -5,6 +5,7 @@ import { releasePublicId } from "../public-id-registry";
 import {
 	parseAccountRecord,
 	parseColumnMetaRecord,
+	parseDeletedColumnRecords,
 	parseSharedColumnIndex,
 	TRASH_RETENTION_MS,
 } from "../persistence-records";
@@ -74,6 +75,14 @@ export async function deleteColumn<TColumnRoomId>(
 
 	const normalizedOwnerId = normalizeAccountId(meta.ownerId);
 	const ownerKey = `account:${normalizedOwnerId}`;
+	const trashKey = `trash:${normalizedOwnerId}`;
+	const parsedTrash = parseDeletedColumnRecords(await records.get(trashKey));
+	if (!parsedTrash.ok) {
+		return {
+			ok: false,
+			failure: { kind: "schema", record: "trash", result: parsedTrash },
+		};
+	}
 	const ownerData = await records.get(ownerKey);
 	if (ownerData) {
 		const parsedOwner = parseAccountRecord(ownerData);
@@ -139,7 +148,6 @@ export async function deleteColumn<TColumnRoomId>(
 	await afterWrite?.("column-public");
 
 	const deletedAt = now();
-	const trashKey = `trash:${normalizedOwnerId}`;
 	await mutateAccountRecord(env, trashKey, {
 		kind: "trash-upsert",
 		columnId,

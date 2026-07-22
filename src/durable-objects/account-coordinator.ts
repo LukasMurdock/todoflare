@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { parseDeletedColumnRecords } from "../server/persistence-records";
 
 interface AccountCoordinatorEnv {
 	ACCOUNTS: KVNamespace;
@@ -148,9 +149,9 @@ export class AccountCoordinatorSql extends DurableObject<AccountCoordinatorEnv> 
 		}
 		case "trash-upsert":
 		case "trash-remove": {
-			const trash = value === null
-				? []
-				: (JSON.parse(value) as Array<{ columnId: string; deletedAt: number }>);
+			const parsedTrash = parseDeletedColumnRecords(value);
+			if (!parsedTrash.ok) throw new Error(`Trash record ${parsedTrash.code}`);
+			const trash = parsedTrash.value;
 			if (mutation.kind === "trash-remove") {
 				return JSON.stringify(trash.filter((entry) => entry.columnId !== mutation.columnId));
 			}

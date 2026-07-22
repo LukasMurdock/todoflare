@@ -1,6 +1,8 @@
 import { createActor, SimulatedClock } from "xstate";
 import { describe, expect, it } from "vitest";
 import {
+	ColumnSocketAuthorizationError,
+	ColumnSocketProvisioningError,
 	columnSessionConnectionStatus,
 	createColumnSessionMachine,
 	type ColumnSessionDependencies,
@@ -56,7 +58,10 @@ class FakeSocket implements ColumnSocketLike {
 	}
 }
 
-function createHarness(options?: { replayFrames?: ColumnSocketFrame[] }) {
+function createHarness(options?: {
+	replayFrames?: ColumnSocketFrame[];
+	getSocketUrl?: ColumnSessionDependencies["getSocketUrl"];
+}) {
 	const sockets: FakeSocket[] = [];
 	const persisted: string[] = [];
 	const written: ColumnSocketFrame[] = [];
@@ -74,7 +79,9 @@ function createHarness(options?: { replayFrames?: ColumnSocketFrame[] }) {
 			sockets.push(socket);
 			return socket;
 		},
-		getSocketUrl: async (_accountId, columnId) => `ws://test/${columnId}`,
+		getSocketUrl:
+			options?.getSocketUrl ??
+			(async (_accountId, columnId) => `ws://test/${columnId}`),
 		persistUpdate: (_accountId, _columnId, kind, update) => {
 			log.push("outbox.persist");
 			const id = `${kind}:${update[0] ?? 0}:${persisted.length}`;
@@ -264,6 +271,61 @@ describe("column session machine", () => {
 		expect(harness.sockets).toHaveLength(2);
 		expect(harness.actor.getSnapshot().context.retryAttempt).toBe(1);
 	});
+
+	it("retries provisioning failures and replays edits after the room becomes available", async () => {
+		let authorizationAttempts = 0;
+		const harness = createHarness({
+			getSocketUrl: async (_accountId, columnId) => {
+				authorizationAttempts += 1;
+				if (authorizationAttempts === 1) {
+					throw new ColumnSocketProvisioningError(404);
+				}
+				return `ws://test/${columnId}`;
+			},
+		});
+
+		harness.actor.send({ type: "SUBSCRIBE", leaseId: "editor" });
+		await flushSocketAuthorization();
+
+		expect(harness.actor.getSnapshot().matches("reconnectDelay")).toBe(true);
+		expect(harness.log).not.toContain("cleanup.start");
+		harness.actor.send({ type: "SEND_SYNC", update: new Uint8Array([7]) });
+		expect(harness.persisted).toHaveLength(1);
+
+		harness.clock.increment(1_000);
+		await flushSocketAuthorization();
+		expect(authorizationAttempts).toBe(2);
+		expect(harness.sockets).toHaveLength(1);
+
+		harness.sockets[0]!.open();
+		expect(
+			harness.sockets[0]!.sent.map((frame) => [...new Uint8Array(frame)]),
+		).toEqual([[7]]);
+		expect(harness.pending.size).toBe(1);
+		expect(harness.log).not.toContain("cleanup.start");
+	});
+
+	it.each([
+		{ status: 403, reason: "revoked" as const },
+		{ status: 404, reason: "column_deleted" as const },
+	])(
+		"terminates a settled column as $reason after ticket status $status",
+		async ({ status, reason }) => {
+			const harness = createHarness({
+				getSocketUrl: async () => {
+					throw new ColumnSocketAuthorizationError(status);
+				},
+			});
+
+			harness.actor.send({ type: "SUBSCRIBE", leaseId: "editor" });
+			await flushSocketAuthorization();
+
+			expect(harness.actor.getSnapshot().matches("terminating")).toBe(true);
+			expect(harness.actor.getSnapshot().context.terminationReason).toBe(reason);
+			expect(harness.log).toContain("cleanup.start");
+			harness.resolveCleanup();
+		},
+	);
 
 	it("closes transport before terminal cleanup and rejects later work", async () => {
 		const harness = createHarness();

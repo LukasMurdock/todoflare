@@ -36,7 +36,7 @@ async function createColumn(accountId: string, columnId = crypto.randomUUID()): 
 
 async function coordinatorRequest(
 	accountId: string,
-	path: "get" | "put",
+	path: "get" | "put" | "mutate",
 	body: Record<string, unknown>,
 ): Promise<{ value?: string | null }> {
 	const normalized = normalizeAccountId(accountId);
@@ -183,6 +183,51 @@ describe("metadata consistency under competing writers", () => {
 });
 
 describe("scheduled lifecycle recovery", () => {
+	it("does not resurrect columns when the owner's trash record is malformed", async () => {
+		const account = await createAccount();
+		const columnId = await createColumn(account.id);
+		const normalizedId = normalizeAccountId(account.id);
+		const accountKey = `account:${normalizedId}`;
+		const trashKey = `trash:${normalizedId}`;
+		await coordinatorRequest(account.id, "put", {
+			key: accountKey,
+			value: JSON.stringify({ ...account, columnOrder: [] }),
+		});
+		await coordinatorRequest(account.id, "put", { key: trashKey, value: "{" });
+
+		const result = await reconcileColumnLifecycle(env);
+
+		expect(result.trashRecordsInvalid).toBeGreaterThanOrEqual(1);
+		expect(result.ownerMembershipRepaired).toBe(0);
+		expect((await loadAuthoritativeAccount(account.id)).columnOrder).not.toContain(columnId);
+		expect((await coordinatorRequest(account.id, "get", { key: trashKey })).value).toBe(
+			"{",
+		);
+	});
+
+	it("rejects trash mutations without overwriting malformed source data", async () => {
+		const account = await createAccount();
+		const key = `trash:${normalizeAccountId(account.id)}`;
+		await coordinatorRequest(account.id, "put", { key, value: "{" });
+		const stub = env.ACCOUNT_COORDINATOR.get(
+			env.ACCOUNT_COORDINATOR.idFromName(normalizeAccountId(account.id)),
+		);
+
+		const response = await stub.fetch(
+			new Request("http://account-coordinator/mutate", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					key,
+					mutation: { kind: "trash-remove", columnId: crypto.randomUUID() },
+				}),
+			}),
+		);
+
+		expect(response.status).toBe(409);
+		expect((await coordinatorRequest(account.id, "get", { key })).value).toBe("{");
+	});
+
 	it("finishes a create without another user request", async () => {
 		const account = await createAccount();
 		const meta: ColumnMeta = {

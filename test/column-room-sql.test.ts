@@ -141,6 +141,38 @@ async function waitForOp(
 }
 
 describe("ColumnRoomSql Durable Object (HTTP)", () => {
+	it("distinguishes an uninitialized room from denied access", async () => {
+		const columnId = "ws-ticket-error-semantics";
+		const stub = getColumnRoomStub(columnId);
+		const ownerId = "1111 1111 1111 1111";
+
+		const missing = await stub.fetch("http://do/ws-ticket", {
+			method: "POST",
+			headers: { "X-Authenticated-Account-ID": ownerId },
+		});
+		expect(missing.status).toBe(404);
+		expect(await missing.json()).toMatchObject({ code: "not_found" });
+
+		await stub.fetch("http://do/init", {
+			method: "POST",
+			body: JSON.stringify({
+				schemaVersion: 1,
+				id: columnId,
+				ownerId,
+				sharedWith: [],
+				publicId: null,
+				createdAt: Date.now(),
+			} satisfies ColumnMeta),
+		});
+
+		const denied = await stub.fetch("http://do/ws-ticket", {
+			method: "POST",
+			headers: { "X-Authenticated-Account-ID": "2222 2222 2222 2222" },
+		});
+		expect(denied.status).toBe(403);
+		expect(await denied.json()).toMatchObject({ code: "access_revoked" });
+	});
+
 	it("negotiates the supported WebSocket protocol and rejects unknown versions", async () => {
 		const columnId = "ws-protocol-negotiation";
 		const stub = getColumnRoomStub(columnId);

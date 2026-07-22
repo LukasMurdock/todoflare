@@ -299,6 +299,127 @@ describe("Worker routes", () => {
 		});
 	});
 
+	it("returns 503 instead of downloading an incomplete account export", async () => {
+		const accountId = await createAccount();
+		const realColumnId = await createColumn(accountId);
+		const missingColumnId = crypto.randomUUID();
+		const normalizedId = normalizeAccountId(accountId);
+		const accountResponse = await SELF.fetch("http://example.com/api/account", {
+			headers: accountHeaders(accountId),
+		});
+		const { account } = (await accountResponse.json()) as {
+			account: { columnOrder: string[] };
+		};
+		const accountCoordinator = env.ACCOUNT_COORDINATOR.get(
+			env.ACCOUNT_COORDINATOR.idFromName(normalizedId),
+		);
+		const putResponse = await accountCoordinator.fetch(
+			new Request("http://account-coordinator/put", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					key: `account:${normalizedId}`,
+					value: JSON.stringify({
+						...account,
+						columnOrder: [realColumnId, missingColumnId],
+					}),
+				}),
+			}),
+		);
+		expect(putResponse.ok).toBe(true);
+
+		const exportResponse = await SELF.fetch(
+			"http://example.com/api/account/export",
+			{ headers: accountHeaders(accountId) },
+		);
+
+		expect(exportResponse.status).toBe(503);
+		expect(exportResponse.headers.get("Cache-Control")).toBe("private, no-store");
+		expect(await exportResponse.json()).toMatchObject({
+			code: "account_export_incomplete",
+			failedColumns: [{ columnId: missingColumnId, reason: "not_found" }],
+		});
+	});
+
+	it("marks current exports complete and rejects incomplete legacy imports", async () => {
+		const accountId = await createAccount();
+		const columnId = await createColumn(accountId);
+		const exportResponse = await SELF.fetch(
+			"http://example.com/api/account/export",
+			{ headers: accountHeaders(accountId) },
+		);
+		const payload = (await exportResponse.json()) as {
+			schemaVersion: number;
+			complete: boolean;
+			expectedColumnIds: string[];
+			account: unknown;
+			ownedColumns: unknown[];
+			exportedAt: number;
+		};
+		expect(payload).toMatchObject({
+			schemaVersion: 2,
+			complete: true,
+			expectedColumnIds: [columnId],
+		});
+
+		const incompleteLegacyPayload = {
+			schemaVersion: 1,
+			exportedAt: payload.exportedAt,
+			account: payload.account,
+			ownedColumns: [],
+		};
+		const importResponse = await SELF.fetch(
+			"http://example.com/api/account/import",
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					...accountHeaders(accountId),
+				},
+				body: JSON.stringify(incompleteLegacyPayload),
+			},
+		);
+		expect(importResponse.status).toBe(400);
+		expect(await importResponse.json()).toMatchObject({ error: "invalid_request" });
+	});
+
+	it("accepts a legacy export only when every ordered column is present", async () => {
+		const accountId = await createAccount();
+		await createColumn(accountId);
+		const exportResponse = await SELF.fetch(
+			"http://example.com/api/account/export",
+			{ headers: accountHeaders(accountId) },
+		);
+		const current = (await exportResponse.json()) as {
+			exportedAt: number;
+			account: unknown;
+			ownedColumns: unknown[];
+		};
+		const legacy = {
+			schemaVersion: 1,
+			exportedAt: current.exportedAt,
+			account: current.account,
+			ownedColumns: current.ownedColumns,
+		};
+
+		const importResponse = await SELF.fetch(
+			"http://example.com/api/account/import",
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					...accountHeaders(accountId),
+				},
+				body: JSON.stringify(legacy),
+			},
+		);
+		expect(importResponse.ok).toBe(true);
+		expect(await importResponse.json()).toMatchObject({
+			success: true,
+			importedColumns: 1,
+		});
+	});
+
 	it("rejects invalid backup restore modes", async () => {
 		const res = await SELF.fetch(
 			`http://example.com/api/admin/backups/column/${crypto.randomUUID()}/restore`,
@@ -933,6 +1054,35 @@ describe("Backup restore validation", () => {
 			env.BACKUP_ADMIN_TOKEN = previousToken;
 		}
 	});
+
+	it("reports account restore failure when an expected backup is missing", async () => {
+		const previousToken = env.BACKUP_ADMIN_TOKEN;
+		env.BACKUP_ADMIN_TOKEN = "test-token";
+		try {
+			const accountId = await createAccount();
+			const columnId = await createColumn(accountId);
+			const response = await SELF.fetch(
+				"http://example.com/api/admin/backups/account/restore",
+				{
+					method: "POST",
+					headers: {
+						Authorization: "Bearer test-token",
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify({ accountId }),
+				},
+			);
+			expect(response.ok).toBe(true);
+			expect(await response.json()).toMatchObject({
+				success: false,
+				restoredColumns: [],
+				missingBackups: [columnId],
+				failedColumns: [],
+			});
+		} finally {
+			env.BACKUP_ADMIN_TOKEN = previousToken;
+		}
+		});
 });
 
 describe("WebSocket upgrade routing", () => {
@@ -1048,6 +1198,42 @@ describe("WebSocket upgrade routing", () => {
 });
 
 describe("Persistence schema routing", () => {
+	it("rejects malformed trash through the account API without rewriting it", async () => {
+		const accountId = await createAccount();
+		const normalizedId = normalizeAccountId(accountId);
+		const trashKey = `trash:${normalizedId}`;
+		const accountCoordinator = env.ACCOUNT_COORDINATOR.get(
+			env.ACCOUNT_COORDINATOR.idFromName(normalizedId),
+		);
+		const corruptResponse = await accountCoordinator.fetch(
+			new Request("http://account-coordinator/put", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ key: trashKey, value: "{" }),
+			}),
+		);
+		expect(corruptResponse.ok).toBe(true);
+
+		const browserResponse = await SELF.fetch("http://example.com/api/account", {
+			headers: accountHeaders(accountId),
+		});
+
+		expect(browserResponse.status).toBe(503);
+		expect(await browserResponse.json()).toMatchObject({
+			error: "schema_guard_blocked",
+			kind: "trash",
+			code: "invalid_json",
+		});
+		const rawResponse = await accountCoordinator.fetch(
+			new Request("http://account-coordinator/get", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ key: trashKey }),
+			}),
+		);
+		expect(((await rawResponse.json()) as { value: string }).value).toBe("{");
+	});
+
 	for (const persistedAccountCase of [
 		{
 			name: "invalid JSON",

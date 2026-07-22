@@ -60,6 +60,7 @@ describe("purgeExpiredTrashedColumns workflow", () => {
 
 		expect(result).toEqual({
 			accountsScanned: 1,
+			trashRecordsInvalid: 0,
 			columnsPurged: 1,
 			columnsFailed: 0,
 			trashEntriesRemoved: 1,
@@ -178,6 +179,25 @@ describe("purgeExpiredTrashedColumns workflow", () => {
 		expect(result.columnsPurged).toBe(1);
 	});
 
+	it("preserves malformed trash and skips destructive purge actions", async () => {
+		const accountId = await seedTrash([]);
+		const trashKey = `trash:${accountId}`;
+		await env.ACCOUNTS.put(trashKey, "{");
+		const deleteColumn = vi.fn(async () => Response.json({ success: true }));
+
+		const result = await purgeExpiredTrashedColumns({
+			env: { ACCOUNTS: env.ACCOUNTS, COLUMN_ROOM: env.COLUMN_ROOM },
+			now: () => FIXED_NOW,
+			deleteColumn,
+		});
+
+		expect(result.trashRecordsInvalid).toBe(1);
+		expect(result.columnsPurged).toBe(0);
+		expect(result.trashEntriesRemoved).toBe(0);
+		expect(deleteColumn).not.toHaveBeenCalled();
+		expect(await env.ACCOUNTS.get(trashKey)).toBe("{");
+	});
+
 	it("continues partial batches and retains only fresh or failed entries", async () => {
 		const successfulId = crypto.randomUUID();
 		const nonOkId = crypto.randomUUID();
@@ -207,6 +227,7 @@ describe("purgeExpiredTrashedColumns workflow", () => {
 		expect(attempted).toEqual([successfulId, nonOkId, thrownId]);
 		expect(result).toEqual({
 			accountsScanned: 1,
+			trashRecordsInvalid: 0,
 			columnsPurged: 1,
 			columnsFailed: 2,
 			trashEntriesRemoved: 1,

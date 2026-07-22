@@ -1,3 +1,5 @@
+import { parseDeletedColumnRecords } from "./persistence-records";
+
 export interface AccountRecordStore {
 	get(key: string): Promise<string | null>;
 	put(key: string, value: string): Promise<void>;
@@ -159,9 +161,9 @@ export async function mutateAccountRecord<TAccountCoordinatorId>(
 	}
 	case "trash-upsert":
 	case "trash-remove": {
-		const trash = raw === null
-			? []
-			: (JSON.parse(raw) as Array<{ columnId: string; deletedAt: number }>);
+		const parsedTrash = parseDeletedColumnRecords(raw);
+		if (!parsedTrash.ok) throw new Error(`Trash record ${parsedTrash.code}`);
+		const trash = parsedTrash.value;
 		value = JSON.stringify(
 			mutation.kind === "trash-remove"
 				? trash.filter((entry) => entry.columnId !== mutation.columnId)

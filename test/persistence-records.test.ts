@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	parseAccountRecord,
 	parseColumnMetaRecord,
+	parseDeletedColumnRecords,
 	parseSharedColumnIndex,
 } from "../src/server/persistence-records";
 
@@ -53,6 +54,17 @@ describe("persisted record schemas", () => {
 		"rejects corrupt shared indexes: %s",
 		(raw) => {
 			expect(parseSharedColumnIndex(raw).ok).toBe(false);
+		},
+	);
+
+	it("treats a missing trash record as an empty valid collection", () => {
+		expect(parseDeletedColumnRecords(null)).toEqual({ ok: true, value: [] });
+	});
+
+	it.each(["not-json", '{}', '[{"columnId":"column-1"}]', '[42]'])(
+		"rejects corrupt trash records: %s",
+		(raw) => {
+			expect(parseDeletedColumnRecords(raw).ok).toBe(false);
 		},
 	);
 });

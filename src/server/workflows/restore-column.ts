@@ -58,7 +58,14 @@ export async function restoreColumn<TColumnRoomId>(
 	const account = parsedAccount.value;
 	const trashKey = `trash:${normalizedAccountId}`;
 	const trashRaw = await records.get(trashKey);
-	const trash = parseDeletedColumnRecords(trashRaw);
+	const parsedTrash = parseDeletedColumnRecords(trashRaw);
+	if (!parsedTrash.ok) {
+		return {
+			ok: false,
+			failure: { kind: "schema", record: "trash", result: parsedTrash },
+		};
+	}
+	const trash = parsedTrash.value;
 	const entry = trash.find((item) => item.columnId === columnId);
 
 	const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));

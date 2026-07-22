@@ -35,7 +35,10 @@ import {
 	WS_OP_AWARENESS,
 } from "@/lib/collaboration/websocket-protocol";
 import { ColumnSessionManager } from "@/lib/sync/column-session-manager";
-import { ColumnSocketAuthorizationError } from "@/lib/sync/column-session-machine";
+import {
+	ColumnSocketAuthorizationError,
+	ColumnSocketProvisioningError,
+} from "@/lib/sync/column-session-machine";
 import type {
 	ColumnSocketFrame,
 	ColumnSocketLike,
@@ -572,6 +575,16 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 							Authorization: accountAuthorizationHeader(activeAccountId),
 						},
 					});
+					const hasPendingCreate = mutationQueue
+						.getPending(activeAccountId)
+						.some(
+							(mutation) =>
+								mutation.opType === "column.create" &&
+								mutation.payload.columnId === columnId,
+						);
+					if ([403, 404].includes(response.status) && hasPendingCreate) {
+						throw new ColumnSocketProvisioningError(response.status);
+					}
 					if ([401, 403, 404].includes(response.status)) {
 						throw new ColumnSocketAuthorizationError(response.status);
 					}
@@ -642,6 +655,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		accountId,
 		applyColumnAccessLossPolicy,
 		isNetworkOnline,
+		mutationQueue,
 		refreshYjsOutboxSummary,
 		yjsOutbox,
 	]);
@@ -822,6 +836,13 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 
 			if (outcome === "terminal") {
 				detachColumnSync(columnId);
+				const droppedYjsCount = yjsOutbox.dropForColumn(accountId, columnId);
+				refreshYjsOutboxSummary();
+				toast.error(
+					droppedYjsCount > 0
+						? "Column could not be created. Unsynced changes were discarded."
+						: "Column could not be created.",
+				);
 				return null;
 			}
 
@@ -832,7 +853,13 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			setError(message);
 			return null;
 		}
-	}, [accountId, detachColumnSync, submitAccountCommand]);
+	}, [
+		accountId,
+		detachColumnSync,
+		refreshYjsOutboxSummary,
+		submitAccountCommand,
+		yjsOutbox,
+	]);
 
 	// Delete a column
 	const deleteColumn = useCallback(

@@ -34,7 +34,7 @@ export type ColumnLifecycleFailure =
 	  }
 	| {
 			kind: "schema";
-			record: "account" | "column_meta" | "shared_index";
+			record: "account" | "column_meta" | "shared_index" | "trash";
 			result: Extract<SchemaParseResult<unknown>, { ok: false }>;
 	  }
 	| {

@@ -57,6 +57,7 @@ import { revokeColumnShare } from "./server/workflows/revoke-column-share";
 import { disablePublicColumn } from "./server/workflows/disable-public-column";
 import { mapWithConcurrency } from "./server/bounded-concurrency";
 import { cloneColumnSnapshot } from "./server/workflows/clone-column-snapshot";
+import { exportAccountColumns } from "./server/workflows/export-account-columns";
 import {
 	restoreColumnBackup,
 	type ColumnBackupPayload,
@@ -182,7 +183,7 @@ function apiErrorResponse(
 }
 
 function schemaErrorResponse(
-	kind: "account" | "column_meta" | "shared_index",
+	kind: "account" | "column_meta" | "shared_index" | "trash",
 	result: Extract<SchemaParseResult<unknown>, { ok: false }>,
 ) {
 	return Response.json(
@@ -603,20 +604,91 @@ const createColumnBodySchema = z
 const shareColumnBodySchema = z
 	.object({ targetAccountId: accountIdValueSchema })
 	.strict();
-const accountImportBodySchema = z
+const accountExportColumnInputSchema = z
+	.object({
+		meta: columnMetaInputSchema,
+		yjs: yjsBytesSchema,
+	})
+	.strict();
+
+function validateAccountImportCompleteness(
+	payload: {
+		account: z.output<typeof accountInputSchema>;
+		ownedColumns: Array<z.output<typeof accountExportColumnInputSchema>>;
+		expectedColumnIds?: string[];
+	},
+	context: z.RefinementCtx,
+) {
+	const orderedIds = payload.account.columnOrder;
+	const exportedIds = payload.ownedColumns.map((column) => column.meta.id);
+	const expectedIds = payload.expectedColumnIds ?? orderedIds;
+	const accountId = normalizeAccountId(payload.account.id);
+
+	if (new Set(orderedIds).size !== orderedIds.length) {
+		context.addIssue({
+			code: "custom",
+			path: ["account", "columnOrder"],
+			message: "Account column order must not contain duplicate IDs",
+		});
+	}
+	if (new Set(exportedIds).size !== exportedIds.length) {
+		context.addIssue({
+			code: "custom",
+			path: ["ownedColumns"],
+			message: "Exported columns must not contain duplicate IDs",
+		});
+	}
+	if (JSON.stringify(expectedIds) !== JSON.stringify(orderedIds)) {
+		context.addIssue({
+			code: "custom",
+			path: ["expectedColumnIds"],
+			message: "Expected columns must match the account column order",
+		});
+	}
+	if (JSON.stringify(exportedIds) !== JSON.stringify(expectedIds)) {
+		context.addIssue({
+			code: "custom",
+			path: ["ownedColumns"],
+			message: "Export must contain every expected column in account order",
+		});
+	}
+	for (const [index, column] of payload.ownedColumns.entries()) {
+		if (normalizeAccountId(column.meta.ownerId) !== accountId) {
+			context.addIssue({
+				code: "custom",
+				path: ["ownedColumns", index, "meta", "ownerId"],
+				message: "Exported column owner does not match the exported account",
+			});
+		}
+	}
+}
+
+const accountImportV1BodySchema = z
 	.object({
 		schemaVersion: z.literal(1),
 		exportedAt: z.number().finite().nonnegative(),
 		account: accountInputSchema,
-		ownedColumns: z
-			.array(
-				z
-					.object({ meta: columnMetaInputSchema, yjs: yjsBytesSchema })
-					.strict(),
-			)
-			.max(100),
+		ownedColumns: z.array(accountExportColumnInputSchema).max(100),
 	})
-	.strict();
+	.strict()
+	.superRefine(validateAccountImportCompleteness);
+
+const accountImportV2BodySchema = z
+	.object({
+		schemaVersion: z.literal(2),
+		exportedAt: z.number().finite().nonnegative(),
+		complete: z.literal(true),
+		expectedColumnIds: z.array(columnIdValueSchema).max(100),
+		account: accountInputSchema,
+		ownedColumns: z.array(accountExportColumnInputSchema).max(100),
+	})
+	.strict()
+	.superRefine(validateAccountImportCompleteness);
+
+const accountImportBodySchema = z.union([
+	accountImportV1BodySchema,
+	accountImportV2BodySchema,
+]);
 const backupRestoreBodySchema = z
 	.object({
 		key: z.string().min(1).max(1024).optional(),
@@ -953,6 +1025,18 @@ app.get("/api/account", async (c) => {
 		return schemaErrorResponse("account", parsedAccount);
 	}
 	const account = parsedAccount.value;
+	const trashKey = `trash:${normalizedId}`;
+	const deletedColumnsRaw = await accountRecordStore(c.env).get(trashKey);
+	const parsedDeletedColumns = parseDeletedColumnRecords(deletedColumnsRaw);
+	if (!parsedDeletedColumns.ok) {
+		console.error("Trash schema guard blocked account hydration", {
+			accountId: normalizedId,
+			code: parsedDeletedColumns.code,
+			expectedVersion: parsedDeletedColumns.expectedVersion,
+			foundVersion: parsedDeletedColumns.foundVersion ?? null,
+		});
+		return schemaErrorResponse("trash", parsedDeletedColumns);
+	}
 
 	// Fetch authoritative metadata for owned columns so account convergence can
 	// confirm sharing and public-link state rather than retaining client effects.
@@ -1047,13 +1131,11 @@ app.get("/api/account", async (c) => {
 	}
 
 	const now = Date.now();
-	const trashKey = `trash:${normalizedId}`;
-	const deletedColumnsRaw = await accountRecordStore(c.env).get(trashKey);
-	const deletedColumns = parseDeletedColumnRecords(deletedColumnsRaw)
+	const originalDeleted = parsedDeletedColumns.value;
+	const deletedColumns = originalDeleted
 		.filter((entry) => now - entry.deletedAt < TRASH_RETENTION_MS)
 		.sort((a, b) => b.deletedAt - a.deletedAt);
 
-	const originalDeleted = parseDeletedColumnRecords(deletedColumnsRaw);
 	if (deletedColumns.length !== originalDeleted.length) {
 		const retained = new Set(deletedColumns.map((entry) => entry.columnId));
 		for (const entry of originalDeleted) {
@@ -1175,36 +1257,36 @@ app.get("/api/account/export", async (c) => {
 		return schemaErrorResponse("account", parsedAccount);
 	}
 
-	const ownedColumns: AccountExportPayload["ownedColumns"] = [];
-	for (const columnId of parsedAccount.value.columnOrder) {
-		const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
-		const exportResponse = await stub.fetch(new Request("http://do/export"));
-		if (!exportResponse.ok) continue;
-
-		const exported = (await exportResponse.json()) as {
-			meta: unknown;
-			yjs: number[] | null;
-		};
-		const parsedMeta = parseColumnMetaRecord(exported.meta);
-		if (!parsedMeta.ok) continue;
-
-		if (
-			normalizeAccountId(parsedMeta.value.ownerId) !== normalizedId
-		) {
-			continue;
-		}
-
-		ownedColumns.push({
-			meta: parsedMeta.value,
-			yjs: exported.yjs,
+	const exportedColumns = await exportAccountColumns({
+		columnRooms: c.env.COLUMN_ROOM,
+		columnIds: parsedAccount.value.columnOrder,
+		accountId,
+		concurrency: ACCOUNT_METADATA_CONCURRENCY,
+	});
+	if (!exportedColumns.ok) {
+		console.error("Account export incomplete", {
+			accountId: normalizedId,
+			failures: exportedColumns.failures,
 		});
+		return c.json(
+			{
+				error: "Account export could not include every owned column",
+				code: "account_export_incomplete" as const,
+				message: "Account export could not include every owned column",
+				failedColumns: exportedColumns.failures,
+			},
+			503,
+			{ "Cache-Control": "private, no-store" },
+		);
 	}
 
 	const payload: AccountExportPayload = {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		exportedAt: Date.now(),
+		complete: true,
+		expectedColumnIds: [...parsedAccount.value.columnOrder],
 		account: parsedAccount.value,
-		ownedColumns,
+		ownedColumns: exportedColumns.columns,
 	};
 
 	return c.json(payload, 200, { "Cache-Control": "private, no-store" });
@@ -1923,7 +2005,10 @@ app.post("/api/admin/backups/account/restore", async (c) => {
 	await rebuildSharedIndexesForColumns(c.env, restoredMetas);
 
 	return c.json({
-		success: failedColumns.length === 0,
+		success:
+			failedColumns.length === 0 &&
+			missingBackups.length === 0 &&
+			restoredColumns.length === account.columnOrder.length,
 		accountId: displayAccountId(accountId),
 		restoredColumns,
 		missingBackups,
@@ -2132,6 +2217,7 @@ export default {
 						reconciliationResult.publicMappingsRemoved,
 						reconciliationResult.publicMappingConflicts,
 						reconciliationResult.invalidRecords,
+						reconciliationResult.trashRecordsInvalid,
 					],
 				});
 				console.log(
