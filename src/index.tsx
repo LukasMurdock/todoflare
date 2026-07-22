@@ -1,5 +1,5 @@
-import { OpenAPIHono, z } from "@hono/zod-openapi";
-import type { Context } from "hono";
+import { Hono, type Context } from "hono";
+import { z } from "zod";
 import type {
 	Account,
 	AccountExportPayload,
@@ -26,7 +26,6 @@ import { IdempotencyCoordinatorSql } from "./durable-objects/idempotency-coordin
 import { RateLimitCoordinatorSql } from "./durable-objects/rate-limit-coordinator";
 import { AccountCoordinatorSql } from "./durable-objects/account-coordinator";
 import { PublicIdCoordinatorSql } from "./durable-objects/public-id-coordinator";
-import { registerAgentApi } from "./agent-api";
 import type { ApiErrorCode } from "./lib/api/errors";
 import {
 	createColumnResponseSchema,
@@ -106,7 +105,7 @@ export type Bindings = {
 	};
 };
 
-const app = new OpenAPIHono<{ Bindings: Bindings }>();
+const app = new Hono<{ Bindings: Bindings }>();
 
 const COLUMN_ID_PATTERN =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -162,17 +161,6 @@ async function fetchColumnMetadataBatch(
 		},
 	);
 }
-
-registerAgentApi(app);
-
-app.doc("/openapi.json", {
-	openapi: "3.0.0",
-	info: {
-		title: "Todoflare Agent API",
-		version: "1.0.0",
-		description: "Read-only agent endpoints for column discovery and snapshots.",
-	},
-});
 
 function apiErrorResponse(
 	code: ApiErrorCode,

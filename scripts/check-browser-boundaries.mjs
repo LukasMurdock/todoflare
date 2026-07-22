@@ -51,7 +51,6 @@ function isServerOnly(filePath) {
 	const relative = path.relative(sourceRoot, filePath).split(path.sep).join("/");
 	return (
 		relative === "index.tsx" ||
-		relative === "agent-api.ts" ||
 		relative.startsWith("server/") ||
 		relative.startsWith("durable-objects/")
 	);

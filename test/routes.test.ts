@@ -864,7 +864,7 @@ describe("WebSocket upgrade routing", () => {
 	});
 });
 
-describe("Agent read API", () => {
+describe("Persistence schema routing", () => {
 	for (const persistedAccountCase of [
 		{
 			name: "invalid JSON",
@@ -888,7 +888,7 @@ describe("Agent read API", () => {
 			code: "unsupported_schema_version",
 		},
 	] as const) {
-		it(`rejects ${persistedAccountCase.name} through both account APIs`, async () => {
+		it(`rejects ${persistedAccountCase.name} through the account API`, async () => {
 			const accountId = await createAccount();
 			const normalizedId = normalizeAccountId(accountId);
 			const accountCoordinator = env.ACCOUNT_COORDINATOR.get(
@@ -914,15 +914,6 @@ describe("Agent read API", () => {
 				error: "schema_guard_blocked",
 				kind: "account",
 				code: persistedAccountCase.code,
-			});
-
-			const agentResponse = await SELF.fetch(
-				"http://example.com/api/agent/v1/account/columns",
-				{ headers: accountHeaders(accountId) },
-			);
-			expect(agentResponse.status).toBe(503);
-			expect(await agentResponse.json()).toEqual({
-				error: "Account record is invalid",
 			});
 		});
 	}
@@ -950,135 +941,18 @@ describe("Agent read API", () => {
 			{ headers: accountHeaders(accountId) },
 		);
 		expect(browserResponse.status).toBe(200);
-
-		const agentResponse = await SELF.fetch(
-			`http://example.com/api/agent/v1/columns/${columnId}`,
-			{ headers: accountHeaders(accountId) },
-		);
-		expect(agentResponse.status).toBe(200);
 	});
+});
 
-	it("serves a public OpenAPI spec for agent endpoints", async () => {
-		const res = await SELF.fetch("http://example.com/openapi.json");
-		expect(res.ok).toBe(true);
-		const spec = (await res.json()) as {
-			openapi: string;
-			paths: Record<string, unknown>;
-		};
-
-		expect(spec.openapi).toBe("3.0.0");
-		expect(spec.paths["/api/agent/v1/account/columns"]).toBeDefined();
-		expect(spec.paths["/api/agent/v1/columns/{columnId}"]).toBeDefined();
-		expect(spec.paths["/api/agent/v1/columns/{columnId}/snapshot"]).toBeDefined();
-	});
-
-	it("denies account list without a bearer credential", async () => {
-		const res = await SELF.fetch("http://example.com/api/agent/v1/account/columns");
-		expect(res.status).toBe(400);
-	});
-
-	it("lists owned, shared (including hidden), and deleted columns", async () => {
-		const ownerId = await createAccount();
-		const sharedUserId = await createAccount();
-		const sharedColumnId = await createColumn(ownerId);
-		const deletedColumnId = await createColumn(ownerId);
-
-		await shareColumn(ownerId, sharedColumnId, sharedUserId);
-
-		const hideRes = await SELF.fetch(
-			"http://example.com/api/account/hidden",
-			{
-				method: "PUT",
-				headers: { "Content-Type": "application/json", ...accountHeaders(sharedUserId) },
-				body: JSON.stringify({ hiddenSharedColumns: [sharedColumnId] }),
-			},
-		);
-		expect(hideRes.ok).toBe(true);
-
-		const deleteRes = await SELF.fetch(`http://example.com/api/column/${deletedColumnId}`, {
-			method: "DELETE",
-			headers: accountHeaders(ownerId),
-		});
-		expect(deleteRes.ok).toBe(true);
-
-		const ownerListRes = await SELF.fetch(
-			"http://example.com/api/agent/v1/account/columns",
-			{
-				headers: accountHeaders(ownerId),
-			},
-		);
-		expect(ownerListRes.ok).toBe(true);
-		const ownerList = (await ownerListRes.json()) as {
-			columns: Array<{ id: string; state: string; source: string }>;
-		};
-		expect(
-			ownerList.columns.some(
-				(c) => c.id === deletedColumnId && c.source === "owned" && c.state === "deleted",
-			),
-		).toBe(true);
-
-		const sharedListRes = await SELF.fetch(
-			"http://example.com/api/agent/v1/account/columns",
-			{
-				headers: accountHeaders(sharedUserId),
-			},
-		);
-		expect(sharedListRes.ok).toBe(true);
-		const sharedList = (await sharedListRes.json()) as {
-			columns: Array<{ id: string; source: string; visibility: string }>;
-		};
-		expect(
-			sharedList.columns.some(
-				(c) =>
-					c.id === sharedColumnId &&
-					c.source === "shared" &&
-					c.visibility === "hidden",
-			),
-		).toBe(true);
-	});
-
-	it("returns canonical snapshot with nullable markdown", async () => {
-		const accountId = await createAccount();
-		const columnId = await createColumn(accountId);
-
-		const res = await SELF.fetch(
-			`http://example.com/api/agent/v1/columns/${columnId}/snapshot`,
-			{
-				headers: accountHeaders(accountId),
-			},
-		);
-
-		expect(res.ok).toBe(true);
-		const data = (await res.json()) as {
-			columnId: string;
-			state: "active" | "deleted";
-			yjs: number[] | null;
-			markdown: string | null;
-		};
-
-		expect(data.columnId).toBe(columnId);
-		expect(data.state).toBe("active");
-		expect(data).toHaveProperty("yjs");
-		expect(data).toHaveProperty("markdown");
-		expect(Array.isArray(data.yjs) || data.yjs === null).toBe(true);
-		expect(typeof data.markdown === "string" || data.markdown === null).toBe(true);
-	});
-
-	it("allows owner to snapshot a deleted column", async () => {
-		const accountId = await createAccount();
-		const columnId = await createColumn(accountId);
-		await deleteColumn(accountId, columnId);
-
-		const res = await SELF.fetch(
-			`http://example.com/api/agent/v1/columns/${columnId}/snapshot`,
-			{
-				headers: accountHeaders(accountId),
-			},
-		);
-
-		expect(res.ok).toBe(true);
-		const data = (await res.json()) as { state: string; deletedAt: number | null };
-		expect(data.state).toBe("deleted");
-		expect(typeof data.deletedAt).toBe("number");
+describe("Retired public contracts", () => {
+	it("does not expose the agent API or its OpenAPI document", async () => {
+		for (const path of [
+			"/api/agent/v1/account/columns",
+			"/api/agent/v1/columns/6e97b2fe-f33f-4f72-b12e-e8c354e1732d",
+			"/openapi.json",
+		]) {
+			const response = await SELF.fetch(`http://example.com${path}`);
+			expect(response.status).toBe(404);
+		}
 	});
 });

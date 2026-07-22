@@ -39,7 +39,7 @@ by `mutation-queue-service.ts`; protocol constants and codecs are owned by
 contract, and persisted outbox data is parsed before entering replay. There is
 no implemented `SyncRuntime` facade.
 
-On the server, Hono route ingress uses Zod/OpenAPI schemas. Persistence record
+On the server, Hono route ingress uses Zod schemas. Persistence record
 parsing is centralized in `persistence-records.ts`. Delete, restore, share,
 revoke, public-link enable/disable, and scheduled purge behavior are owned by
 named workflow modules. External replay failures use stable API error codes so
@@ -130,12 +130,20 @@ and removes entries that no longer grant access.
 
 ## Open product and architecture decisions
 
-- Do read-only agent endpoints need a separately versioned public contract?
 - Is the current IndexedDB schema and migration strategy sufficient for a
   long-lived production store?
 
 Do not resolve these questions implicitly in unrelated changes. Record a new
 decision and its migration/verification plan first.
+
+## Architecture decisions
+
+- Todoflare does not expose a separately versioned read-only agent API. The
+  unused `/api/agent/v1` contract and its OpenAPI document were removed rather
+  than maintained as an unsupported external compatibility promise. A future
+  agent integration must start from a concrete product consumer and define its
+  authentication, authorization, and versioning requirements before adding
+  public endpoints.
 
 ## Current invariants and guardrails
 
