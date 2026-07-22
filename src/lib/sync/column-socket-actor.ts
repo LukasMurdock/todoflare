@@ -18,6 +18,7 @@ export interface ColumnSocketLike {
 export interface ColumnSocketFrame {
 	data: ArrayBuffer;
 	outboxId?: string;
+	requiresAck?: boolean;
 }
 
 export type ColumnSocketCommand = {
@@ -34,6 +35,7 @@ export type ColumnSocketEvent =
 			wasClean: boolean;
 	  }
 	| { type: "SOCKET_MESSAGE"; message: SyncMessage }
+	| { type: "OUTBOX_ACKNOWLEDGED"; outboxId: string }
 	| { type: "OUTBOX_REPLAYED" }
 	| { type: "ACCESS_REVOKED" }
 	| { type: "COLUMN_DELETED" };
@@ -42,7 +44,7 @@ export interface ColumnSocketInput {
 	url: string;
 	createSocket: (url: string) => ColumnSocketLike;
 	loadReplayFrames: () => ColumnSocketFrame[];
-	onFrameWritten: (frame: ColumnSocketFrame) => void;
+	onBestEffortFrameWritten: (frame: ColumnSocketFrame) => void;
 }
 
 async function decodeSocketData(data: unknown): Promise<SyncMessage | null> {
@@ -68,7 +70,9 @@ export const columnSocketActor = fromCallback<
 		if (socket.readyState !== 1) return false;
 		try {
 			socket.send(frame.data);
-			input.onFrameWritten(frame);
+			if (!frame.requiresAck) {
+				input.onBestEffortFrameWritten(frame);
+			}
 			return true;
 		} catch {
 			return false;
@@ -93,6 +97,13 @@ export const columnSocketActor = fromCallback<
 		void decodeSocketData(event.data)
 			.then((message) => {
 				if (!message) return;
+				if (message.type === "sync-ack") {
+					sendBack({
+						type: "OUTBOX_ACKNOWLEDGED",
+						outboxId: message.outboxId,
+					});
+					return;
+				}
 				if (message.type === "access-revoked") {
 					sendBack({ type: "ACCESS_REVOKED" });
 					return;

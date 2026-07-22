@@ -11,7 +11,9 @@ import {
 } from "../lib/column-access";
 import { parseColumnMetaRecord } from "../server/persistence-records";
 import {
+	decodeDurableSyncSubmission,
 	decodeWsFrame,
+	encodeDurableSyncAck,
 	encodeWsFrame,
 	encodeWsJsonFrame,
 	encodeWsTextFrame,
@@ -21,6 +23,7 @@ import {
 	WS_OP_ERROR,
 	WS_OP_PRESENCE,
 	WS_OP_SYNC,
+	WS_OP_SYNC_SUBMIT,
 } from "../lib/collaboration/websocket-protocol";
 
 const DO_PERSIST_SCHEMA_VERSION = 1;
@@ -443,9 +446,20 @@ export class ColumnRoomSql extends DurableObject<unknown> {
 		try {
 			const { op, payload } = decodeWsFrame(message);
 			switch (op) {
-				case WS_OP_SYNC:
+				case WS_OP_SYNC_SUBMIT:
 					if (!session.readOnly) {
-						this.applyUpdate(payload, ws);
+						const submission = decodeDurableSyncSubmission(payload);
+						if (!submission) {
+							ws.send(
+								encodeWsTextFrame(WS_OP_ERROR, "Malformed sync submission"),
+							);
+							break;
+						}
+						this.applyDurableUpdate(
+							submission.update,
+							submission.outboxId,
+							ws,
+						);
 					}
 					break;
 				case WS_OP_AWARENESS:
@@ -461,9 +475,14 @@ export class ColumnRoomSql extends DurableObject<unknown> {
 		}
 	}
 
-	private applyUpdate(update: Uint8Array, origin: WebSocket) {
+	private applyDurableUpdate(
+		update: Uint8Array,
+		outboxId: string,
+		origin: WebSocket,
+	) {
 		applyUpdate(this.doc, update, origin);
 		this.insertUpdate(update);
+		origin.send(encodeDurableSyncAck(outboxId));
 
 		for (const [ws] of this.sessions) {
 			if (ws !== origin && ws.readyState === WebSocket.OPEN) {

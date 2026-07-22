@@ -58,6 +58,9 @@ vendored source under `repos/xstate/`; it is not a replacement for that source.
 - Keep WebSocket lifecycle behavior in `column-session-machine.ts` and
   `column-socket-actor.ts`. Keep durable outbound Yjs bytes exclusively in
   `yjs-update-outbox.ts`.
+- Treat the Durable Object sync acknowledgement as the delivery boundary for
+  persisted Yjs updates. A successful browser `WebSocket.send()` must not remove
+  sync entries from the outbox; awareness frames remain explicitly best-effort.
 - Add lifecycle invariants to `test/column-session-machine.test.ts` when changing
   connection, retry, replay, lease, or terminal behavior.
 

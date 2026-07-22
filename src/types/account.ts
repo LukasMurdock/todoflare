@@ -40,6 +40,7 @@ export interface PresenceUser {
  */
 export type SyncMessage =
 	| { type: "sync"; data: Uint8Array } // Yjs sync message
+	| { type: "sync-ack"; outboxId: string } // Durable receipt for a submitted Yjs update
 	| { type: "awareness"; data: Uint8Array } // Yjs awareness update
 	| { type: "presence"; users: PresenceUser[] } // Presence list update
 	| { type: "error"; message: string }

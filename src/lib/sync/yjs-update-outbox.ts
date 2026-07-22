@@ -214,18 +214,15 @@ export class LocalYjsUpdateOutbox {
 		return cloneEntries(replayable.sort(byCreatedAt));
 	}
 
-	/**
-	 * Removes entries after WebSocket.send() accepts their frames.
-	 *
-	 * This is intentionally best-effort delivery, not a server acknowledgement.
-	 * Yjs updates are idempotent, but the current wire protocol has no ACK frame.
-	 */
-	removeAfterSocketWrite(entryIds: string[]): number {
+	/** Removes ephemeral awareness entries after WebSocket.send() accepts them. */
+	removeAwarenessAfterSocketWrite(entryIds: string[]): number {
 		const ids = new Set(entryIds);
 		if (ids.size === 0) return 0;
 
 		const before = this.entries.length;
-		this.entries = this.entries.filter((entry) => !ids.has(entry.id));
+		this.entries = this.entries.filter(
+			(entry) => entry.kind !== "awareness" || !ids.has(entry.id),
+		);
 		const removed = before - this.entries.length;
 
 		if (removed > 0) {
@@ -233,6 +230,28 @@ export class LocalYjsUpdateOutbox {
 		}
 
 		return removed;
+	}
+
+	/** Removes a sync update only after its Durable Object receipt arrives. */
+	acknowledgeSync(
+		accountId: string,
+		columnId: string,
+		outboxId: string,
+	): boolean {
+		const before = this.entries.length;
+		this.entries = this.entries.filter(
+			(entry) =>
+				!(
+					entry.id === outboxId &&
+					entry.accountId === accountId &&
+					entry.columnId === columnId &&
+					entry.kind === "sync"
+				),
+		);
+
+		if (this.entries.length === before) return false;
+		this.persist();
+		return true;
 	}
 
 	dropWhere(predicate: (entry: YjsOutboxEntry) => boolean): number {

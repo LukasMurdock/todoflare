@@ -52,6 +52,7 @@ export type ColumnSessionEvent =
 			wasClean: boolean;
 	  }
 	| { type: "SOCKET_MESSAGE"; message: SyncMessage }
+	| { type: "OUTBOX_ACKNOWLEDGED"; outboxId: string }
 	| { type: "OUTBOX_REPLAYED" }
 	| { type: "ACCESS_REVOKED" }
 	| { type: "COLUMN_DELETED" };
@@ -64,18 +65,27 @@ export interface ColumnSessionDependencies {
 		columnId: string,
 		kind: YjsOutboxKind,
 		update: Uint8Array,
-	) => string | undefined;
+	) => string;
 	loadReplayFrames: (
 		accountId: string,
 		columnId: string,
 	) => ColumnSocketFrame[];
-	onFrameWritten: (frame: ColumnSocketFrame) => void;
+	onBestEffortFrameWritten: (frame: ColumnSocketFrame) => void;
+	onDurableFrameAcknowledged: (
+		accountId: string,
+		columnId: string,
+		outboxId: string,
+	) => void;
 	onMessage: (columnId: string, message: SyncMessage) => void;
 	onTerminate: (
 		columnId: string,
 		reason: ColumnTerminationReason,
 	) => Promise<void>;
-	encodeUpdate: (kind: YjsOutboxKind, update: Uint8Array) => ArrayBuffer;
+	encodeUpdate: (
+		kind: YjsOutboxKind,
+		update: Uint8Array,
+		outboxId: string,
+	) => ArrayBuffer;
 }
 
 function withLease(leases: ReadonlySet<string>, leaseId: string) {
@@ -97,7 +107,7 @@ export function createColumnSessionMachine(dependencies: ColumnSessionDependenci
 		createSocket: dependencies.createSocket,
 		loadReplayFrames: () =>
 			dependencies.loadReplayFrames(context.accountId, context.columnId),
-		onFrameWritten: dependencies.onFrameWritten,
+		onBestEffortFrameWritten: dependencies.onBestEffortFrameWritten,
 	});
 
 	const persistAndMaybeSend = (
@@ -114,8 +124,9 @@ export function createColumnSessionMachine(dependencies: ColumnSessionDependenci
 		);
 		if (send) {
 			send({
-				data: dependencies.encodeUpdate(kind, update),
+				data: dependencies.encodeUpdate(kind, update, outboxId),
 				outboxId,
+				requiresAck: kind === "sync",
 			});
 		}
 	};
@@ -194,6 +205,15 @@ export function createColumnSessionMachine(dependencies: ColumnSessionDependenci
 						? event.message.users
 						: context.presence,
 			}),
+			acknowledgeOutbox: ({ context, event }) => {
+				if (event.type === "OUTBOX_ACKNOWLEDGED") {
+					dependencies.onDurableFrameAcknowledged(
+						context.accountId,
+						context.columnId,
+						event.outboxId,
+					);
+				}
+			},
 			forwardMessage: ({ context, event }) => {
 				if (event.type === "SOCKET_MESSAGE") {
 					dependencies.onMessage(context.columnId, event.message);
@@ -286,6 +306,7 @@ export function createColumnSessionMachine(dependencies: ColumnSessionDependenci
 					input: socketInput,
 				},
 				on: {
+					OUTBOX_ACKNOWLEDGED: { actions: "acknowledgeOutbox" },
 					SUBSCRIBE: { actions: "addLease" },
 					UNSUBSCRIBE: [
 						{ guard: "isLastLease", target: "inactive", actions: "removeLease" },

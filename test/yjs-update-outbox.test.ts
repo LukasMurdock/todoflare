@@ -126,19 +126,42 @@ describe("LocalYjsUpdateOutbox", () => {
 		});
 	});
 
-	it("removes entries after a successful socket write", () => {
+	it("removes only awareness entries after a successful socket write", () => {
 		const storage = createMemoryYjsOutboxStorage([
-			makeEntry({ id: "entry-1", createdAt: 100 }),
+			makeEntry({ id: "entry-1", kind: "awareness", createdAt: 100 }),
 			makeEntry({ id: "entry-2", createdAt: 200 }),
 		]);
 		const outbox = new LocalYjsUpdateOutbox({ storage });
 
-		const removed = outbox.removeAfterSocketWrite(["entry-1"]);
+		const removed = outbox.removeAwarenessAfterSocketWrite([
+			"entry-1",
+			"entry-2",
+		]);
 
 		expect(removed).toBe(1);
 		expect(outbox.pendingCountForColumn("1111 1111 1111 1111", "col-1")).toBe(
 			1,
 		);
+	});
+
+	it("removes sync entries only after a scoped server acknowledgement", () => {
+		const storage = createMemoryYjsOutboxStorage([
+			makeEntry({ id: "entry-1", createdAt: 100 }),
+		]);
+		const outbox = new LocalYjsUpdateOutbox({ storage });
+
+		expect(outbox.acknowledgeSync("wrong-account", "col-1", "entry-1")).toBe(
+			false,
+		);
+		expect(
+			outbox.acknowledgeSync("1111 1111 1111 1111", "wrong-column", "entry-1"),
+		).toBe(false);
+		expect(
+			outbox.acknowledgeSync("1111 1111 1111 1111", "col-1", "entry-1"),
+		).toBe(true);
+		expect(
+			outbox.acknowledgeSync("1111 1111 1111 1111", "col-1", "entry-1"),
+		).toBe(false);
 	});
 
 	it("migrates queued updates when storage backend swaps", () => {

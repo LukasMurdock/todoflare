@@ -10,6 +10,7 @@ import type {
 	ColumnSocketFrame,
 	ColumnSocketLike,
 } from "../src/lib/sync/column-socket-actor";
+import { encodeDurableSyncAck } from "../src/lib/collaboration/websocket-protocol";
 
 class FakeSocket implements ColumnSocketLike {
 	binaryType = "";
@@ -38,6 +39,10 @@ class FakeSocket implements ColumnSocketLike {
 		this.onclose?.({ code, reason: "lost", wasClean: false });
 	}
 
+	serverMessage(data: ArrayBuffer) {
+		this.onmessage?.({ data });
+	}
+
 	send(data: ArrayBuffer) {
 		if (this.readyState !== 1) throw new Error("socket is not open");
 		this.log.push("socket.send");
@@ -55,6 +60,8 @@ function createHarness(options?: { replayFrames?: ColumnSocketFrame[] }) {
 	const sockets: FakeSocket[] = [];
 	const persisted: string[] = [];
 	const written: ColumnSocketFrame[] = [];
+	const acknowledged: string[] = [];
+	const pending = new Map<string, Uint8Array>();
 	const log: string[] = [];
 	let cleanupResolve: (() => void) | null = null;
 	const cleanup = new Promise<void>((resolve) => {
@@ -72,11 +79,22 @@ function createHarness(options?: { replayFrames?: ColumnSocketFrame[] }) {
 			log.push("outbox.persist");
 			const id = `${kind}:${update[0] ?? 0}:${persisted.length}`;
 			persisted.push(id);
+			pending.set(id, new Uint8Array(update));
 			return id;
 		},
-		loadReplayFrames: () => options?.replayFrames ?? [],
-		onFrameWritten: (frame) => {
+		loadReplayFrames: () =>
+			options?.replayFrames ??
+			Array.from(pending, ([outboxId, update]) => ({
+				data: new Uint8Array(update).buffer,
+				outboxId,
+				requiresAck: true,
+			})),
+		onBestEffortFrameWritten: (frame) => {
 			written.push(frame);
+		},
+		onDurableFrameAcknowledged: (_accountId, _columnId, outboxId) => {
+			acknowledged.push(outboxId);
+			pending.delete(outboxId);
 		},
 		onMessage: () => {},
 		onTerminate: async () => {
@@ -105,6 +123,8 @@ function createHarness(options?: { replayFrames?: ColumnSocketFrame[] }) {
 		sockets,
 		persisted,
 		written,
+		acknowledged,
+		pending,
 		log,
 		resolveCleanup: () => cleanupResolve?.(),
 	};
@@ -113,8 +133,8 @@ function createHarness(options?: { replayFrames?: ColumnSocketFrame[] }) {
 describe("column session machine", () => {
 	it("owns one socket and reaches connected only after ordered replay", () => {
 		const replayFrames = [
-			{ data: new Uint8Array([1]).buffer, outboxId: "first" },
-			{ data: new Uint8Array([2]).buffer, outboxId: "second" },
+			{ data: new Uint8Array([1]).buffer, outboxId: "first", requiresAck: true },
+			{ data: new Uint8Array([2]).buffer, outboxId: "second", requiresAck: true },
 		];
 		const harness = createHarness({ replayFrames });
 
@@ -133,10 +153,7 @@ describe("column session machine", () => {
 			[1],
 			[2],
 		]);
-		expect(harness.written.map((frame) => frame.outboxId)).toEqual([
-			"first",
-			"second",
-		]);
+		expect(harness.written).toEqual([]);
 	});
 
 	it("persists a live sync update before submitting it to the socket", () => {
@@ -148,7 +165,34 @@ describe("column session machine", () => {
 
 		expect(harness.log.slice(-2)).toEqual(["outbox.persist", "socket.send"]);
 		expect(harness.persisted).toHaveLength(1);
-		expect(harness.written[0]?.outboxId).toBe(harness.persisted[0]);
+		expect(harness.pending.has(harness.persisted[0]!)).toBe(true);
+		expect(harness.written).toEqual([]);
+	});
+
+	it("retains and replays a sync update when the socket closes before acknowledgement", async () => {
+		const harness = createHarness();
+		harness.actor.send({ type: "SUBSCRIBE", leaseId: "editor" });
+		harness.sockets[0]!.open();
+		harness.actor.send({ type: "SEND_SYNC", update: new Uint8Array([7]) });
+		const outboxId = harness.persisted[0]!;
+
+		harness.sockets[0]!.serverClose();
+		expect(harness.pending.has(outboxId)).toBe(true);
+
+		harness.clock.increment(1_000);
+		expect(harness.sockets).toHaveLength(2);
+		harness.sockets[1]!.open();
+		expect(
+			harness.sockets[1]!.sent.map((frame) => [...new Uint8Array(frame)]),
+		).toEqual([[7]]);
+		expect(harness.pending.has(outboxId)).toBe(true);
+
+		harness.sockets[1]!.serverMessage(encodeDurableSyncAck(outboxId));
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(harness.acknowledged).toEqual([outboxId]);
+		expect(harness.pending.has(outboxId)).toBe(false);
 	});
 
 	it("makes duplicate leases and duplicate cleanup idempotent", () => {
@@ -243,9 +287,10 @@ describe("column session manager", () => {
 					return socket;
 				},
 				getSocketUrl: () => "ws://test/column",
-				persistUpdate: () => undefined,
+				persistUpdate: () => "outbox",
 				loadReplayFrames: () => [],
-				onFrameWritten: () => {},
+				onBestEffortFrameWritten: () => {},
+				onDurableFrameAcknowledged: () => {},
 				onMessage: () => {},
 				onTerminate: async () => {},
 				encodeUpdate: (_kind, update) => new Uint8Array(update).buffer,
@@ -275,9 +320,10 @@ describe("column session manager", () => {
 					return socket;
 				},
 				getSocketUrl: (_accountId, columnId) => `ws://test/${columnId}`,
-				persistUpdate: () => undefined,
+				persistUpdate: () => "outbox",
 				loadReplayFrames: () => [],
-				onFrameWritten: () => {},
+				onBestEffortFrameWritten: () => {},
+				onDurableFrameAcknowledged: () => {},
 				onMessage: () => {},
 				onTerminate: async () => {},
 				encodeUpdate: (_kind, update) => new Uint8Array(update).buffer,

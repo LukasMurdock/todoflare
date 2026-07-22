@@ -5,11 +5,14 @@ import { applyUpdate, encodeStateAsUpdate } from "yjs";
 import type { ColumnMeta } from "../src/types/account";
 import {
 	decodeWsFrame,
+	decodeWsMessage,
+	encodeDurableSyncSubmission,
 	encodeWsFrame,
 	WS_OP_ACCESS_REVOKED,
 	WS_OP_AWARENESS,
 	WS_OP_PRESENCE,
 	WS_OP_SYNC,
+	WS_OP_SYNC_ACK,
 } from "../src/lib/collaboration/websocket-protocol";
 
 function getColumnRoomStub(columnId: string) {
@@ -421,10 +424,15 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 		docA.getText("t").insert(0, "hello");
 		const update = encodeStateAsUpdate(docA);
 
-		wsA.send(encodeWsFrame(WS_OP_SYNC, update));
+		const ackPromise = waitForPayloadWithOp(wsA, WS_OP_SYNC_ACK, 2000);
+		wsA.send(encodeDurableSyncSubmission("delivery-1", update));
 
 		const received = await waitForPayloadWithOp(wsB, WS_OP_SYNC, 2000);
+		const ackPayload = await ackPromise;
 		expect(Array.from(received)).toEqual(Array.from(update));
+		expect(
+			decodeWsMessage(encodeWsFrame(WS_OP_SYNC_ACK, ackPayload)),
+		).toEqual({ type: "sync-ack", outboxId: "delivery-1" });
 
 		const docB = new Y.Doc();
 		applyUpdate(docB, received);

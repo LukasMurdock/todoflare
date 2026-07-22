@@ -29,9 +29,9 @@ import {
 	type YjsOutboxKind,
 } from "@/lib/sync/yjs-update-outbox";
 import {
+	encodeDurableSyncSubmission,
 	encodeWsFrame,
 	WS_OP_AWARENESS,
-	WS_OP_SYNC,
 } from "@/lib/collaboration/websocket-protocol";
 import { ColumnSessionManager } from "@/lib/sync/column-session-manager";
 import type {
@@ -78,9 +78,12 @@ const ACCESS_LOSS_NOTICE_COOLDOWN_MS = 2000;
 function encodeOutboundUpdate(
 	kind: YjsOutboxKind,
 	update: Uint8Array,
+	outboxId: string,
 ): ArrayBuffer {
-	const op = kind === "sync" ? WS_OP_SYNC : WS_OP_AWARENESS;
-	return encodeWsFrame(op, update);
+	if (kind === "sync") {
+		return encodeDurableSyncSubmission(outboxId, update);
+	}
+	return encodeWsFrame(WS_OP_AWARENESS, update);
 }
 
 interface YjsOutboxSummary {
@@ -575,15 +578,21 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 							data: encodeOutboundUpdate(
 								entry.kind,
 								new Uint8Array(entry.updateBytes),
+								entry.id,
 							),
 							outboxId: entry.id,
+							requiresAck: entry.kind === "sync",
 						}));
 					refreshYjsOutboxSummary();
 					return frames;
 				},
-				onFrameWritten: (frame) => {
+				onBestEffortFrameWritten: (frame) => {
 					if (!frame.outboxId) return;
-					yjsOutbox.removeAfterSocketWrite([frame.outboxId]);
+					yjsOutbox.removeAwarenessAfterSocketWrite([frame.outboxId]);
+					refreshYjsOutboxSummary();
+				},
+				onDurableFrameAcknowledged: (activeAccountId, columnId, outboxId) => {
+					yjsOutbox.acknowledgeSync(activeAccountId, columnId, outboxId);
 					refreshYjsOutboxSummary();
 				},
 				onMessage: (columnId, message) => {
