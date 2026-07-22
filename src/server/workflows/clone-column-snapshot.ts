@@ -44,6 +44,7 @@ export type CloneColumnSnapshotResult =
 				| "account_not_found"
 				| "account_invalid"
 				| "column_meta_invalid"
+				| "invalid_yjs_update"
 				| "column_import_failed";
 	  };
 
@@ -87,7 +88,12 @@ export async function cloneColumnSnapshot<TColumnRoomId>(
 	);
 	if (!imported.ok) {
 		await input.env.ACCOUNTS.delete?.(`column-registry:${columnId}`);
-		return { ok: false, code: "column_import_failed" };
+		return {
+			ok: false,
+			code: imported.status === 422
+				? "invalid_yjs_update"
+				: "column_import_failed",
+		};
 	}
 	await input.afterWrite?.("column-import");
 

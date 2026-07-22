@@ -47,6 +47,7 @@ export function AccountBadge() {
 		restoreColumn,
 		exportAccountData,
 		importAccountData,
+		exportStorageRecoveryData,
 		deletedColumns,
 	} = useAccount();
 	const [copied, setCopied] = useState(false);
@@ -55,9 +56,46 @@ export function AccountBadge() {
 	const [redactSyncDebugIds, setRedactSyncDebugIds] = useState(true);
 	const [showGarbageCan, setShowGarbageCan] = useState(false);
 	const fileInputRef = useRef<HTMLInputElement | null>(null);
+	const handleDownloadStorageRecovery = async () => {
+		try {
+			const payload = await exportStorageRecoveryData();
+			const blob = new Blob([JSON.stringify(payload, null, 2)], {
+				type: "application/json",
+			});
+			const url = URL.createObjectURL(blob);
+			const link = document.createElement("a");
+			const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+			link.href = url;
+			link.download = `todoflare-storage-recovery-${timestamp}.json`;
+			document.body.appendChild(link);
+			link.click();
+			link.remove();
+			URL.revokeObjectURL(url);
+		} catch (err) {
+			console.error("Failed to download storage recovery data:", err);
+		}
+	};
 
 	if (!isAuthenticated || !accountId) {
-		return null;
+		if (
+			syncStateSummary.storageState === "checking" ||
+			(syncStateSummary.storageState === "durable" &&
+				syncStateSummary.quarantinedRecords === 0)
+		) {
+			return null;
+		}
+		return (
+			<Button
+				variant="outline"
+				size="sm"
+				className="h-8 gap-2 text-xs text-destructive"
+				onClick={handleDownloadStorageRecovery}
+				title={syncStateSummary.storageLastError ?? "Browser storage needs attention"}
+			>
+				<FileDown className="h-4 w-4" />
+				Storage recovery
+			</Button>
+		);
 	}
 
 	const handleCopy = async () => {
@@ -95,7 +133,9 @@ export function AccountBadge() {
 	const hasSyncTelemetry =
 		syncStateSummary.lastReplayLatencyMs !== null ||
 		syncStateSummary.revokeDiscardCount > 0 ||
-		syncStateSummary.convergenceFailureCount > 0;
+		syncStateSummary.convergenceFailureCount > 0 ||
+		syncStateSummary.storageState !== "durable" ||
+		syncStateSummary.quarantinedRecords > 0;
 	const hasPendingYjsOutbox = yjsOutboxSummary.totalPending > 0;
 	const topYjsOutboxColumns = Object.entries(yjsOutboxSummary.columnPending)
 		.sort((a, b) => {
@@ -149,6 +189,11 @@ export function AccountBadge() {
 				lastReplayLatencyMs: syncStateSummary.lastReplayLatencyMs,
 				revokeDiscardCount: syncStateSummary.revokeDiscardCount,
 				convergenceFailureCount: syncStateSummary.convergenceFailureCount,
+				storageState: syncStateSummary.storageState,
+				storageLastError: syncStateSummary.storageLastError,
+				quarantinedRecords: syncStateSummary.quarantinedRecords,
+				quarantinedDurableMutations:
+					syncStateSummary.quarantinedDurableMutations,
 			},
 			yjsOutbox: {
 				totalPending: yjsOutboxSummary.totalPending,
@@ -338,6 +383,17 @@ export function AccountBadge() {
 					<p className="text-muted-foreground">
 						Convergence failures: {syncStateSummary.convergenceFailureCount}
 					</p>
+					<p className="text-muted-foreground">
+						Browser storage: {syncStateSummary.storageState}
+					</p>
+					{syncStateSummary.quarantinedRecords > 0 ? (
+						<p className="text-destructive">
+							Recoverable storage records: {syncStateSummary.quarantinedRecords}
+							{syncStateSummary.quarantinedDurableMutations > 0
+								? ` (${syncStateSummary.quarantinedDurableMutations} unsent)`
+								: ""}
+						</p>
+					) : null}
 					{hasPendingYjsOutbox ? (
 						<>
 							<p className="text-muted-foreground">
@@ -410,6 +466,13 @@ export function AccountBadge() {
 						? "Downloaded Debug Snapshot!"
 						: "Download Sync Debug Snapshot"}
 				</DropdownMenuItem>
+
+				{syncStateSummary.quarantinedRecords > 0 ? (
+					<DropdownMenuItem onClick={handleDownloadStorageRecovery}>
+						<FileDown className="mr-2 h-4 w-4" />
+						Download Unsent Changes Recovery
+					</DropdownMenuItem>
+				) : null}
 
 				<DropdownMenuItem onClick={handleExport}>
 					<Download className="mr-2 h-4 w-4" />

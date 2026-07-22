@@ -42,6 +42,25 @@ function bindings(importStatus = 200) {
 }
 
 describe("cloneColumnSnapshot", () => {
+	it("reports corrupt Yjs and removes the provisional registry entry", async () => {
+		const failed = bindings(422);
+		const result = await cloneColumnSnapshot({
+			env: failed.env,
+			ownerId,
+			snapshot: { ...snapshot, yjs: [1] },
+			createColumnId: () => "corrupt-clone",
+		});
+
+		expect(result).toEqual({ ok: false, code: "invalid_yjs_update" });
+		expect(failed.env.ACCOUNTS.delete).toHaveBeenCalledWith(
+			"column-registry:corrupt-clone",
+		);
+		expect(failed.put).not.toHaveBeenCalledWith(
+			"account:1111222233334444",
+			expect.any(String),
+		);
+	});
+
 	it("commits the account projection only after a successful DO import", async () => {
 		const failed = bindings(500);
 		const result = await cloneColumnSnapshot({

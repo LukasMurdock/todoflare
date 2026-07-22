@@ -1,5 +1,6 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import * as Y from "yjs";
 import {
 	decodeWsFrame,
 	WS_OP_PRESENCE,
@@ -25,6 +26,25 @@ async function sha256Hex(value: string): Promise<string> {
 	const encoded = new TextEncoder().encode(value);
 	const digest = await crypto.subtle.digest("SHA-256", encoded);
 	return toHex(digest);
+}
+
+async function putColumnBackup(
+	columnId: string,
+	meta: unknown,
+	yjs: number[] | null,
+	keySuffix: string,
+): Promise<string> {
+	const base = {
+		schemaVersion: 1 as const,
+		columnId,
+		snapshotAt: 1,
+		meta,
+		yjs,
+	};
+	const checksum = await sha256Hex(JSON.stringify(base));
+	const key = `columns/${columnId}/${keySuffix}.json`;
+	await env.BACKUPS.put(key, JSON.stringify({ ...base, checksum }));
+	return key;
 }
 
 async function createAccount(): Promise<string> {
@@ -788,6 +808,130 @@ describe("Worker routes", () => {
 		expect(["backup_not_configured", "backup_auth_not_configured"]).toContain(
 			data.error,
 		);
+	});
+});
+
+describe("Backup restore validation", () => {
+	it("rejects corrupt Yjs for clone and in-place restores without replacing state", async () => {
+		const previousToken = env.BACKUP_ADMIN_TOKEN;
+		env.BACKUP_ADMIN_TOKEN = "test-token";
+		try {
+			const accountId = await createAccount();
+			const columnId = await createColumn(accountId);
+			const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
+			const meta = await (await stub.fetch("http://do/meta")).json();
+			const liveDoc = new Y.Doc();
+			liveDoc.getText("t").insert(0, "still live");
+			const liveImport = await stub.fetch("http://do/import", {
+				method: "POST",
+				body: JSON.stringify({
+					meta,
+					yjs: Array.from(Y.encodeStateAsUpdate(liveDoc)),
+				}),
+			});
+			expect(liveImport.ok).toBe(true);
+
+			const corruptKey = await putColumnBackup(
+				columnId,
+				meta,
+				[1],
+				"9999999999999",
+			);
+			for (const mode of ["clone", "in_place"] as const) {
+				const response = await SELF.fetch(
+					`http://example.com/api/admin/backups/column/${columnId}/restore`,
+					{
+						method: "POST",
+						headers: {
+							Authorization: "Bearer test-token",
+							"Content-Type": "application/json",
+						},
+						body: JSON.stringify({ key: corruptKey, mode }),
+					},
+				);
+				expect(response.status).toBe(422);
+				expect(await response.json()).toMatchObject({
+					error: "invalid_yjs_update",
+				});
+			}
+
+			const exported = (await (
+				await stub.fetch("http://do/export")
+			).json()) as { yjs: number[] };
+			const afterDoc = new Y.Doc();
+			Y.applyUpdate(afterDoc, Uint8Array.from(exported.yjs));
+			expect(afterDoc.getText("t").toString()).toBe("still live");
+			const accountResponse = (await (
+				await SELF.fetch("http://example.com/api/account", {
+					headers: accountHeaders(accountId),
+				})
+			).json()) as { account: { columnOrder: string[] } };
+			expect(accountResponse.account.columnOrder).toEqual([columnId]);
+		} finally {
+			env.BACKUP_ADMIN_TOKEN = previousToken;
+		}
+	});
+
+	it("continues an account restore after malformed and corrupt backup objects", async () => {
+		const previousToken = env.BACKUP_ADMIN_TOKEN;
+		env.BACKUP_ADMIN_TOKEN = "test-token";
+		try {
+			const accountId = await createAccount();
+			const malformedColumnId = await createColumn(accountId);
+			const corruptColumnId = await createColumn(accountId);
+			const validColumnId = await createColumn(accountId);
+			const corruptMeta = await (
+				await env.COLUMN_ROOM.get(
+					env.COLUMN_ROOM.idFromName(corruptColumnId),
+				).fetch("http://do/meta")
+			).json();
+			const validMeta = await (
+				await env.COLUMN_ROOM.get(
+					env.COLUMN_ROOM.idFromName(validColumnId),
+				).fetch("http://do/meta")
+			).json();
+
+			await env.BACKUPS.put(
+				`columns/${malformedColumnId}/9999999999999.json`,
+				"{",
+			);
+			await putColumnBackup(
+				corruptColumnId,
+				corruptMeta,
+				[1],
+				"9999999999999",
+			);
+			await putColumnBackup(
+				validColumnId,
+				validMeta,
+				[0, 0],
+				"9999999999999",
+			);
+
+			const response = await SELF.fetch(
+				"http://example.com/api/admin/backups/account/restore",
+				{
+					method: "POST",
+					headers: {
+						Authorization: "Bearer test-token",
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify({ accountId }),
+				},
+			);
+			expect(response.ok).toBe(true);
+			expect(await response.json()).toMatchObject({
+				success: false,
+				restoredColumns: [validColumnId],
+				failedColumns: [malformedColumnId, corruptColumnId],
+				failures: [
+					{ columnId: malformedColumnId, code: "invalid_backup_json" },
+					{ columnId: corruptColumnId, code: "invalid_yjs_update" },
+				],
+			});
+		} finally {
+			env.BACKUP_ADMIN_TOKEN = previousToken;
+		}
 	});
 });
 

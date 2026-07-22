@@ -23,6 +23,7 @@ export function useAccount() {
 		restoreColumn,
 		exportAccountData,
 		importAccountData,
+		exportStorageRecoveryData,
 		hasLocalData,
 	} = useSyncContext();
 
@@ -49,6 +50,7 @@ export function useAccount() {
 		restoreColumn,
 		exportAccountData,
 		importAccountData,
+		exportStorageRecoveryData,
 
 		// Check for existing data
 		hasLocalData,

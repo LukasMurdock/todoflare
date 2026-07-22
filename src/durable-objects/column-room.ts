@@ -10,6 +10,7 @@ import {
 	normalizeAccountIdSet,
 } from "../lib/column-access";
 import { parseColumnMetaRecord } from "../server/persistence-records";
+import { columnSnapshotImportSchema } from "../server/column-backup-payload";
 import {
 	isReadOnlyMode,
 	readOnlyModeResponse,
@@ -259,10 +260,14 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 
 	private persistMeta() {
 		if (!this.meta) return;
+		this.persistMetaValue(this.meta);
+	}
+
+	private persistMetaValue(meta: ColumnMeta) {
 		const envelope = {
 			schemaVersion: DO_PERSIST_SCHEMA_VERSION,
 			migrationTag: DO_MIGRATION_TAG,
-			meta: this.meta,
+			meta,
 		};
 		this.ctx.storage.sql.exec(
 			"INSERT INTO meta (id, meta) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET meta = excluded.meta",
@@ -280,7 +285,10 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 	}
 
 	private persistSnapshot() {
-		const snapshot = encodeStateAsUpdate(this.doc);
+		this.persistSnapshotBytes(encodeStateAsUpdate(this.doc));
+	}
+
+	private persistSnapshotBytes(snapshot: Uint8Array) {
 		const now = Date.now();
 		this.ctx.storage.sql.exec(
 			"INSERT INTO yjs_snapshot (id, snapshot, updated_at) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET snapshot = excluded.snapshot, updated_at = excluded.updated_at;",
@@ -370,26 +378,47 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		}
 
 		if (request.method === "POST" && url.pathname === "/import") {
-			const body = (await request.json()) as { meta: unknown; yjs: number[] | null };
-			const parsedMeta = parseColumnMetaRecord(body.meta);
-			if (!parsedMeta.ok) {
-				return Response.json(parsedMeta, { status: 400 });
+			let input: unknown;
+			try {
+				input = await request.json();
+			} catch {
+				return Response.json({ error: "invalid_import_json" }, { status: 400 });
 			}
 
-			this.meta = parsedMeta.value;
-			this.persistMeta();
+			const parsed = columnSnapshotImportSchema.safeParse(input);
+			if (!parsed.success) {
+				return Response.json({ error: "invalid_import_payload" }, { status: 400 });
+			}
 
-			this.doc = new Y.Doc();
-			this.destroyAwareness();
-			if (body.yjs && body.yjs.length > 0) {
-				try {
-					applyUpdate(this.doc, new Uint8Array(body.yjs));
-				} catch (err) {
-					console.error("Failed to apply imported Yjs state:", err);
+			const candidateDoc = new Y.Doc();
+			try {
+				if (parsed.data.yjs !== null) {
+					applyUpdate(candidateDoc, Uint8Array.from(parsed.data.yjs));
 				}
+			} catch (err) {
+				candidateDoc.destroy();
+				console.error("Failed to decode imported Yjs state:", err);
+				return Response.json({ error: "invalid_yjs_update" }, { status: 422 });
 			}
-			this.persistSnapshot();
-			this.ctx.storage.sql.exec("DELETE FROM yjs_updates");
+
+			const snapshot = encodeStateAsUpdate(candidateDoc);
+			try {
+				this.ctx.storage.transactionSync(() => {
+					this.persistMetaValue(parsed.data.meta);
+					this.persistSnapshotBytes(snapshot);
+					this.ctx.storage.sql.exec("DELETE FROM yjs_updates");
+				});
+			} catch (err) {
+				candidateDoc.destroy();
+				console.error("Failed to persist imported column state:", err);
+				return Response.json({ error: "import_persist_failed" }, { status: 500 });
+			}
+
+			const previousDoc = this.doc;
+			this.meta = parsed.data.meta;
+			this.doc = candidateDoc;
+			this.destroyAwareness();
+			previousDoc.destroy();
 
 			return Response.json({ success: true });
 		}

@@ -260,6 +260,51 @@ describe("ColumnRoomSql Durable Object (HTTP)", () => {
 		applyUpdate(docOut, new Uint8Array(exported.yjs ?? []));
 		expect(docOut.getText("t").toString()).toBe("export me");
 	});
+
+	it("rejects corrupt Yjs imports without changing authoritative state", async () => {
+		const columnId = "http-reject-corrupt-import";
+		const stub = getColumnRoomStub(columnId);
+		const originalMeta: ColumnMeta = {
+			schemaVersion: 1,
+			id: columnId,
+			ownerId: "1111 1111 1111 1111",
+			sharedWith: [],
+			publicId: null,
+			createdAt: 1,
+		};
+		const originalDoc = new Y.Doc();
+		originalDoc.getText("t").insert(0, "keep me");
+		const initialImport = await stub.fetch(
+			new Request("http://do/import", {
+				method: "POST",
+				body: JSON.stringify({
+					meta: originalMeta,
+					yjs: Array.from(encodeStateAsUpdate(originalDoc)),
+				}),
+			}),
+		);
+		expect(initialImport.ok).toBe(true);
+
+		const changedMeta = { ...originalMeta, createdAt: 2 };
+		const corruptImport = await stub.fetch(
+			new Request("http://do/import", {
+				method: "POST",
+				body: JSON.stringify({ meta: changedMeta, yjs: [1] }),
+			}),
+		);
+		expect(corruptImport.status).toBe(422);
+		expect(await corruptImport.json()).toEqual({ error: "invalid_yjs_update" });
+
+		const metaResponse = await stub.fetch(new Request("http://do/meta"));
+		expect(await metaResponse.json()).toEqual(originalMeta);
+		const exportResponse = await stub.fetch(new Request("http://do/export"));
+		const exported = (await exportResponse.json()) as {
+			yjs: number[] | null;
+		};
+		const restoredDoc = new Y.Doc();
+		applyUpdate(restoredDoc, Uint8Array.from(exported.yjs ?? []));
+		expect(restoredDoc.getText("t").toString()).toBe("keep me");
+	});
 });
 
 describe("ColumnRoomSql Durable Object (WebSocket)", () => {

@@ -13,6 +13,7 @@ import {
 	type LocalFirstDatabase,
 } from "../local-first/database";
 import { parseQueuedMutation } from "./account-command-parser";
+import { readVersionedLocalStorageArray } from "../local-first/local-storage-quarantine";
 
 const DEFAULT_STORAGE_KEY = "todoflare-mutation-outbox-v1";
 const BASE_BACKOFF_MS = 750;
@@ -259,25 +260,24 @@ export class LocalMutationQueueService implements MutationQueueService {
 export function createLocalStorageMutationQueueStorage(
 	storageKey: string,
 ): MutationQueueStorage {
+	let writeBlocked = false;
 	return {
 		read() {
-			if (typeof window === "undefined") return [];
-			try {
-				const raw = window.localStorage.getItem(storageKey);
-				if (!raw) return [];
-				const parsed: unknown = JSON.parse(raw);
-				if (!Array.isArray(parsed)) return [];
-				return parsed
-					.map((mutation) => parseQueuedMutation(mutation))
-					.filter((mutation): mutation is QueuedMutation => mutation !== null);
-			} catch {
-				return [];
-			}
+			const result = readVersionedLocalStorageArray({
+				storageKey,
+				collection: "mutationOutbox",
+				parse: parseQueuedMutation,
+			});
+			writeBlocked ||= result.writeBlocked;
+			return result.records;
 		},
 		write(mutations) {
-			if (typeof window === "undefined") return;
+			if (typeof window === "undefined" || writeBlocked) return;
 			try {
-				window.localStorage.setItem(storageKey, JSON.stringify(mutations));
+				window.localStorage.setItem(
+					storageKey,
+					JSON.stringify(mutations.map((mutation) => ({ ...mutation, schemaVersion: 1 }))),
+				);
 			} catch {
 				return;
 			}
@@ -318,7 +318,8 @@ export function createLocalFirstMutationQueueStorage(
 				mutations.map((mutation) => [
 					mutation.queueId,
 					{
-					id: mutation.queueId,
+						schemaVersion: 1,
+						id: mutation.queueId,
 					queueId: mutation.queueId,
 					idempotencyKey: mutation.idempotencyKey,
 					opType: mutation.opType,

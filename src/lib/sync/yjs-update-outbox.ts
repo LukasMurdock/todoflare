@@ -3,13 +3,14 @@ import {
 	replaceLocalFirstCollection,
 	type LocalFirstDatabase,
 } from "../local-first/database";
+import { readVersionedLocalStorageArray } from "../local-first/local-storage-quarantine";
 
 const DEFAULT_STORAGE_KEY = "todoflare-yjs-update-outbox-v1";
 const DEFAULT_AWARENESS_MAX_AGE_MS = 30_000;
 
 export type YjsOutboxKind = "sync" | "awareness";
 
-export interface YjsOutboxEntry extends YjsUpdateOutboxDoc {}
+export interface YjsOutboxEntry extends Omit<YjsUpdateOutboxDoc, "schemaVersion"> {}
 
 export interface YjsOutboxStorage {
 	read(): YjsOutboxEntry[];
@@ -293,29 +294,25 @@ export class LocalYjsUpdateOutbox {
 export function createLocalStorageYjsOutboxStorage(
 	storageKey: string,
 ): YjsOutboxStorage {
+	let writeBlocked = false;
 	return {
 		read() {
-			if (typeof window === "undefined") return [];
-
-			try {
-				const raw = window.localStorage.getItem(storageKey);
-				if (!raw) return [];
-				const parsed = JSON.parse(raw);
-				if (!Array.isArray(parsed)) return [];
-
-				return parsed
-					.map((entry) => normalizeEntry(entry))
-					.filter((entry): entry is YjsOutboxEntry => entry !== null)
-					.sort(byCreatedAt);
-			} catch {
-				return [];
-			}
+			const result = readVersionedLocalStorageArray({
+				storageKey,
+				collection: "yjsUpdateOutbox",
+				parse: normalizeEntry,
+			});
+			writeBlocked ||= result.writeBlocked;
+			return result.records.sort(byCreatedAt);
 		},
 		write(entries) {
-			if (typeof window === "undefined") return;
+			if (typeof window === "undefined" || writeBlocked) return;
 
 			try {
-				window.localStorage.setItem(storageKey, JSON.stringify(entries));
+				window.localStorage.setItem(
+					storageKey,
+					JSON.stringify(entries.map((entry) => ({ ...entry, schemaVersion: 1 }))),
+				);
 			} catch {
 				return;
 			}
@@ -358,7 +355,8 @@ export function createLocalFirstYjsOutboxStorage(
 				entries.map((entry) => [
 					entry.id,
 					{
-					id: entry.id,
+						schemaVersion: 1,
+						id: entry.id,
 					accountId: entry.accountId,
 					columnId: entry.columnId,
 					kind: entry.kind,

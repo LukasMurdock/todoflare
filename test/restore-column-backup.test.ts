@@ -71,6 +71,22 @@ function bindings(importStatus: number) {
 }
 
 describe("restoreColumnBackup", () => {
+	it("reports corrupt Yjs without committing KV projections", async () => {
+		const { env, records } = bindings(422);
+		const result = await restoreColumnBackup({
+			env,
+			columnId,
+			payload: await payload(),
+			createPreRestoreBackup: async () => ({ key: "pre-backup" }),
+		});
+
+		expect(result).toEqual({ ok: false, code: "invalid_yjs_update" });
+		expect(records.has("public:AbCd1234")).toBe(false);
+		expect(records.get("account:1111222233334444")).toContain(
+			'"columnOrder":[]',
+		);
+	});
+
 	it("does not commit KV projections when the DO import fails", async () => {
 		const { env, records } = bindings(500);
 		const result = await restoreColumnBackup({

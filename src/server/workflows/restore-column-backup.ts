@@ -1,6 +1,10 @@
 import { normalizeAccountId } from "../../lib/account";
 import { normalizeAccountIdSet } from "../../lib/column-access";
 import type { ColumnMeta } from "../../types/account";
+import {
+	checksumColumnBackupPayload,
+	type ColumnBackupPayload,
+} from "../column-backup-payload";
 import { accountRecordStore, mutateAccountRecord } from "../account-record-store";
 import { registerColumn } from "../lifecycle-journal";
 import { claimPublicId, releasePublicId } from "../public-id-registry";
@@ -10,14 +14,7 @@ import {
 	parseSharedColumnIndex,
 } from "../persistence-records";
 
-export type ColumnBackupPayload = {
-	schemaVersion: 1;
-	columnId: string;
-	snapshotAt: number;
-	checksum: string;
-	meta: ColumnMeta;
-	yjs: number[] | null;
-};
+export type { ColumnBackupPayload } from "../column-backup-payload";
 
 export type RestoreColumnBackupWriteBoundary =
 	| "pre-restore-backup"
@@ -65,25 +62,12 @@ export type RestoreColumnBackupResult =
 				| "invalid_backup_payload"
 				| "backup_checksum_mismatch"
 				| "column_meta_invalid"
+				| "invalid_yjs_update"
 				| "pre_restore_backup_failed"
 				| "restore_failed"
 				| "account_invalid"
 				| "shared_index_invalid";
 	  };
-
-async function checksumForPayload(payload: ColumnBackupPayload): Promise<string> {
-	const encoded = new TextEncoder().encode(
-		JSON.stringify({
-			schemaVersion: payload.schemaVersion,
-			columnId: payload.columnId,
-			snapshotAt: payload.snapshotAt,
-			meta: payload.meta,
-			yjs: payload.yjs,
-		}),
-	);
-	const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", encoded));
-	return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
 
 /** Restores authoritative DO state, then repairs every KV access projection. */
 export async function restoreColumnBackup<TColumnRoomId>(
@@ -94,7 +78,8 @@ export async function restoreColumnBackup<TColumnRoomId>(
 	if (payload.schemaVersion !== 1 || payload.columnId !== columnId) {
 		return { ok: false, code: "invalid_backup_payload" };
 	}
-	if ((await checksumForPayload(payload)) !== payload.checksum) {
+	const { checksum, ...basePayload } = payload;
+	if ((await checksumColumnBackupPayload(basePayload)) !== checksum) {
 		return { ok: false, code: "backup_checksum_mismatch" };
 	}
 	const parsedBackupMeta = parseColumnMetaRecord(payload.meta);
@@ -134,7 +119,10 @@ export async function restoreColumnBackup<TColumnRoomId>(
 		if (backupMeta.publicId && currentMeta?.publicId !== backupMeta.publicId) {
 			await releasePublicId(env, backupMeta.publicId, columnId);
 		}
-		return { ok: false, code: "restore_failed" };
+		return {
+			ok: false,
+			code: imported.status === 422 ? "invalid_yjs_update" : "restore_failed",
+		};
 	}
 	await afterWrite?.("column-import");
 	await registerColumn(env.ACCOUNTS, backupMeta);

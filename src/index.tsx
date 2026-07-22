@@ -62,6 +62,12 @@ import {
 	type ColumnBackupPayload,
 } from "./server/workflows/restore-column-backup";
 import {
+	checksumColumnBackupPayload,
+	MAX_YJS_UPDATE_BYTES,
+	parseAndVerifyColumnBackup,
+	yjsBytesSchema,
+} from "./server/column-backup-payload";
+import {
 	accountRecordStore,
 	mutateAccountRecord,
 } from "./server/account-record-store";
@@ -119,6 +125,7 @@ const IDEMPOTENCY_CACHE_TTL_SECONDS = 24 * 60 * 60;
 const IDEMPOTENCY_PENDING_WAIT_MS = 1500;
 const IDEMPOTENCY_PENDING_POLL_MS = 50;
 const ACCOUNT_METADATA_CONCURRENCY = 6;
+const MAX_BACKUP_OBJECT_BYTES = MAX_YJS_UPDATE_BYTES * 4 + 1_000_000;
 
 async function runJournaledLifecycle<T extends { ok: boolean }>(
 	env: Bindings,
@@ -556,7 +563,6 @@ const columnIdValueSchema = z
 const publicIdValueSchema = z
 	.string()
 	.regex(/^[0-9A-Za-z]{8}$/, "Invalid public ID");
-const yjsBytesSchema = z.array(z.number().int().min(0).max(255)).nullable();
 const columnMetaInputSchema = z
 	.object({
 		schemaVersion: z.literal(COLUMN_META_SCHEMA_VERSION),
@@ -707,6 +713,16 @@ async function restoreColumnFromBackupPayload(
 	});
 }
 
+async function readAndVerifyColumnBackup(
+	object: R2ObjectBody,
+	columnId: string,
+) {
+	if (object.size > MAX_BACKUP_OBJECT_BYTES) {
+		return { ok: false as const, code: "invalid_backup_payload" as const };
+	}
+	return parseAndVerifyColumnBackup(await object.text(), columnId);
+}
+
 async function rebuildSharedIndexesForColumns(env: Bindings, columns: ColumnMeta[]) {
 	const byAccount = new Map<string, Set<string>>();
 
@@ -755,11 +771,15 @@ async function createColumnBackupSnapshot(env: Bindings, columnId: string) {
 
 	const exported = (await exportResponse.json()) as {
 		meta: unknown;
-		yjs: number[] | null;
+		yjs: unknown;
 	};
 	const parsedMeta = parseColumnMetaRecord(exported.meta);
-	if (!parsedMeta.ok) {
+	if (!parsedMeta.ok || parsedMeta.value.id !== columnId) {
 		throw new Error("column_meta_invalid");
+	}
+	const parsedYjs = yjsBytesSchema.safeParse(exported.yjs);
+	if (!parsedYjs.success) {
+		throw new Error("column_yjs_invalid");
 	}
 
 	const snapshotAt = Date.now();
@@ -770,10 +790,10 @@ async function createColumnBackupSnapshot(env: Bindings, columnId: string) {
 		columnId,
 		snapshotAt,
 		meta: parsedMeta.value,
-		yjs: exported.yjs,
+		yjs: parsedYjs.data,
 	};
 
-	const checksum = await sha256Hex(JSON.stringify(basePayload));
+	const checksum = await checksumColumnBackupPayload(basePayload);
 	const payload: ColumnBackupPayload = { ...basePayload, checksum };
 
 	await env.BACKUPS.put(key, JSON.stringify(payload), {
@@ -1849,46 +1869,55 @@ app.post("/api/admin/backups/account/restore", async (c) => {
 	const missingBackups: string[] = [];
 	const failedColumns: string[] = [];
 	const restoredMetas: ColumnMeta[] = [];
+	const failures: Array<{ columnId: string; key: string; code: string }> = [];
 
 	for (const columnId of account.columnOrder) {
-		const listed = await c.env.BACKUPS!.list({
-			prefix: `columns/${columnId}/`,
-			limit: 100,
-		});
-		const latestKey = listed.objects
-			.map((obj) => obj.key)
-			.sort((a, b) => b.localeCompare(a))[0];
+		let latestKey = "";
+		try {
+			const listed = await c.env.BACKUPS!.list({
+				prefix: `columns/${columnId}/`,
+				limit: 100,
+			});
+			latestKey = listed.objects
+				.map((obj) => obj.key)
+				.sort((a, b) => b.localeCompare(a))[0] ?? "";
 
-		if (!latestKey) {
-			missingBackups.push(columnId);
-			continue;
-		}
+			if (!latestKey) {
+				missingBackups.push(columnId);
+				continue;
+			}
 
-		const object = await c.env.BACKUPS!.get(latestKey);
-		if (!object) {
-			missingBackups.push(columnId);
-			continue;
-		}
+			const object = await c.env.BACKUPS!.get(latestKey);
+			if (!object) {
+				missingBackups.push(columnId);
+				continue;
+			}
 
-		const raw = await object.text();
-		const payload = JSON.parse(raw) as ColumnBackupPayload;
-		if (
-			payload.schemaVersion !== 1 ||
-			payload.columnId !== columnId ||
-			typeof payload.checksum !== "string"
-		) {
+			const parsed = await readAndVerifyColumnBackup(object, columnId);
+			if (!parsed.ok) {
+				failedColumns.push(columnId);
+				failures.push({ columnId, key: latestKey, code: parsed.code });
+				continue;
+			}
+
+			const restored = await restoreColumnFromBackupPayload(
+				c.env,
+				columnId,
+				parsed.payload,
+			);
+			if (!restored.ok) {
+				failedColumns.push(columnId);
+				failures.push({ columnId, key: latestKey, code: restored.code });
+				continue;
+			}
+
+			restoredColumns.push(columnId);
+			restoredMetas.push(restored.meta);
+		} catch (error) {
+			console.error("Account backup restore failed for column", { columnId, error });
 			failedColumns.push(columnId);
-			continue;
+			failures.push({ columnId, key: latestKey, code: "backup_read_failed" });
 		}
-
-		const restored = await restoreColumnFromBackupPayload(c.env, columnId, payload);
-		if (!restored.ok) {
-			failedColumns.push(columnId);
-			continue;
-		}
-
-		restoredColumns.push(columnId);
-		restoredMetas.push(restored.meta);
 	}
 
 	await rebuildSharedIndexesForColumns(c.env, restoredMetas);
@@ -1899,6 +1928,7 @@ app.post("/api/admin/backups/account/restore", async (c) => {
 		restoredColumns,
 		missingBackups,
 		failedColumns,
+		failures,
 	});
 });
 
@@ -2000,26 +2030,11 @@ app.post("/api/admin/backups/column/:id/restore", async (c) => {
 		return c.json({ error: "backup_not_found" }, 404);
 	}
 
-	const raw = await object.text();
-	const parsed = JSON.parse(raw) as ColumnBackupPayload;
-
-	if (parsed.schemaVersion !== 1 || parsed.columnId !== columnId) {
-		return c.json({ error: "invalid_backup_payload" }, 400);
+	const verified = await readAndVerifyColumnBackup(object, columnId);
+	if (!verified.ok) {
+		return c.json({ error: verified.code }, 400);
 	}
-
-	const expectedChecksum = await sha256Hex(
-		JSON.stringify({
-			schemaVersion: parsed.schemaVersion,
-			columnId: parsed.columnId,
-			snapshotAt: parsed.snapshotAt,
-			meta: parsed.meta,
-			yjs: parsed.yjs,
-		}),
-	);
-
-	if (expectedChecksum !== parsed.checksum) {
-		return c.json({ error: "backup_checksum_mismatch" }, 400);
-	}
+	const parsed = verified.payload;
 
 	const parsedBackupMeta = parseColumnMetaRecord(parsed.meta);
 	if (!parsedBackupMeta.ok) {
@@ -2034,7 +2049,10 @@ app.post("/api/admin/backups/column/:id/restore", async (c) => {
 			snapshot: { meta: backupMeta, yjs: parsed.yjs },
 		});
 		if (!cloned.ok) {
-			return c.json({ error: cloned.code }, 500);
+			return c.json(
+				{ error: cloned.code },
+				cloned.code === "invalid_yjs_update" ? 422 : 500,
+			);
 		}
 
 		return c.json({
@@ -2056,10 +2074,12 @@ app.post("/api/admin/backups/column/:id/restore", async (c) => {
 	if (!restored.ok) {
 		const status =
 			restored.code === "backup_checksum_mismatch" ||
-			restored.code === "invalid_backup_payload" ||
-			restored.code === "column_meta_invalid"
-				? 400
-				: 500;
+				restored.code === "invalid_backup_payload" ||
+				restored.code === "column_meta_invalid"
+					? 400
+					: restored.code === "invalid_yjs_update"
+						? 422
+						: 500;
 		return c.json({ error: restored.code }, status);
 	}
 

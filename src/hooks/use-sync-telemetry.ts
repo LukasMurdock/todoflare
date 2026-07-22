@@ -5,6 +5,7 @@ import { summarizeReplayReport } from "../lib/sync/account-command-reconciliatio
 import type { ReplayReport } from "../lib/sync/contracts";
 import type { SyncMode } from "../lib/sync/mode-machine";
 import { normalizeAccountId } from "../lib/account";
+import { readAllLocalStorageQuarantine } from "../lib/local-first/local-storage-quarantine";
 
 export interface SyncStateSummary {
 	queueDepth: number;
@@ -14,6 +15,10 @@ export interface SyncStateSummary {
 	lastReplayLatencyMs: number | null;
 	revokeDiscardCount: number;
 	convergenceFailureCount: number;
+	storageState: "checking" | "durable" | "degraded" | "memory-only";
+	storageLastError: string | null;
+	quarantinedRecords: number;
+	quarantinedDurableMutations: number;
 }
 
 function syncStateDocId(accountId: string | null): string {
@@ -52,11 +57,19 @@ export function useSyncTelemetry(params: {
 	const [revokeDiscardCount, setRevokeDiscardCount] = useState(0);
 	const [convergenceFailureCount, setConvergenceFailureCount] = useState(0);
 	const [hydratedDocId, setHydratedDocId] = useState<string | null>(null);
+	const [storageState, setStorageState] = useState<SyncStateSummary["storageState"]>(
+		"checking",
+	);
+	const [storageLastError, setStorageLastError] = useState<string | null>(null);
+	const [quarantinedRecords, setQuarantinedRecords] = useState(0);
+	const [quarantinedDurableMutations, setQuarantinedDurableMutations] = useState(0);
 	const handledReplayReportRef = useRef<ReplayReport | null>(null);
+	const handledStorageErrorRef = useRef<string | null>(null);
 	const activeDocId = syncStateDocId(accountId);
 
 	useEffect(() => {
 		let cancelled = false;
+		let unsubscribeStorageHealth: (() => void) | undefined;
 		setHydratedDocId(null);
 		setLastServerHydrationAt(null);
 		setLastReplayAt(null);
@@ -67,6 +80,30 @@ export function useSyncTelemetry(params: {
 		void ensureLocalFirstDb()
 			.then((db) => {
 				if (cancelled) return;
+				const quarantined = [
+					...db.collections.quarantine.values(),
+					...readAllLocalStorageQuarantine(),
+				];
+				setQuarantinedRecords(quarantined.length);
+				setQuarantinedDurableMutations(
+					quarantined.filter((record) => record.containsDurableMutation).length,
+				);
+				unsubscribeStorageHealth = db.subscribeStorageHealth((health) => {
+					if (cancelled) return;
+					setStorageState(health.state);
+					setStorageLastError(health.lastError?.message ?? null);
+					if (health.state !== "durable" && health.lastError) {
+						const errorKey = `${health.lastError.operation}:${health.lastError.at}`;
+						if (handledStorageErrorRef.current !== errorKey) {
+							handledStorageErrorRef.current = errorKey;
+							toast.error(
+								health.state === "memory-only"
+									? "Changes may not survive a refresh because browser storage is unavailable"
+									: "Some changes could not be saved to browser storage",
+							);
+						}
+					}
+				});
 				const snapshot = db.collections.syncState.get(activeDocId);
 				setLastServerHydrationAt((current) => {
 					const loaded = snapshot?.lastServerHydrationAt ?? null;
@@ -96,6 +133,7 @@ export function useSyncTelemetry(params: {
 
 		return () => {
 			cancelled = true;
+			unsubscribeStorageHealth?.();
 		};
 	}, [accountId, activeDocId, ensureLocalFirstDb]);
 
@@ -134,6 +172,7 @@ export function useSyncTelemetry(params: {
 		void ensureLocalFirstDb()
 			.then((db) => {
 				db.collections.syncState.set(activeDocId, {
+					schemaVersion: 1,
 					id: activeDocId,
 					accountId,
 					mode,
@@ -184,6 +223,10 @@ export function useSyncTelemetry(params: {
 			lastReplayLatencyMs,
 			revokeDiscardCount,
 			convergenceFailureCount,
+			storageState,
+			storageLastError,
+			quarantinedRecords,
+			quarantinedDurableMutations,
 		}),
 		[
 			convergenceFailureCount,
@@ -191,8 +234,12 @@ export function useSyncTelemetry(params: {
 			lastReplayLatencyMs,
 			lastServerHydrationAt,
 			queueDepth,
-			yjsQueueDepth,
+			quarantinedDurableMutations,
+			quarantinedRecords,
 			revokeDiscardCount,
+			storageLastError,
+			storageState,
+			yjsQueueDepth,
 		],
 	);
 

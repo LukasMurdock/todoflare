@@ -12,7 +12,8 @@ import { waitFor } from "xstate";
 import { toast } from "sonner";
 import { deriveSyncMode, type SyncMode } from "@/lib/sync/mode-machine";
 import { getLocalFirstDb } from "@/lib/local-first/database";
-import type { AccountSnapshotDoc } from "@/lib/local-first/collections";
+import type { QuarantinedRecord } from "@/lib/local-first/collections";
+import { readAllLocalStorageQuarantine } from "@/lib/local-first/local-storage-quarantine";
 import {
 	createLocalFirstMutationQueueStorage,
 	LocalMutationQueueService,
@@ -175,6 +176,11 @@ interface SyncContextValue {
 	updateHiddenSharedColumns: (hiddenSharedColumns: string[]) => Promise<void>;
 	exportAccountData: () => Promise<AccountExportPayload | null>;
 	importAccountData: (payload: AccountExportPayload) => Promise<boolean>;
+	exportStorageRecoveryData: () => Promise<{
+		schemaVersion: 1;
+		exportedAt: number;
+		records: QuarantinedRecord[];
+	}>;
 
 	// Check for existing localStorage data
 	hasLocalData: () => boolean;
@@ -293,6 +299,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 				const previousHydratedAt = existing?.hydratedAt ?? Date.now();
 
 				db.collections.accountSnapshot.set(docId, {
+					schemaVersion: 1,
 					id: docId,
 					accountId: id,
 					account: nextAccount,
@@ -318,7 +325,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 				const db = await ensureDurableQueueStorage();
 				const snapshot = db.collections.accountSnapshot.get(
 					accountSnapshotDocId(id),
-				) as AccountSnapshotDoc | undefined;
+				);
 				if (!snapshot) return null;
 				return projectionFromLocalSnapshot(snapshot);
 			},
@@ -1061,6 +1068,18 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		return false;
 	}, []);
 
+	const exportStorageRecoveryData = useCallback(async () => {
+		const db = await ensureLocalFirstDb();
+		return {
+			schemaVersion: 1 as const,
+			exportedAt: Date.now(),
+			records: [
+				...db.collections.quarantine.values(),
+				...readAllLocalStorageQuarantine(),
+			],
+		};
+	}, [ensureLocalFirstDb]);
+
 	const value: SyncContextValue = {
 		accountId,
 		account,
@@ -1094,6 +1113,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		updateHiddenSharedColumns,
 		exportAccountData,
 		importAccountData,
+		exportStorageRecoveryData,
 		hasLocalData,
 	};
 

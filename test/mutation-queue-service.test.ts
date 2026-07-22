@@ -227,7 +227,13 @@ describe("LocalMutationQueueService", () => {
 				mutationOutbox: new Map(),
 				yjsUpdateOutbox: new Map(),
 				syncState: new Map(),
+				quarantine: new Map(),
 			},
+			getStorageHealth: () => ({ state: "durable", lastError: null }),
+			subscribeStorageHealth() {
+				return () => {};
+			},
+			async flush() {},
 			async close() {
 				return;
 			},
@@ -248,10 +254,16 @@ describe("LocalMutationQueueService", () => {
 		const db = {
 			collections: {
 				accountSnapshot: new Map(),
-				mutationOutbox: new Map<string, unknown>(),
+				mutationOutbox: new Map<string, any>(),
 				yjsUpdateOutbox: new Map(),
 				syncState: new Map(),
+				quarantine: new Map(),
 			},
+			getStorageHealth: () => ({ state: "durable" as const, lastError: null }),
+			subscribeStorageHealth() {
+				return () => {};
+			},
+			async flush() {},
 			async close() {
 				return;
 			},
