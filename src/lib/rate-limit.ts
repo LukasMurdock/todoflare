@@ -1,7 +1,7 @@
 /**
  * Rate limiting utilities for Cloudflare Workers
  *
- * Uses KV for storing rate limit counters with TTL
+ * Uses a sharded Durable Object for globally serialized counters.
  */
 
 export interface RateLimitConfig {
@@ -15,6 +15,11 @@ export interface RateLimitResult {
 	allowed: boolean;
 	remaining: number;
 	retryAfter?: number; // seconds until reset
+}
+
+interface RateLimitCoordinatorNamespace<Id> {
+	idFromName(name: string): Id;
+	get(id: Id): { fetch(request: Request): Promise<Response> };
 }
 
 /**
@@ -32,43 +37,28 @@ export const RATE_LIMITS = {
 /**
  * Check and increment rate limit
  *
- * @param kv - KV namespace for rate limit storage
+ * @param coordinators - Durable Object namespace for rate limit storage
  * @param key - Unique key for this rate limit (e.g., "create-account:192.168.1.1")
  * @param config - Rate limit configuration
  * @returns Whether the request is allowed and remaining count
  */
-export async function checkRateLimit(
-	kv: KVNamespace,
+export async function checkRateLimit<Id>(
+	coordinators: RateLimitCoordinatorNamespace<Id>,
 	key: string,
 	config: RateLimitConfig,
 ): Promise<RateLimitResult> {
-	const now = Math.floor(Date.now() / 1000);
-	const windowStart = now - (now % config.windowSeconds);
-	const fullKey = `rate:${key}:${windowStart}`;
-
-	// Get current count
-	const currentStr = await kv.get(fullKey);
-	const current = currentStr ? parseInt(currentStr, 10) : 0;
-
-	if (current >= config.limit) {
-		// Rate limited
-		const retryAfter = windowStart + config.windowSeconds - now;
-		return {
-			allowed: false,
-			remaining: 0,
-			retryAfter,
-		};
+	const stub = coordinators.get(coordinators.idFromName(key));
+	const response = await stub.fetch(
+		new Request("http://rate-limit/check", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(config),
+		}),
+	);
+	if (!response.ok) {
+		throw new Error(`Rate limit coordinator failed: ${response.status}`);
 	}
-
-	// Increment counter
-	await kv.put(fullKey, (current + 1).toString(), {
-		expirationTtl: config.windowSeconds + 60, // Extra minute buffer
-	});
-
-	return {
-		allowed: true,
-		remaining: config.limit - current - 1,
-	};
+	return (await response.json()) as RateLimitResult;
 }
 
 /**

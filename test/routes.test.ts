@@ -483,6 +483,79 @@ describe("Worker routes", () => {
 		expect(replayedPayload.url).toBe(firstPayload.url);
 	});
 
+	it("admits exactly one concurrent handler for an idempotency key", async () => {
+		const accountId = await createAccount();
+		const idempotencyKey = crypto.randomUUID();
+		const request = () =>
+			SELF.fetch("http://example.com/api/column", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-Idempotency-Key": idempotencyKey,
+				},
+				body: JSON.stringify({ accountId }),
+			});
+
+		const responses: Response[] = await Promise.all(
+			Array.from({ length: 12 }, request),
+		);
+		expect(responses.every((response) => response.ok)).toBe(true);
+		expect(
+			responses.filter((response) => response.headers.get("X-Idempotency-Replay") !== "1"),
+		).toHaveLength(1);
+
+		const payloads = (await Promise.all(
+			responses.map((response) => response.json()),
+		)) as Array<{ column: { id: string } }>;
+		expect(new Set(payloads.map((payload) => payload.column.id)).size).toBe(1);
+
+		const accountResponse = await SELF.fetch(
+			`http://example.com/api/account/${normalizeAccountId(accountId)}`,
+		);
+		const account = (await accountResponse.json()) as {
+			account: { columnOrder: string[] };
+		};
+		expect(account.account.columnOrder).toEqual([payloads[0].column.id]);
+	});
+
+	it("allows only one of two concurrent fingerprints to execute", async () => {
+		const accountId = await createAccount();
+		const normalizedId = normalizeAccountId(accountId);
+		const firstColumnId = await createColumn(accountId);
+		const secondColumnId = await createColumn(accountId);
+		const idempotencyKey = crypto.randomUUID();
+		const write = (columnId: string) =>
+			SELF.fetch(`http://example.com/api/account/${normalizedId}/hidden`, {
+				method: "PUT",
+				headers: {
+					"Content-Type": "application/json",
+					"X-Idempotency-Key": idempotencyKey,
+				},
+				body: JSON.stringify({ hiddenSharedColumns: [columnId] }),
+			});
+
+		const responses: Response[] = await Promise.all([
+			write(firstColumnId),
+			write(secondColumnId),
+		]);
+		expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+		const conflict = responses.find((response) => response.status === 409);
+		expect(await conflict?.json()).toMatchObject({
+			error: "idempotency_key_conflict",
+		});
+
+		const accountResponse = await SELF.fetch(
+			`http://example.com/api/account/${normalizedId}`,
+		);
+		const account = (await accountResponse.json()) as {
+			account: { hiddenSharedColumns: string[] };
+		};
+		expect([
+			JSON.stringify([firstColumnId]),
+			JSON.stringify([secondColumnId]),
+		]).toContain(JSON.stringify(account.account.hiddenSharedColumns));
+	});
+
 	it("repairs missing shared and public KV projections from DO metadata", async () => {
 		const ownerId = await createAccount();
 		const collaboratorId = await createAccount();
@@ -647,15 +720,20 @@ describe("Worker routes", () => {
 		const cacheKey = `idempotency:${scope}:${normalizedAccountId}:${idempotencyKey}`;
 		const fingerprint = await sha256Hex(`POST ${path}\n`);
 
-		await env.ACCOUNTS.put(
-			cacheKey,
-			JSON.stringify({
-				schemaVersion: 1,
-				state: "pending",
-				fingerprint,
-			}),
-			{ expirationTtl: 60 },
+		const coordinator = env.IDEMPOTENCY_COORDINATOR.get(
+			env.IDEMPOTENCY_COORDINATOR.idFromName(cacheKey),
 		);
+		const claim = await coordinator.fetch(
+			new Request("http://idempotency/begin", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					fingerprint,
+					pendingExpiresAt: Date.now() + 60_000,
+				}),
+			}),
+		);
+		expect(claim.ok).toBe(true);
 
 		const response = await SELF.fetch(`http://example.com${path}`, {
 			method: "POST",

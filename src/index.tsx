@@ -21,6 +21,8 @@ import {
 	RATE_LIMITS,
 } from "./lib/rate-limit";
 import { ColumnRoomSql } from "./durable-objects/column-room";
+import { IdempotencyCoordinatorSql } from "./durable-objects/idempotency-coordinator";
+import { RateLimitCoordinatorSql } from "./durable-objects/rate-limit-coordinator";
 import { registerAgentApi } from "./agent-api";
 import type { ApiErrorCode } from "./lib/api/errors";
 import {
@@ -49,12 +51,13 @@ import {
 } from "./server/workflows/restore-column-backup";
 
 // Re-export Durable Objects for Cloudflare
-export { ColumnRoomSql };
+export { ColumnRoomSql, IdempotencyCoordinatorSql, RateLimitCoordinatorSql };
 
 export type Bindings = {
 	ACCOUNTS: KVNamespace;
-	RATE_LIMIT: KVNamespace;
 	COLUMN_ROOM: DurableObjectNamespace;
+	IDEMPOTENCY_COORDINATOR: DurableObjectNamespace;
+	RATE_LIMIT_COORDINATOR: DurableObjectNamespace;
 	RATE_LIMIT_DISABLED?: string;
 	READ_ONLY_MODE?: string;
 	BACKUPS?: R2Bucket;
@@ -70,10 +73,8 @@ const COLUMN_ID_PATTERN =
 const IDEMPOTENCY_HEADER = "X-Idempotency-Key";
 const IDEMPOTENCY_KEY_MAX_LENGTH = 128;
 const IDEMPOTENCY_CACHE_TTL_SECONDS = 24 * 60 * 60;
-const IDEMPOTENCY_PENDING_TTL_SECONDS = 5 * 60;
 const IDEMPOTENCY_PENDING_WAIT_MS = 1500;
 const IDEMPOTENCY_PENDING_POLL_MS = 50;
-const IDEMPOTENCY_SCHEMA_VERSION = 1;
 const ACCOUNT_METADATA_CONCURRENCY = 6;
 
 type ColumnMetadataFetchResult =
@@ -100,25 +101,6 @@ async function fetchColumnMetadataBatch(
 		},
 	);
 }
-
-interface IdempotencyCacheBaseRecord {
-	schemaVersion: number;
-	fingerprint: string;
-}
-
-interface IdempotencyPendingRecord extends IdempotencyCacheBaseRecord {
-	state: "pending";
-}
-
-interface IdempotencyCompletedRecord extends IdempotencyCacheBaseRecord {
-	state: "completed";
-	status: number;
-	body: unknown;
-}
-
-type IdempotencyCacheRecord =
-	| IdempotencyPendingRecord
-	| IdempotencyCompletedRecord;
 
 registerAgentApi(app);
 
@@ -204,65 +186,6 @@ function idempotencyCacheKey(
 	return `idempotency:${scope}:${accountScope}:${idempotencyKey}`;
 }
 
-function parseIdempotencyCacheRecord(
-	raw: string | null,
-): IdempotencyCacheRecord | null {
-	if (!raw) return null;
-
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(raw);
-	} catch {
-		return null;
-	}
-
-	if (!parsed || typeof parsed !== "object") return null;
-
-	const record = parsed as {
-		schemaVersion?: number;
-		state?: unknown;
-		fingerprint?: unknown;
-		body?: unknown;
-		status?: number;
-	};
-
-	if (record.schemaVersion !== IDEMPOTENCY_SCHEMA_VERSION) return null;
-	if (typeof record.fingerprint !== "string" || record.fingerprint.length === 0) {
-		return null;
-	}
-
-	if (record.state === "pending") {
-		return {
-			schemaVersion: record.schemaVersion,
-			state: "pending",
-			fingerprint: record.fingerprint,
-		};
-	}
-
-	if (record.state === "completed") {
-		if (typeof record.status !== "number") return null;
-		if (!("body" in record)) return null;
-
-		return {
-			schemaVersion: record.schemaVersion,
-			state: "completed",
-			fingerprint: record.fingerprint,
-			status: record.status,
-			body: record.body,
-		};
-	}
-
-	return null;
-}
-
-async function loadIdempotencyRecord(
-	env: Bindings,
-	cacheKey: string,
-): Promise<IdempotencyCacheRecord | null> {
-	const raw = await env.ACCOUNTS.get(cacheKey);
-	return parseIdempotencyCacheRecord(raw);
-}
-
 function idempotencyKeyConflictResponse() {
 	return Response.json(
 		{
@@ -286,9 +209,32 @@ function idempotencyRequestInProgressResponse() {
 	);
 }
 
-function toIdempotentReplayResponse(record: IdempotencyCompletedRecord): Response {
-	return Response.json(record.body, {
-		status: record.status,
+function idempotencyOutcomeUnknownResponse() {
+	return Response.json(
+		{
+			error: "idempotency_outcome_unknown",
+			code: "idempotency_in_progress",
+			message:
+				"A previous attempt may have executed, but its outcome could not be recorded. Retry with a new operation only after reconciling state.",
+		},
+		{ status: 409 },
+	);
+}
+
+function idempotencyCoordinatorUnavailableResponse() {
+	return Response.json(
+		{
+			error: "idempotency_unavailable",
+			code: "durable_object_unavailable",
+			message: "Idempotency coordination is temporarily unavailable.",
+		},
+		{ status: 503 },
+	);
+}
+
+function toIdempotentReplayResponse(status: number, body: unknown): Response {
+	return Response.json(body, {
+		status,
 		headers: {
 			"X-Idempotency-Replay": "1",
 		},
@@ -302,54 +248,68 @@ function wait(ms: number): Promise<void> {
 }
 
 async function waitForPendingIdempotentCompletion(
-	env: Bindings,
-	cacheKey: string,
+	stub: DurableObjectStub,
 	fingerprint: string,
 ): Promise<Response | null> {
 	const deadline = Date.now() + IDEMPOTENCY_PENDING_WAIT_MS;
 
 	while (Date.now() < deadline) {
 		await wait(IDEMPOTENCY_PENDING_POLL_MS);
-		const record = await loadIdempotencyRecord(env, cacheKey);
-		if (!record) return null;
-		if (record.fingerprint !== fingerprint) {
-			return idempotencyKeyConflictResponse();
+		const outcome = await beginIdempotentRequest(stub, fingerprint);
+		if (outcome.kind === "conflict") return idempotencyKeyConflictResponse();
+		if (outcome.kind === "completed") {
+			return toIdempotentReplayResponse(outcome.status, outcome.body);
 		}
-		if (record.state === "completed") {
-			return toIdempotentReplayResponse(record);
+		if (outcome.kind === "indeterminate") return idempotencyOutcomeUnknownResponse();
+		if (outcome.kind === "acquired") {
+			throw new Error("Idempotency coordinator unexpectedly released an active claim");
 		}
 	}
 
 	return idempotencyRequestInProgressResponse();
 }
 
-async function markIdempotencyPending(
-	env: Bindings,
-	cacheKey: string,
-	fingerprint: string,
-): Promise<void> {
-	const record: IdempotencyPendingRecord = {
-		schemaVersion: IDEMPOTENCY_SCHEMA_VERSION,
-		state: "pending",
-		fingerprint,
-	};
+type IdempotencyBeginOutcome =
+	| { kind: "acquired"; ownerToken: string }
+	| { kind: "completed"; status: number; body: unknown }
+	| { kind: "pending" }
+	| { kind: "indeterminate" }
+	| { kind: "conflict" };
 
-	await env.ACCOUNTS.put(cacheKey, JSON.stringify(record), {
-		expirationTtl: IDEMPOTENCY_PENDING_TTL_SECONDS,
-	});
+async function beginIdempotentRequest(
+	stub: DurableObjectStub,
+	fingerprint: string,
+): Promise<IdempotencyBeginOutcome> {
+	const response = await stub.fetch(
+		new Request("http://idempotency/begin", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				fingerprint,
+				pendingExpiresAt: Date.now() + IDEMPOTENCY_CACHE_TTL_SECONDS * 1000,
+			}),
+		}),
+	);
+	if (!response.ok) throw new Error(`Idempotency coordinator failed: ${response.status}`);
+	return (await response.json()) as IdempotencyBeginOutcome;
 }
 
-async function clearPendingIdempotencyIfNeeded(
-	env: Bindings,
-	cacheKey: string,
-	fingerprint: string,
+async function finishIdempotentRequest(
+	stub: DurableObjectStub,
+	path: "complete" | "indeterminate",
+	payload: Record<string, unknown>,
 ): Promise<void> {
-	const record = await loadIdempotencyRecord(env, cacheKey);
-	if (!record) return;
-	if (record.fingerprint !== fingerprint) return;
-	if (record.state !== "pending") return;
-
-	await env.ACCOUNTS.delete(cacheKey);
+	const response = await stub.fetch(
+		new Request(`http://idempotency/${path}`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				...payload,
+				expiresAt: Date.now() + IDEMPOTENCY_CACHE_TTL_SECONDS * 1000,
+			}),
+		}),
+	);
+	if (!response.ok) throw new Error(`Idempotency coordinator failed: ${response.status}`);
 }
 
 async function idempotencyRequestFingerprint(
@@ -375,32 +335,6 @@ interface IdempotentWriteOptions {
 	requestFingerprintSource?: string;
 }
 
-async function cacheIdempotentResponse(
-	env: Bindings,
-	cacheKey: string,
-	fingerprint: string,
-	response: Response,
-): Promise<boolean> {
-	if (response.status < 200 || response.status >= 300) return false;
-
-	const body = await response.clone().json().catch(() => undefined);
-	if (typeof body === "undefined") return false;
-
-	const record: IdempotencyCompletedRecord = {
-		schemaVersion: IDEMPOTENCY_SCHEMA_VERSION,
-		state: "completed",
-		fingerprint,
-		status: response.status,
-		body,
-	};
-
-	await env.ACCOUNTS.put(cacheKey, JSON.stringify(record), {
-		expirationTtl: IDEMPOTENCY_CACHE_TTL_SECONDS,
-	});
-
-	return true;
-}
-
 async function withIdempotentWrite(
 	c: Context<{ Bindings: Bindings }>,
 	options: IdempotentWriteOptions,
@@ -424,45 +358,55 @@ async function withIdempotentWrite(
 		c.req.raw,
 		options.requestFingerprintSource,
 	);
-
-	const existingRecord = await loadIdempotencyRecord(c.env, cacheKey);
-	if (existingRecord) {
-		if (existingRecord.fingerprint !== fingerprint) {
-			return idempotencyKeyConflictResponse();
-		}
-
-		if (existingRecord.state === "completed") {
-			return toIdempotentReplayResponse(existingRecord);
-		}
-
-		const pendingResolution = await waitForPendingIdempotentCompletion(
-			c.env,
-			cacheKey,
-			fingerprint,
-		);
-		if (pendingResolution) {
-			return pendingResolution;
+	const stub = c.env.IDEMPOTENCY_COORDINATOR.get(
+		c.env.IDEMPOTENCY_COORDINATOR.idFromName(cacheKey),
+	);
+	let outcome: IdempotencyBeginOutcome;
+	try {
+		outcome = await beginIdempotentRequest(stub, fingerprint);
+	} catch (error) {
+		console.error("Idempotency coordinator unavailable", error);
+		return idempotencyCoordinatorUnavailableResponse();
+	}
+	if (outcome.kind === "conflict") return idempotencyKeyConflictResponse();
+	if (outcome.kind === "completed") {
+		return toIdempotentReplayResponse(outcome.status, outcome.body);
+	}
+	if (outcome.kind === "indeterminate") return idempotencyOutcomeUnknownResponse();
+	if (outcome.kind === "pending") {
+		try {
+			return (
+				(await waitForPendingIdempotentCompletion(stub, fingerprint)) ??
+				idempotencyRequestInProgressResponse()
+			);
+		} catch (error) {
+			console.error("Idempotency coordinator unavailable while waiting", error);
+			return idempotencyCoordinatorUnavailableResponse();
 		}
 	}
 
-	await markIdempotencyPending(c.env, cacheKey, fingerprint);
-
 	try {
 		const response = await handler();
-		const didCache = await cacheIdempotentResponse(
-			c.env,
-			cacheKey,
-			fingerprint,
-			response,
-		);
-
-		if (!didCache) {
-			await clearPendingIdempotencyIfNeeded(c.env, cacheKey, fingerprint);
+		const body = await response.clone().json().catch(() => undefined);
+		if (response.status < 500 && typeof body !== "undefined") {
+			await finishIdempotentRequest(stub, "complete", {
+				ownerToken: outcome.ownerToken,
+				status: response.status,
+				body,
+			});
+		} else {
+			await finishIdempotentRequest(stub, "indeterminate", {
+				ownerToken: outcome.ownerToken,
+			});
 		}
 
 		return response;
 	} catch (err) {
-		await clearPendingIdempotencyIfNeeded(c.env, cacheKey, fingerprint);
+		await finishIdempotentRequest(stub, "indeterminate", {
+			ownerToken: outcome.ownerToken,
+		}).catch((markError) => {
+			console.error("Failed to mark idempotency outcome indeterminate", markError);
+		});
 		throw err;
 	}
 }
@@ -854,7 +798,7 @@ app.post("/api/account", async (c) => {
 	if (!shouldSkipRateLimit(c)) {
 		const ip = getClientIP(c.req.raw);
 		const rateLimit = await checkRateLimit(
-			c.env.RATE_LIMIT,
+			c.env.RATE_LIMIT_COORDINATOR,
 			ipRateLimitKey("create-account", ip),
 			RATE_LIMITS.createAccount,
 		);
@@ -901,7 +845,7 @@ app.get("/api/account/:id", async (c) => {
 	if (!shouldSkipRateLimit(c)) {
 		const ip = getClientIP(c.req.raw);
 		const rateLimit = await checkRateLimit(
-			c.env.RATE_LIMIT,
+			c.env.RATE_LIMIT_COORDINATOR,
 			ipRateLimitKey("account-lookup", ip),
 			RATE_LIMITS.accountLookup,
 		);
@@ -1682,7 +1626,7 @@ app.get("/api/p/:publicId", async (c) => {
 
 	if (!shouldSkipRateLimit(c)) {
 		const rateLimit = await checkRateLimit(
-			c.env.RATE_LIMIT,
+			c.env.RATE_LIMIT_COORDINATOR,
 			resourceRateLimitKey("public-view", publicId),
 			RATE_LIMITS.publicView,
 		);

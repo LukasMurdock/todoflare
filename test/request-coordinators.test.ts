@@ -1,0 +1,93 @@
+import { env } from "cloudflare:test";
+import { describe, expect, it } from "vitest";
+import { checkRateLimit } from "../src/lib/rate-limit";
+
+describe("request coordinators", () => {
+	it("atomically admits one idempotency owner", async () => {
+		const stub = env.IDEMPOTENCY_COORDINATOR.get(
+			env.IDEMPOTENCY_COORDINATOR.idFromName(`test:${crypto.randomUUID()}`),
+		);
+		const begin = () =>
+			stub.fetch(
+				new Request("http://idempotency/begin", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						fingerprint: "same-request",
+						pendingExpiresAt: Date.now() + 60_000,
+					}),
+				}),
+			);
+
+		const responses: Response[] = await Promise.all(
+			Array.from({ length: 50 }, begin),
+		);
+		const outcomes = (await Promise.all(
+			responses.map((response) => response.json()),
+		)) as Array<{ kind: string }>;
+		expect(outcomes.filter((outcome) => outcome.kind === "acquired")).toHaveLength(1);
+		expect(outcomes.filter((outcome) => outcome.kind === "pending")).toHaveLength(49);
+	});
+
+	it("does not reopen an indeterminate idempotency outcome", async () => {
+		const stub = env.IDEMPOTENCY_COORDINATOR.get(
+			env.IDEMPOTENCY_COORDINATOR.idFromName(`test:${crypto.randomUUID()}`),
+		);
+		const begin = (fingerprint: string) =>
+			stub.fetch(
+				new Request("http://idempotency/begin", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						fingerprint,
+						pendingExpiresAt: Date.now() + 60_000,
+					}),
+				}),
+			);
+
+		const claim = (await (await begin("same-request")).json()) as {
+			kind: string;
+			ownerToken: string;
+		};
+		expect(claim.kind).toBe("acquired");
+
+		const marked = await stub.fetch(
+			new Request("http://idempotency/indeterminate", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					ownerToken: claim.ownerToken,
+					expiresAt: Date.now() + 60_000,
+				}),
+			}),
+		);
+		expect(marked.ok).toBe(true);
+		expect(await (await begin("same-request")).json()).toMatchObject({
+			kind: "indeterminate",
+		});
+		expect(await (await begin("different-request")).json()).toMatchObject({
+			kind: "conflict",
+		});
+	});
+
+	it("atomically enforces the configured rate limit under concurrency", async () => {
+		const key = `concurrent:${crypto.randomUUID()}`;
+		const results = await Promise.all(
+			Array.from({ length: 50 }, () =>
+				checkRateLimit(env.RATE_LIMIT_COORDINATOR, key, {
+					limit: 7,
+					windowSeconds: 60,
+				}),
+			),
+		);
+
+		expect(results.filter((result) => result.allowed)).toHaveLength(7);
+		expect(results.filter((result) => !result.allowed)).toHaveLength(43);
+		expect(
+			results.filter((result) => result.allowed).map((result) => result.remaining).sort(),
+		).toEqual([0, 1, 2, 3, 4, 5, 6]);
+		expect(results.filter((result) => !result.allowed).every((result) => result.retryAfter)).toBe(
+			true,
+		);
+	});
+});

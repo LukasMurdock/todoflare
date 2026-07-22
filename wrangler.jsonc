@@ -35,10 +35,6 @@
 			"binding": "ACCOUNTS",
 			"id": "b2a26a39720746e2b67d8a07ee1a2d68",
 		},
-		{
-			"binding": "RATE_LIMIT",
-			"id": "65b716d806df49e29464a3705db4e7e5",
-		},
 	],
 	"r2_buckets": [
 		{
@@ -52,12 +48,24 @@
 				"name": "COLUMN_ROOM",
 				"class_name": "ColumnRoomSql",
 			},
+			{
+				"name": "IDEMPOTENCY_COORDINATOR",
+				"class_name": "IdempotencyCoordinatorSql",
+			},
+			{
+				"name": "RATE_LIMIT_COORDINATOR",
+				"class_name": "RateLimitCoordinatorSql",
+			},
 		],
 	},
 	"migrations": [
 		{
 			"tag": "v1",
 			"new_sqlite_classes": ["ColumnRoomSql"],
+		},
+		{
+			"tag": "v2",
+			"new_sqlite_classes": ["IdempotencyCoordinatorSql", "RateLimitCoordinatorSql"],
 		},
 	],
 	"triggers": {

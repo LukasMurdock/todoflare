@@ -15,7 +15,8 @@ import {
 
 type Bindings = {
 	ACCOUNTS: KVNamespace;
-	RATE_LIMIT: KVNamespace;
+	IDEMPOTENCY_COORDINATOR: DurableObjectNamespace;
+	RATE_LIMIT_COORDINATOR: DurableObjectNamespace;
 	COLUMN_ROOM: DurableObjectNamespace;
 };
 
@@ -118,7 +119,7 @@ async function enforceAgentRateLimit(
 
 	const ip = getClientIP(c.req.raw);
 	const rateLimit = await checkRateLimit(
-		c.env.RATE_LIMIT,
+		c.env.RATE_LIMIT_COORDINATOR,
 		ipRateLimitKey(keySuffix, ip),
 		RATE_LIMITS.accountLookup,
 	);
