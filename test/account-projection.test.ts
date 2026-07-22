@@ -102,6 +102,27 @@ describe("account projection", () => {
 		}
 	});
 
+	it("carries the account credential in Authorization, never in the URL", async () => {
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(null, { status: 401 }),
+		);
+		try {
+			await expect(fetchAccountProjection(
+				ACCOUNT_ID,
+				new AbortController().signal,
+				"hydrate",
+			)).rejects.toBeDefined();
+			const [url, init] = fetchMock.mock.calls[0] ?? [];
+			expect(url).toBe("/api/account");
+			expect(String(url)).not.toContain("1111111111111111");
+			expect(new Headers(init?.headers).get("Authorization")).toBe(
+				"Bearer 1111111111111111",
+			);
+		} finally {
+			fetchMock.mockRestore();
+		}
+	});
+
 	it("builds owned metadata only from the authoritative server response", () => {
 		const projected = projectionFromServer({
 				account: baseProjection().account,

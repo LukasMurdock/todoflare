@@ -82,12 +82,12 @@ describe("account command executor", () => {
 
 		expect(requests.map(({ url, init }) => [init?.method, url])).toEqual([
 			["POST", "/api/column"],
-			["PUT", "/api/account/1111111111111111/columns"],
-			["PUT", "/api/account/1111111111111111/hidden"],
+			["PUT", "/api/account/columns"],
+			["PUT", "/api/account/hidden"],
 			["DELETE", `/api/column/${COLUMN_ID}`],
 			["POST", `/api/column/${COLUMN_ID}/restore`],
 			["POST", `/api/column/${COLUMN_ID}/share`],
-			["DELETE", `/api/column/${COLUMN_ID}/share/2222222222222222`],
+			["DELETE", `/api/column/${COLUMN_ID}/share`],
 			["POST", `/api/column/${COLUMN_ID}/public`],
 			["DELETE", `/api/column/${COLUMN_ID}/public`],
 		]);
@@ -97,9 +97,14 @@ describe("account command executor", () => {
 					new Headers(init?.headers).get("X-Idempotency-Key") !== null,
 			),
 		).toBe(true);
-		expect(requests[0]?.init?.body).toBe(
-			JSON.stringify({ accountId: ACCOUNT_ID, columnId: COLUMN_ID }),
-		);
+		expect(requests[0]?.init?.body).toBe(JSON.stringify({ columnId: COLUMN_ID }));
+		expect(
+			requests.every(
+				({ init }) =>
+					new Headers(init?.headers).get("Authorization") ===
+					"Bearer 1111111111111111",
+			),
+		).toBe(true);
 		expect(requests[5]?.init?.body).toBe(
 			JSON.stringify({ targetAccountId: TARGET_ID }),
 		);

@@ -16,6 +16,10 @@ read-only public links, and recover deleted data.
   Account snapshots, queued metadata commands, pending Yjs updates, and sync
   telemetry are persisted in IndexedDB so the app can start and accept edits
   offline.
+  Private HTTP requests carry this credential only in the `Authorization`
+  header; account credentials are never placed in paths or query strings.
+  Authenticated WebSockets use a per-column, single-use ticket that expires
+  after 45 seconds, so the account credential never enters the upgrade URL.
 - **Metadata sync:** creates, ordering, sharing, public-link, delete, and restore
   operations use one durable client queue. The Worker applies replayable writes
   idempotently.

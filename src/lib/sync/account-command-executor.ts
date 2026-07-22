@@ -1,4 +1,4 @@
-import { normalizeAccountId, validateAccountId } from "../account";
+import { validateAccountId } from "../account";
 import type { ColumnMeta, PublicLinkResponse } from "../../types/account";
 import type {
 	AccountCommandEffect,
@@ -6,6 +6,7 @@ import type {
 } from "./contracts";
 import type { MutationReplayResult } from "./mutation-queue-service";
 import { mutationResultFromResponse } from "./replay-response";
+import { accountAuthorizationHeader } from "../http-account-auth";
 
 export type AccountCommandExecutionResult = MutationReplayResult & {
 	effects?: AccountCommandEffect[];
@@ -50,8 +51,8 @@ export function createAccountCommandExecutor(
 	return {
 		async execute(mutation, executionOptions) {
 			const activeAccountId = mutation.entityId;
-			const normalizedActiveAccountId = normalizeAccountId(activeAccountId);
 			const signal = executionOptions?.signal;
+			const authorization = accountAuthorizationHeader(activeAccountId);
 
 			switch (mutation.opType) {
 				case "column.create": {
@@ -61,11 +62,12 @@ export function createAccountCommandExecutor(
 					const response = await fetchRequest("/api/column", {
 						method: "POST",
 						signal,
-						headers: {
-							"Content-Type": "application/json",
-							"X-Idempotency-Key": mutation.idempotencyKey,
+								headers: {
+									"Content-Type": "application/json",
+									Authorization: authorization,
+									"X-Idempotency-Key": mutation.idempotencyKey,
 						},
-						body: JSON.stringify({ accountId: activeAccountId, columnId }),
+						body: JSON.stringify({ columnId }),
 					});
 					if (!response.ok) return classifyResponse(response);
 
@@ -87,12 +89,13 @@ export function createAccountCommandExecutor(
 					const { columnOrder } = mutation.payload;
 					return classifyResponse(
 						await fetchRequest(
-							`/api/account/${normalizedActiveAccountId}/columns`,
+							"/api/account/columns",
 							{
 								method: "PUT",
 								signal,
 								headers: {
 									"Content-Type": "application/json",
+									Authorization: authorization,
 									"X-Idempotency-Key": mutation.idempotencyKey,
 								},
 								body: JSON.stringify({ columnOrder }),
@@ -105,12 +108,13 @@ export function createAccountCommandExecutor(
 					const { hiddenSharedColumns } = mutation.payload;
 					return classifyResponse(
 						await fetchRequest(
-							`/api/account/${normalizedActiveAccountId}/hidden`,
+							"/api/account/hidden",
 							{
 								method: "PUT",
 								signal,
-								headers: {
-									"Content-Type": "application/json",
+									headers: {
+										"Content-Type": "application/json",
+										Authorization: authorization,
 									"X-Idempotency-Key": mutation.idempotencyKey,
 								},
 								body: JSON.stringify({ hiddenSharedColumns }),
@@ -127,7 +131,7 @@ export function createAccountCommandExecutor(
 							method: "DELETE",
 							signal,
 							headers: {
-								"X-Account-ID": activeAccountId,
+								Authorization: authorization,
 								"X-Idempotency-Key": mutation.idempotencyKey,
 							},
 						}),
@@ -145,7 +149,7 @@ export function createAccountCommandExecutor(
 							method: "POST",
 							signal,
 							headers: {
-								"X-Account-ID": activeAccountId,
+								Authorization: authorization,
 								"X-Idempotency-Key": mutation.idempotencyKey,
 							},
 						}),
@@ -169,20 +173,16 @@ export function createAccountCommandExecutor(
 
 					const isShare = mutation.opType === "column.share";
 					const response = await fetchRequest(
-						isShare
-							? `/api/column/${columnId}/share`
-							: `/api/column/${columnId}/share/${normalizeAccountId(targetAccountId)}`,
+						`/api/column/${columnId}/share`,
 						{
 							method: isShare ? "POST" : "DELETE",
 							signal,
 							headers: {
-								...(isShare ? { "Content-Type": "application/json" } : {}),
-								"X-Account-ID": activeAccountId,
+								"Content-Type": "application/json",
+								Authorization: authorization,
 								"X-Idempotency-Key": mutation.idempotencyKey,
 							},
-							...(isShare
-								? { body: JSON.stringify({ targetAccountId }) }
-								: {}),
+							body: JSON.stringify({ targetAccountId }),
 						},
 					);
 					if (!response.ok) return classifyResponse(response);
@@ -204,7 +204,7 @@ export function createAccountCommandExecutor(
 						method: "POST",
 						signal,
 						headers: {
-							"X-Account-ID": activeAccountId,
+							Authorization: authorization,
 							"X-Idempotency-Key": mutation.idempotencyKey,
 						},
 					});
@@ -237,7 +237,7 @@ export function createAccountCommandExecutor(
 							method: "DELETE",
 							signal,
 							headers: {
-								"X-Account-ID": activeAccountId,
+								Authorization: authorization,
 								"X-Idempotency-Key": mutation.idempotencyKey,
 							},
 						}),

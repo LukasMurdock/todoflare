@@ -10,6 +10,10 @@ function normalizeAccountId(id: string): string {
 	return id.replace(/\D/g, "");
 }
 
+function accountHeaders(accountId: string): Record<string, string> {
+	return { Authorization: `Bearer ${normalizeAccountId(accountId)}` };
+}
+
 function toHex(bytes: ArrayBuffer): string {
 	const view = new Uint8Array(bytes);
 	let out = "";
@@ -38,8 +42,8 @@ async function createAccount(): Promise<string> {
 async function createColumn(accountId: string): Promise<string> {
 	const res = await SELF.fetch("http://example.com/api/column", {
 		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ accountId }),
+		headers: { "Content-Type": "application/json", ...accountHeaders(accountId) },
+		body: JSON.stringify({}),
 	});
 	expect(res.ok).toBe(true);
 	const data = (await res.json()) as { column: { id: string } };
@@ -53,8 +57,8 @@ async function createColumnWithId(
 ): Promise<string> {
 	const res = await SELF.fetch("http://example.com/api/column", {
 		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ accountId, columnId }),
+		headers: { "Content-Type": "application/json", ...accountHeaders(accountId) },
+		body: JSON.stringify({ columnId }),
 	});
 	expect(res.ok).toBe(true);
 	const data = (await res.json()) as { column: { id: string } };
@@ -65,7 +69,7 @@ async function createColumnWithId(
 async function deleteColumn(accountId: string, columnId: string): Promise<void> {
 	const res = await SELF.fetch(`http://example.com/api/column/${columnId}`, {
 		method: "DELETE",
-		headers: { "X-Account-ID": accountId },
+		headers: accountHeaders(accountId),
 	});
 	expect(res.ok).toBe(true);
 }
@@ -73,7 +77,7 @@ async function deleteColumn(accountId: string, columnId: string): Promise<void> 
 async function restoreColumn(accountId: string, columnId: string): Promise<void> {
 	const res = await SELF.fetch(`http://example.com/api/column/${columnId}/restore`, {
 		method: "POST",
-		headers: { "X-Account-ID": accountId },
+		headers: accountHeaders(accountId),
 	});
 	expect(res.ok).toBe(true);
 }
@@ -87,7 +91,7 @@ async function shareColumn(
 		method: "POST",
 		headers: {
 			"Content-Type": "application/json",
-			"X-Account-ID": ownerAccountId,
+			...accountHeaders(ownerAccountId),
 		},
 		body: JSON.stringify({ targetAccountId }),
 	});
@@ -137,7 +141,8 @@ describe("Worker routes", () => {
 
 	it("returns Account not found for unknown accounts", async () => {
 		const res = await SELF.fetch(
-			"http://example.com/api/account/0000000000000000",
+			"http://example.com/api/account",
+			{ headers: accountHeaders("0000000000000000") },
 		);
 		expect(res.status).toBe(404);
 		expect(await res.json()).toMatchObject({ error: "Account not found" });
@@ -146,8 +151,11 @@ describe("Worker routes", () => {
 	it("rejects column creation for unknown accounts", async () => {
 		const res = await SELF.fetch("http://example.com/api/column", {
 			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ accountId: "0000 0000 0000 0000" }),
+			headers: {
+				"Content-Type": "application/json",
+				...accountHeaders("0000 0000 0000 0000"),
+			},
+			body: JSON.stringify({}),
 		});
 		expect(res.status).toBe(404);
 		expect(await res.json()).toMatchObject({ error: "Account not found" });
@@ -156,7 +164,10 @@ describe("Worker routes", () => {
 	it("rejects malformed JSON request bodies", async () => {
 		const res = await SELF.fetch("http://example.com/api/column", {
 			method: "POST",
-			headers: { "Content-Type": "application/json" },
+			headers: {
+				"Content-Type": "application/json",
+				...accountHeaders("0000 0000 0000 0000"),
+			},
 			body: "{",
 		});
 
@@ -169,10 +180,10 @@ describe("Worker routes", () => {
 
 	it("rejects wrong array element types", async () => {
 		const res = await SELF.fetch(
-			"http://example.com/api/account/0000000000000000/columns",
+			"http://example.com/api/account/columns",
 			{
 				method: "PUT",
-				headers: { "Content-Type": "application/json" },
+				headers: { "Content-Type": "application/json", ...accountHeaders("0000000000000000") },
 				body: JSON.stringify({ columnOrder: [42] }),
 			},
 		);
@@ -184,10 +195,10 @@ describe("Worker routes", () => {
 	it("rejects oversized column arrays", async () => {
 		const columnOrder = Array.from({ length: 101 }, () => crypto.randomUUID());
 		const res = await SELF.fetch(
-			"http://example.com/api/account/0000000000000000/columns",
+			"http://example.com/api/account/columns",
 			{
 				method: "PUT",
-				headers: { "Content-Type": "application/json" },
+				headers: { "Content-Type": "application/json", ...accountHeaders("0000000000000000") },
 				body: JSON.stringify({ columnOrder }),
 			},
 		);
@@ -198,15 +209,16 @@ describe("Worker routes", () => {
 
 	it("rejects invalid path, header, and query values", async () => {
 		const invalidPath = await SELF.fetch(
-			"http://example.com/api/account/not-an-account",
+			"http://example.com/api/account",
+			{ headers: { Authorization: "Bearer not-an-account" } },
 		);
-		expect(invalidPath.status).toBe(400);
+		expect(invalidPath.status).toBe(401);
 
 		const invalidHeader = await SELF.fetch(
 			`http://example.com/api/column/${crypto.randomUUID()}`,
-			{ headers: { "X-Account-ID": "invalid" } },
+			{ headers: { Authorization: "Bearer invalid" } },
 		);
-		expect(invalidHeader.status).toBe(400);
+		expect(invalidHeader.status).toBe(401);
 
 		const invalidQuery = await SELF.fetch(
 			`http://example.com/api/admin/backups/column/${crypto.randomUUID()}?limit=invalid`,
@@ -217,12 +229,12 @@ describe("Worker routes", () => {
 	it("rejects malformed account imports", async () => {
 		const accountId = "0000000000000000";
 		const res = await SELF.fetch(
-			`http://example.com/api/account/${accountId}/import`,
+			"http://example.com/api/account/import",
 			{
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
-					"X-Account-ID": accountId,
+					...accountHeaders(accountId),
 				},
 				body: JSON.stringify({
 					schemaVersion: 1,
@@ -242,19 +254,19 @@ describe("Worker routes", () => {
 		await createColumn(accountId);
 		const normalizedAccountId = normalizeAccountId(accountId);
 		const exportResponse = await SELF.fetch(
-			`http://example.com/api/account/${normalizedAccountId}/export`,
-			{ headers: { "X-Account-ID": accountId } },
+			"http://example.com/api/account/export",
+			{ headers: accountHeaders(accountId) },
 		);
 		expect(exportResponse.ok).toBe(true);
 		const payload = await exportResponse.json();
 
 		const importResponse = await SELF.fetch(
-			`http://example.com/api/account/${normalizedAccountId}/import`,
+			"http://example.com/api/account/import",
 			{
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
-					"X-Account-ID": accountId,
+					...accountHeaders(accountId),
 				},
 				body: JSON.stringify(payload),
 			},
@@ -287,7 +299,7 @@ describe("Worker routes", () => {
 
 		const metaRes = await SELF.fetch(`http://example.com/api/column/${columnId}`,
 			{
-				headers: { "X-Account-ID": accountId },
+				headers: accountHeaders(accountId),
 			},
 		);
 		expect(metaRes.ok).toBe(true);
@@ -307,7 +319,7 @@ describe("Worker routes", () => {
 			`http://example.com/api/column/${columnId}`,
 			{
 				method: "DELETE",
-				headers: { "X-Account-ID": collaboratorId },
+				headers: accountHeaders(collaboratorId),
 			},
 		);
 		expect(notOwnerResponse.status).toBe(403);
@@ -317,7 +329,7 @@ describe("Worker routes", () => {
 			`http://example.com/api/column/${columnId}`,
 			{
 				method: "DELETE",
-				headers: { "X-Account-ID": outsiderId },
+				headers: accountHeaders(outsiderId),
 			},
 		);
 		expect(revokedResponse.status).toBe(403);
@@ -333,9 +345,9 @@ describe("Worker routes", () => {
 
 		expect(createdId).toBe(columnId);
 
-		const accountRes = await SELF.fetch(
-			`http://example.com/api/account/${normalizeAccountId(accountId)}`,
-		);
+		const accountRes = await SELF.fetch("http://example.com/api/account", {
+			headers: accountHeaders(accountId),
+		});
 		expect(accountRes.ok).toBe(true);
 		const data = (await accountRes.json()) as {
 			account: { columnOrder: string[] };
@@ -363,9 +375,9 @@ describe("Worker routes", () => {
 		await createColumnWithId(accountId, columnId);
 		await createColumnWithId(accountId, columnId);
 
-		const accountRes = await SELF.fetch(
-			`http://example.com/api/account/${normalizeAccountId(accountId)}`,
-		);
+		const accountRes = await SELF.fetch("http://example.com/api/account", {
+			headers: accountHeaders(accountId),
+		});
 		expect(accountRes.ok).toBe(true);
 		const data = (await accountRes.json()) as {
 			account: { columnOrder: string[] };
@@ -382,9 +394,9 @@ describe("Worker routes", () => {
 		const columnId = await createColumn(accountId);
 		await deleteColumn(accountId, columnId);
 
-		const accountRes = await SELF.fetch(
-			`http://example.com/api/account/${normalizeAccountId(accountId)}`,
-		);
+		const accountRes = await SELF.fetch("http://example.com/api/account", {
+			headers: accountHeaders(accountId),
+		});
 		expect(accountRes.ok).toBe(true);
 		const data = (await accountRes.json()) as {
 			account: { columnOrder: string[] };
@@ -401,9 +413,9 @@ describe("Worker routes", () => {
 		await deleteColumn(accountId, columnId);
 		await restoreColumn(accountId, columnId);
 
-		const accountRes = await SELF.fetch(
-			`http://example.com/api/account/${normalizeAccountId(accountId)}`,
-		);
+		const accountRes = await SELF.fetch("http://example.com/api/account", {
+			headers: accountHeaders(accountId),
+		});
 		expect(accountRes.ok).toBe(true);
 		const data = (await accountRes.json()) as {
 			account: { columnOrder: string[] };
@@ -424,7 +436,7 @@ describe("Worker routes", () => {
 			SELF.fetch(`http://example.com/api/column/${columnId}/restore`, {
 				method: "POST",
 				headers: {
-					"X-Account-ID": accountId,
+					...accountHeaders(accountId),
 					"X-Idempotency-Key": idempotencyKey,
 				},
 			});
@@ -458,7 +470,7 @@ describe("Worker routes", () => {
 			SELF.fetch(`http://example.com/api/column/${columnId}/public`, {
 				method: "POST",
 				headers: {
-					"X-Account-ID": accountId,
+					...accountHeaders(accountId),
 					"X-Idempotency-Key": idempotencyKey,
 				},
 			});
@@ -491,9 +503,10 @@ describe("Worker routes", () => {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
+					...accountHeaders(accountId),
 					"X-Idempotency-Key": idempotencyKey,
 				},
-				body: JSON.stringify({ accountId }),
+				body: JSON.stringify({}),
 			});
 
 		const responses: Response[] = await Promise.all(
@@ -509,9 +522,9 @@ describe("Worker routes", () => {
 		)) as Array<{ column: { id: string } }>;
 		expect(new Set(payloads.map((payload) => payload.column.id)).size).toBe(1);
 
-		const accountResponse = await SELF.fetch(
-			`http://example.com/api/account/${normalizeAccountId(accountId)}`,
-		);
+		const accountResponse = await SELF.fetch("http://example.com/api/account", {
+			headers: accountHeaders(accountId),
+		});
 		const account = (await accountResponse.json()) as {
 			account: { columnOrder: string[] };
 		};
@@ -525,10 +538,11 @@ describe("Worker routes", () => {
 		const secondColumnId = await createColumn(accountId);
 		const idempotencyKey = crypto.randomUUID();
 		const write = (columnId: string) =>
-			SELF.fetch(`http://example.com/api/account/${normalizedId}/hidden`, {
+			SELF.fetch("http://example.com/api/account/hidden", {
 				method: "PUT",
 				headers: {
 					"Content-Type": "application/json",
+					...accountHeaders(accountId),
 					"X-Idempotency-Key": idempotencyKey,
 				},
 				body: JSON.stringify({ hiddenSharedColumns: [columnId] }),
@@ -544,9 +558,9 @@ describe("Worker routes", () => {
 			error: "idempotency_key_conflict",
 		});
 
-		const accountResponse = await SELF.fetch(
-			`http://example.com/api/account/${normalizedId}`,
-		);
+		const accountResponse = await SELF.fetch("http://example.com/api/account", {
+			headers: accountHeaders(accountId),
+		});
 		const account = (await accountResponse.json()) as {
 			account: { hiddenSharedColumns: string[] };
 		};
@@ -565,7 +579,7 @@ describe("Worker routes", () => {
 		const enablePublic = () =>
 			SELF.fetch(`http://example.com/api/column/${columnId}/public`, {
 				method: "POST",
-				headers: { "X-Account-ID": ownerId },
+				headers: accountHeaders(ownerId),
 			});
 		const firstPublicResponse = await enablePublic();
 		expect(firstPublicResponse.ok).toBe(true);
@@ -599,14 +613,21 @@ describe("Worker routes", () => {
 
 		const publicResponse = await SELF.fetch(
 			`http://example.com/api/column/${columnId}/public`,
-			{ method: "POST", headers: { "X-Account-ID": ownerId } },
+			{ method: "POST", headers: accountHeaders(ownerId) },
 		);
 		expect(publicResponse.ok).toBe(true);
 		const { publicId } = (await publicResponse.json()) as { publicId: string };
 
 		const revokeResponse = await SELF.fetch(
-			`http://example.com/api/column/${columnId}/share/${normalizeAccountId(collaboratorId)}`,
-			{ method: "DELETE", headers: { "X-Account-ID": ownerId } },
+			`http://example.com/api/column/${columnId}/share`,
+			{
+				method: "DELETE",
+				headers: {
+					"Content-Type": "application/json",
+					...accountHeaders(ownerId),
+				},
+				body: JSON.stringify({ targetAccountId: collaboratorId }),
+			},
 		);
 		expect(revokeResponse.ok).toBe(true);
 		expect(await revokeResponse.json()).toEqual({
@@ -616,7 +637,7 @@ describe("Worker routes", () => {
 
 		const disableResponse = await SELF.fetch(
 			`http://example.com/api/column/${columnId}/public`,
-			{ method: "DELETE", headers: { "X-Account-ID": ownerId } },
+			{ method: "DELETE", headers: accountHeaders(ownerId) },
 		);
 		expect(disableResponse.ok).toBe(true);
 		expect(await disableResponse.json()).toEqual({ success: true });
@@ -646,9 +667,9 @@ describe("Worker routes", () => {
 		);
 		expect(removeShare.ok).toBe(true);
 
-		const accountResponse = await SELF.fetch(
-			`http://example.com/api/account/${normalizeAccountId(collaboratorId)}`,
-		);
+		const accountResponse = await SELF.fetch("http://example.com/api/account", {
+			headers: accountHeaders(collaboratorId),
+		});
 		expect(accountResponse.ok).toBe(true);
 		const accountPayload = (await accountResponse.json()) as {
 			sharedColumns: Array<{ id: string }>;
@@ -671,11 +692,12 @@ describe("Worker routes", () => {
 		const idempotencyKey = crypto.randomUUID();
 
 		const firstWrite = await SELF.fetch(
-			`http://example.com/api/account/${normalizedAccountId}/hidden`,
+			"http://example.com/api/account/hidden",
 			{
 				method: "PUT",
 				headers: {
 					"Content-Type": "application/json",
+					...accountHeaders(accountId),
 					"X-Idempotency-Key": idempotencyKey,
 				},
 				body: JSON.stringify({ hiddenSharedColumns: [firstColumnId] }),
@@ -684,11 +706,12 @@ describe("Worker routes", () => {
 		expect(firstWrite.ok).toBe(true);
 
 		const secondWrite = await SELF.fetch(
-			`http://example.com/api/account/${normalizedAccountId}/hidden`,
+			"http://example.com/api/account/hidden",
 			{
 				method: "PUT",
 				headers: {
 					"Content-Type": "application/json",
+					...accountHeaders(accountId),
 					"X-Idempotency-Key": idempotencyKey,
 				},
 				body: JSON.stringify({ hiddenSharedColumns: [secondColumnId] }),
@@ -699,9 +722,9 @@ describe("Worker routes", () => {
 			error: "idempotency_key_conflict",
 		});
 
-		const accountRes = await SELF.fetch(
-			`http://example.com/api/account/${normalizedAccountId}`,
-		);
+		const accountRes = await SELF.fetch("http://example.com/api/account", {
+			headers: accountHeaders(accountId),
+		});
 		expect(accountRes.ok).toBe(true);
 		const accountPayload = (await accountRes.json()) as {
 			account: { hiddenSharedColumns: string[] };
@@ -738,7 +761,7 @@ describe("Worker routes", () => {
 		const response = await SELF.fetch(`http://example.com${path}`, {
 			method: "POST",
 			headers: {
-				"X-Account-ID": accountId,
+				...accountHeaders(accountId),
 				"X-Idempotency-Key": idempotencyKey,
 			},
 		});
@@ -772,11 +795,15 @@ describe("WebSocket upgrade routing", () => {
 	it("upgrades /api/column/:id/ws and reaches the DO", async () => {
 		const accountId = await createAccount();
 		const columnId = await createColumn(accountId);
+		const ticketResponse = await SELF.fetch(
+			`http://example.com/api/column/${columnId}/ws-ticket`,
+			{ method: "POST", headers: accountHeaders(accountId) },
+		);
+		expect(ticketResponse.ok).toBe(true);
+		const { ticket } = (await ticketResponse.json()) as { ticket: string };
 
 		const res = await SELF.fetch(
-			`http://example.com/api/column/${columnId}/ws?accountId=${encodeURIComponent(
-				normalizeAccountId(accountId),
-			)}`,
+			`http://example.com/api/column/${columnId}/ws?ticket=${encodeURIComponent(ticket)}`,
 			{
 				headers: { Upgrade: "websocket" },
 			},
@@ -807,7 +834,7 @@ describe("WebSocket upgrade routing", () => {
 			`http://example.com/api/column/${columnId}/public`,
 			{
 				method: "POST",
-				headers: { "X-Account-ID": accountId },
+				headers: accountHeaders(accountId),
 			},
 		);
 		expect(publicRes.ok).toBe(true);
@@ -869,9 +896,9 @@ describe("Agent read API", () => {
 				persistedAccountCase.record,
 			);
 
-			const browserResponse = await SELF.fetch(
-				`http://example.com/api/account/${normalizedId}`,
-			);
+			const browserResponse = await SELF.fetch("http://example.com/api/account", {
+				headers: accountHeaders(accountId),
+			});
 			expect(browserResponse.status).toBe(503);
 			expect(await browserResponse.json()).toMatchObject({
 				error: "schema_guard_blocked",
@@ -880,8 +907,8 @@ describe("Agent read API", () => {
 			});
 
 			const agentResponse = await SELF.fetch(
-				`http://example.com/api/agent/v1/accounts/${normalizedId}/columns`,
-				{ headers: { "X-Account-ID": accountId } },
+				"http://example.com/api/agent/v1/account/columns",
+				{ headers: accountHeaders(accountId) },
 			);
 			expect(agentResponse.status).toBe(503);
 			expect(await agentResponse.json()).toEqual({
@@ -910,13 +937,13 @@ describe("Agent read API", () => {
 
 		const browserResponse = await SELF.fetch(
 			`http://example.com/api/column/${columnId}`,
-			{ headers: { "X-Account-ID": accountId } },
+			{ headers: accountHeaders(accountId) },
 		);
 		expect(browserResponse.status).toBe(200);
 
 		const agentResponse = await SELF.fetch(
 			`http://example.com/api/agent/v1/columns/${columnId}`,
-			{ headers: { "X-Account-ID": accountId } },
+			{ headers: accountHeaders(accountId) },
 		);
 		expect(agentResponse.status).toBe(200);
 	});
@@ -930,24 +957,14 @@ describe("Agent read API", () => {
 		};
 
 		expect(spec.openapi).toBe("3.0.0");
-		expect(spec.paths["/api/agent/v1/accounts/{accountId}/columns"]).toBeDefined();
+		expect(spec.paths["/api/agent/v1/account/columns"]).toBeDefined();
 		expect(spec.paths["/api/agent/v1/columns/{columnId}"]).toBeDefined();
 		expect(spec.paths["/api/agent/v1/columns/{columnId}/snapshot"]).toBeDefined();
 	});
 
-	it("denies account list if header account differs from path account", async () => {
-		const accountIdA = await createAccount();
-		const accountIdB = await createAccount();
-
-		const res = await SELF.fetch(
-			`http://example.com/api/agent/v1/accounts/${normalizeAccountId(accountIdA)}/columns`,
-			{
-				headers: { "X-Account-ID": accountIdB },
-			},
-		);
-
-		expect(res.status).toBe(403);
-		expect(await res.json()).toMatchObject({ error: "Access denied" });
+	it("denies account list without a bearer credential", async () => {
+		const res = await SELF.fetch("http://example.com/api/agent/v1/account/columns");
+		expect(res.status).toBe(400);
 	});
 
 	it("lists owned, shared (including hidden), and deleted columns", async () => {
@@ -959,10 +976,10 @@ describe("Agent read API", () => {
 		await shareColumn(ownerId, sharedColumnId, sharedUserId);
 
 		const hideRes = await SELF.fetch(
-			`http://example.com/api/account/${normalizeAccountId(sharedUserId)}/hidden`,
+			"http://example.com/api/account/hidden",
 			{
 				method: "PUT",
-				headers: { "Content-Type": "application/json" },
+				headers: { "Content-Type": "application/json", ...accountHeaders(sharedUserId) },
 				body: JSON.stringify({ hiddenSharedColumns: [sharedColumnId] }),
 			},
 		);
@@ -970,14 +987,14 @@ describe("Agent read API", () => {
 
 		const deleteRes = await SELF.fetch(`http://example.com/api/column/${deletedColumnId}`, {
 			method: "DELETE",
-			headers: { "X-Account-ID": ownerId },
+			headers: accountHeaders(ownerId),
 		});
 		expect(deleteRes.ok).toBe(true);
 
 		const ownerListRes = await SELF.fetch(
-			`http://example.com/api/agent/v1/accounts/${normalizeAccountId(ownerId)}/columns`,
+			"http://example.com/api/agent/v1/account/columns",
 			{
-				headers: { "X-Account-ID": ownerId },
+				headers: accountHeaders(ownerId),
 			},
 		);
 		expect(ownerListRes.ok).toBe(true);
@@ -991,9 +1008,9 @@ describe("Agent read API", () => {
 		).toBe(true);
 
 		const sharedListRes = await SELF.fetch(
-			`http://example.com/api/agent/v1/accounts/${normalizeAccountId(sharedUserId)}/columns`,
+			"http://example.com/api/agent/v1/account/columns",
 			{
-				headers: { "X-Account-ID": sharedUserId },
+				headers: accountHeaders(sharedUserId),
 			},
 		);
 		expect(sharedListRes.ok).toBe(true);
@@ -1017,7 +1034,7 @@ describe("Agent read API", () => {
 		const res = await SELF.fetch(
 			`http://example.com/api/agent/v1/columns/${columnId}/snapshot`,
 			{
-				headers: { "X-Account-ID": accountId },
+				headers: accountHeaders(accountId),
 			},
 		);
 
@@ -1045,7 +1062,7 @@ describe("Agent read API", () => {
 		const res = await SELF.fetch(
 			`http://example.com/api/agent/v1/columns/${columnId}/snapshot`,
 			{
-				headers: { "X-Account-ID": accountId },
+				headers: accountHeaders(accountId),
 			},
 		);
 

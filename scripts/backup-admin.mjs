@@ -61,13 +61,11 @@ try {
 	}
 
 	if (action === "restore-account") {
-		const res = await fetch(
-			`${origin}/api/admin/backups/account/${encodeURIComponent(columnId)}/restore`,
-			{
-				method: "POST",
-				headers: baseHeaders,
-			},
-		);
+		const res = await fetch(`${origin}/api/admin/backups/account/restore`, {
+			method: "POST",
+			headers: { ...baseHeaders, "Content-Type": "application/json" },
+			body: JSON.stringify({ accountId: columnId }),
+		});
 		await printResponse(res);
 		process.exit(res.ok ? 0 : 1);
 	}

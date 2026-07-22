@@ -28,6 +28,18 @@ function getResponseWebSocket(response: Response): WebSocket {
 	return ws;
 }
 
+async function issueWsTicket(
+	stub: ReturnType<typeof getColumnRoomStub>,
+	accountId: string,
+): Promise<string> {
+	const response = await stub.fetch("http://do/ws-ticket", {
+		method: "POST",
+		headers: { "X-Authenticated-Account-ID": accountId },
+	});
+	expect(response.ok).toBe(true);
+	return ((await response.json()) as { ticket: string }).ticket;
+}
+
 function decodeFrame(
 	data: ArrayBuffer | string,
 ): { op: number; payload: Uint8Array } {
@@ -270,14 +282,21 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 			}),
 		);
 
+		const ticket = await issueWsTicket(stub, meta.ownerId);
 		const res = await stub.fetch(
-			new Request(`http://do/?accountId=${encodeURIComponent(meta.ownerId)}`,
+			new Request(`http://do/?ticket=${encodeURIComponent(ticket)}`,
 				{
 					headers: { Upgrade: "websocket" },
 				},
 			),
 		);
 		expect(res.status).toBe(101);
+		const replayedTicket = await stub.fetch(
+			new Request(`http://do/?ticket=${encodeURIComponent(ticket)}`, {
+				headers: { Upgrade: "websocket" },
+			}),
+		);
+		expect(replayedTicket.status).toBe(403);
 
 		const ws = getResponseWebSocket(res);
 		acceptWebSocket(ws);
@@ -310,8 +329,9 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 			}),
 		);
 
+		const ticket = await issueWsTicket(stub, sharedId);
 		const res = await stub.fetch(
-			new Request(`http://do/?accountId=${encodeURIComponent(sharedId)}`,
+			new Request(`http://do/?ticket=${encodeURIComponent(ticket)}`,
 				{
 					headers: { Upgrade: "websocket" },
 				},
@@ -358,8 +378,9 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 			}),
 		);
 
+		const ticket = await issueWsTicket(stub, sharedId);
 		const res = await stub.fetch(
-			new Request("http://do/?accountId=2222222222222222", {
+			new Request(`http://do/?ticket=${encodeURIComponent(ticket)}`, {
 				headers: { Upgrade: "websocket" },
 			}),
 		);
@@ -403,8 +424,9 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 		);
 
 		const connect = async () => {
+			const ticket = await issueWsTicket(stub, ownerId);
 			const res = await stub.fetch(
-				new Request(`http://do/?accountId=${encodeURIComponent(ownerId)}`,
+				new Request(`http://do/?ticket=${encodeURIComponent(ticket)}`,
 					{
 						headers: { Upgrade: "websocket" },
 					},

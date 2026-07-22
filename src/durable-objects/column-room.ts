@@ -28,6 +28,21 @@ import {
 
 const DO_PERSIST_SCHEMA_VERSION = 1;
 const DO_MIGRATION_TAG = "column-room-sql-v1";
+const WS_TICKET_TTL_MS = 45_000;
+
+function base64Url(bytes: Uint8Array): string {
+	let binary = "";
+	for (const byte of bytes) binary += String.fromCharCode(byte);
+	return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function ticketHash(ticket: string): Promise<string> {
+	const digest = await crypto.subtle.digest(
+		"SHA-256",
+		new TextEncoder().encode(ticket),
+	);
+	return base64Url(new Uint8Array(digest));
+}
 
 function toUint8Array(value: unknown): Uint8Array | null {
 	if (!value) return null;
@@ -85,6 +100,14 @@ export class ColumnRoomSql extends DurableObject<unknown> {
 			);
 
 			CREATE INDEX IF NOT EXISTS idx_yjs_updates_ts ON yjs_updates(ts);
+
+			CREATE TABLE IF NOT EXISTS ws_tickets (
+				token_hash TEXT PRIMARY KEY,
+				account_id TEXT NOT NULL,
+				expires_at INTEGER NOT NULL
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_ws_tickets_expiry ON ws_tickets(expires_at);
 
 			CREATE TABLE IF NOT EXISTS storage_migrations (
 				migration_tag TEXT PRIMARY KEY,
@@ -300,6 +323,29 @@ export class ColumnRoomSql extends DurableObject<unknown> {
 			});
 		}
 
+		if (request.method === "POST" && url.pathname === "/ws-ticket") {
+			const accountId = request.headers.get("X-Authenticated-Account-ID");
+			if (!this.hasAccess(accountId, false)) {
+				return new Response("Access denied", { status: 403 });
+			}
+
+			const bytes = new Uint8Array(32);
+			crypto.getRandomValues(bytes);
+			const ticket = base64Url(bytes);
+			const expiresAt = Date.now() + WS_TICKET_TTL_MS;
+			this.ctx.storage.sql.exec("DELETE FROM ws_tickets WHERE expires_at <= ?", Date.now());
+			this.ctx.storage.sql.exec(
+				"INSERT INTO ws_tickets (token_hash, account_id, expires_at) VALUES (?, ?, ?)",
+				await ticketHash(ticket),
+				accountId,
+				expiresAt,
+			);
+			return Response.json(
+				{ ticket, expiresAt },
+				{ headers: { "Cache-Control": "private, no-store" } },
+			);
+		}
+
 		if (request.method === "POST" && url.pathname === "/init") {
 			const parsedMeta = parseColumnMetaRecord(await request.json());
 			if (!parsedMeta.ok) {
@@ -368,9 +414,9 @@ export class ColumnRoomSql extends DurableObject<unknown> {
 		return new Response("Not found", { status: 404 });
 	}
 
-	private handleWebSocket(request: Request): Response {
+	private async handleWebSocket(request: Request): Promise<Response> {
 		const url = new URL(request.url);
-		const accountId = url.searchParams.get("accountId");
+		let accountId: string | null = null;
 
 		// Public websockets are routed via `/api/p/:publicId/ws`.
 		// Keep query-param support as a fallback for older clients.
@@ -388,8 +434,24 @@ export class ColumnRoomSql extends DurableObject<unknown> {
 			if (!this.meta?.publicId || this.meta.publicId !== publicId) {
 				return new Response("Invalid public link", { status: 403 });
 			}
-		} else if (!this.hasAccess(accountId, false)) {
-			return new Response("Access denied", { status: 403 });
+		} else {
+			const ticket = url.searchParams.get("ticket");
+			if (!ticket) return new Response("WebSocket ticket required", { status: 403 });
+			const hash = await ticketHash(ticket);
+			const row = this.ctx.storage.sql
+				.exec<{ account_id: string; expires_at: number }>(
+					"SELECT account_id, expires_at FROM ws_tickets WHERE token_hash = ?",
+					hash,
+				)
+				.toArray()[0];
+			this.ctx.storage.sql.exec("DELETE FROM ws_tickets WHERE token_hash = ?", hash);
+			if (!row || row.expires_at <= Date.now()) {
+				return new Response("Invalid or expired WebSocket ticket", { status: 403 });
+			}
+			accountId = row.account_id;
+			if (!this.hasAccess(accountId, false)) {
+				return new Response("Access denied", { status: 403 });
+			}
 		}
 
 		const pair = new WebSocketPair();

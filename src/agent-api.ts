@@ -2,8 +2,9 @@ import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import * as Y from "yjs";
 import type { Account, ColumnMeta } from "./types/account";
 import { checkRateLimit, getClientIP, ipRateLimitKey, RATE_LIMITS } from "./lib/rate-limit";
-import { normalizeAccountId, validateAccountId } from "./lib/account";
+import { normalizeAccountId } from "./lib/account";
 import { hasColumnAccess, isColumnOwner } from "./lib/column-access";
+import { requireAccountCredential } from "./lib/http-account-auth";
 import {
 	parseAccountRecord,
 	columnMetaRecordSchema,
@@ -20,19 +21,6 @@ type Bindings = {
 	COLUMN_ROOM: DurableObjectNamespace;
 };
 
-const accountIdPathSchema = z.object({
-	accountId: z
-		.string()
-		.refine(validateAccountId, "Invalid account ID")
-		.openapi({
-			param: {
-				name: "accountId",
-				in: "path",
-			},
-			example: "4829 1047 3856 2019",
-		}),
-});
-
 const columnIdPathSchema = z.object({
 	columnId: z
 		.string()
@@ -47,11 +35,11 @@ const columnIdPathSchema = z.object({
 });
 
 const accountHeaderSchema = z.object({
-	"x-account-id": z
+	authorization: z
 		.string()
-		.refine(validateAccountId, "Invalid account ID")
+		.regex(/^Bearer \d{16}$/, "Invalid bearer credential")
 		.openapi({
-			example: "4829 1047 3856 2019",
+			example: "Bearer 4829104738562019",
 		}),
 });
 
@@ -204,9 +192,8 @@ function serializeYjsSnapshotToMarkdown(yjs: number[] | null): {
 export function registerAgentApi(app: OpenAPIHono<{ Bindings: Bindings }>) {
 	const listColumnsRoute = createRoute({
 		method: "get",
-		path: "/api/agent/v1/accounts/{accountId}/columns",
+		path: "/api/agent/v1/account/columns",
 		request: {
-			params: accountIdPathSchema,
 			headers: accountHeaderSchema,
 		},
 		responses: {
@@ -234,13 +221,9 @@ export function registerAgentApi(app: OpenAPIHono<{ Bindings: Bindings }>) {
 			return c.json({ error: "rate_limited", retryAfter: rateLimited.retryAfter }, 429);
 		}
 
-		const { accountId } = c.req.valid("param");
-		const header = c.req.valid("header");
-		const requesterAccountId = header["x-account-id"];
-
-		if (normalizeAccountId(requesterAccountId) !== normalizeAccountId(accountId)) {
-			return c.json({ error: "Access denied" }, 403);
-		}
+		const auth = requireAccountCredential(c.req.raw);
+		if (!auth.ok) return c.json({ error: "Unauthorized" }, 403);
+		const accountId = auth.accountId;
 
 		const fetched = await fetchAccount(c.env, accountId);
 		if (!fetched.ok) {
@@ -361,8 +344,9 @@ export function registerAgentApi(app: OpenAPIHono<{ Bindings: Bindings }>) {
 		}
 
 		const { columnId } = c.req.valid("param");
-		const header = c.req.valid("header");
-		const requesterAccountId = header["x-account-id"];
+		const auth = requireAccountCredential(c.req.raw);
+		if (!auth.ok) return c.json({ error: "Unauthorized" }, 403);
+		const requesterAccountId = auth.accountId;
 
 		const fetched = await fetchAccount(c.env, requesterAccountId);
 		if (!fetched.ok) {
@@ -449,8 +433,9 @@ export function registerAgentApi(app: OpenAPIHono<{ Bindings: Bindings }>) {
 		}
 
 		const { columnId } = c.req.valid("param");
-		const header = c.req.valid("header");
-		const requesterAccountId = header["x-account-id"];
+		const auth = requireAccountCredential(c.req.raw);
+		if (!auth.ok) return c.json({ error: "Unauthorized" }, 403);
+		const requesterAccountId = auth.accountId;
 
 		const fetched = await fetchAccount(c.env, requesterAccountId);
 		if (!fetched.ok) {

@@ -10,6 +10,13 @@ import type { YjsOutboxKind } from "./yjs-update-outbox";
 
 export type ColumnTerminationReason = "revoked" | "column_deleted";
 
+export class ColumnSocketAuthorizationError extends Error {
+	constructor(readonly status: number) {
+		super(`WebSocket authorization failed: ${status}`);
+		this.name = "ColumnSocketAuthorizationError";
+	}
+}
+
 export interface ColumnSessionContext {
 	accountId: string;
 	columnId: string;
@@ -24,6 +31,7 @@ export interface ColumnSessionContext {
 		wasClean: boolean;
 	} | null;
 	terminationReason: ColumnTerminationReason | null;
+	socketUrl: string | null;
 	networkOnline: boolean;
 	realtimeEnabled: boolean;
 }
@@ -59,7 +67,11 @@ export type ColumnSessionEvent =
 
 export interface ColumnSessionDependencies {
 	createSocket: (url: string) => ColumnSocketLike;
-	getSocketUrl: (accountId: string, columnId: string) => string;
+	getSocketUrl: (
+		accountId: string,
+		columnId: string,
+		signal: AbortSignal,
+	) => Promise<string>;
 	persistUpdate: (
 		accountId: string,
 		columnId: string,
@@ -103,7 +115,7 @@ function withoutLease(leases: ReadonlySet<string>, leaseId: string) {
 
 export function createColumnSessionMachine(dependencies: ColumnSessionDependencies) {
 	const socketInput = ({ context }: { context: ColumnSessionContext }): ColumnSocketInput => ({
-		url: dependencies.getSocketUrl(context.accountId, context.columnId),
+		url: context.socketUrl ?? "",
 		createSocket: dependencies.createSocket,
 		loadReplayFrames: () =>
 			dependencies.loadReplayFrames(context.accountId, context.columnId),
@@ -138,6 +150,12 @@ export function createColumnSessionMachine(dependencies: ColumnSessionDependenci
 			events: ColumnSessionEvent;
 		},
 		actors: {
+			authorizeSocket: fromPromise<
+				string,
+				{ accountId: string; columnId: string }
+			>(({ input, signal }) =>
+				dependencies.getSocketUrl(input.accountId, input.columnId, signal),
+			),
 			columnSocket: columnSocketActor,
 			terminalCleanup: fromPromise<
 				void,
@@ -192,6 +210,13 @@ export function createColumnSessionMachine(dependencies: ColumnSessionDependenci
 								wasClean: event.wasClean,
 							}
 						: null,
+				retryAttempt: ({ context }) => context.retryAttempt + 1,
+			}),
+			recordSocketUrl: assign((_, params: { url: string }) => ({
+				socketUrl: params.url,
+			})),
+			recordAuthorizationFailure: assign({
+				socketUrl: null,
 				retryAttempt: ({ context }) => context.retryAttempt + 1,
 			}),
 			markConnected: assign({
@@ -268,6 +293,7 @@ export function createColumnSessionMachine(dependencies: ColumnSessionDependenci
 			pendingAwareness: null,
 			lastClose: null,
 			terminationReason: null,
+			socketUrl: null,
 			networkOnline: input.networkOnline,
 			realtimeEnabled: input.realtimeEnabled,
 		}),
@@ -299,12 +325,7 @@ export function createColumnSessionMachine(dependencies: ColumnSessionDependenci
 				},
 			},
 			active: {
-				initial: "connecting",
-				invoke: {
-					id: "columnSocket",
-					src: "columnSocket",
-					input: socketInput,
-				},
+				initial: "authorizing",
 				on: {
 					OUTBOX_ACKNOWLEDGED: { actions: "acknowledgeOutbox" },
 					SUBSCRIBE: { actions: "addLease" },
@@ -330,19 +351,64 @@ export function createColumnSessionMachine(dependencies: ColumnSessionDependenci
 					},
 				},
 				states: {
-					connecting: {
-						on: { SOCKET_OPENED: "replaying" },
-					},
-					replaying: {
-						on: { OUTBOX_REPLAYED: { target: "connected", actions: "markConnected" } },
-					},
-					connected: {
-						on: {
-							SOCKET_MESSAGE: {
-								actions: ["recordPresence", "forwardMessage"],
+					authorizing: {
+						invoke: {
+							id: "authorizeSocket",
+							src: "authorizeSocket",
+							input: ({ context }) => ({
+								accountId: context.accountId,
+								columnId: context.columnId,
+							}),
+							onDone: {
+								target: "transport",
+								actions: {
+									type: "recordSocketUrl",
+									params: ({ event }) => ({ url: event.output }),
+								},
 							},
-							SEND_SYNC: { actions: "sendLiveSync" },
-							SEND_AWARENESS: { actions: "sendLiveAwareness" },
+							onError: [
+								{
+									guard: ({ event }) =>
+										event.error instanceof ColumnSocketAuthorizationError &&
+										[401, 403, 404].includes(event.error.status),
+									target: "#columnSession.terminating",
+									actions: "setRevoked",
+								},
+								{
+									target: "#columnSession.reconnectDelay",
+									actions: "recordAuthorizationFailure",
+								},
+							],
+						},
+					},
+					transport: {
+						invoke: {
+							id: "columnSocket",
+							src: "columnSocket",
+							input: socketInput,
+						},
+						initial: "connecting",
+						states: {
+							connecting: {
+								on: { SOCKET_OPENED: "replaying" },
+							},
+							replaying: {
+								on: {
+									OUTBOX_REPLAYED: {
+										target: "connected",
+										actions: "markConnected",
+									},
+								},
+							},
+							connected: {
+								on: {
+									SOCKET_MESSAGE: {
+										actions: ["recordPresence", "forwardMessage"],
+									},
+									SEND_SYNC: { actions: "sendLiveSync" },
+									SEND_AWARENESS: { actions: "sendLiveAwareness" },
+								},
+							},
 						},
 					},
 				},
@@ -401,10 +467,11 @@ export function createColumnSessionMachine(dependencies: ColumnSessionDependenci
 export function columnSessionConnectionStatus(snapshot: {
 	matches(value: unknown): boolean;
 }): ConnectionStatus {
-	if (snapshot.matches({ active: "connected" })) return "connected";
+	if (snapshot.matches({ active: { transport: "connected" } })) return "connected";
 	if (
-		snapshot.matches({ active: "connecting" }) ||
-		snapshot.matches({ active: "replaying" })
+		snapshot.matches({ active: "authorizing" }) ||
+		snapshot.matches({ active: { transport: "connecting" } }) ||
+		snapshot.matches({ active: { transport: "replaying" } })
 	) {
 		return "connecting";
 	}

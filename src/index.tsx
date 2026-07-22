@@ -13,6 +13,7 @@ import {
 	validateAccountId,
 } from "./lib/account";
 import { hasColumnAccess } from "./lib/column-access";
+import { requireAccountCredential } from "./lib/http-account-auth";
 import {
 	checkRateLimit,
 	getClientIP,
@@ -506,19 +507,8 @@ const accountInputSchema = z
 	})
 	.strict();
 
-const accountPathSchema = z.object({ id: accountIdValueSchema }).strict();
 const columnPathSchema = z.object({ id: columnIdValueSchema }).strict();
 const publicPathSchema = z.object({ publicId: publicIdValueSchema }).strict();
-const columnSharePathSchema = z
-	.object({ id: columnIdValueSchema, targetId: accountIdValueSchema })
-	.strict();
-const accountHeaderSchema = z.object({ accountId: accountIdValueSchema }).strict();
-const optionalAccountHeaderSchema = z
-	.object({ accountId: accountIdValueSchema.optional() })
-	.strict();
-const columnSocketQuerySchema = z
-	.object({ accountId: accountIdValueSchema })
-	.strict();
 const backupListQuerySchema = z
 	.object({ limit: z.coerce.number().int().min(1).max(100).default(20) })
 	.strict();
@@ -531,7 +521,6 @@ const hiddenColumnsBodySchema = z
 	.strict();
 const createColumnBodySchema = z
 	.object({
-		accountId: accountIdValueSchema,
 		columnId: columnIdValueSchema.optional(),
 	})
 	.strict();
@@ -558,6 +547,7 @@ const backupRestoreBodySchema = z
 		mode: z.enum(["clone", "in_place"]).optional(),
 	})
 	.strict();
+const accountAdminBodySchema = z.object({ accountId: accountIdValueSchema }).strict();
 
 type RequestValidationResult<T> =
 	| { ok: true; data: T }
@@ -835,12 +825,10 @@ app.post("/api/account", async (c) => {
  * Get account metadata
  * Rate limited: 20 per IP per minute
  */
-app.get("/api/account/:id", async (c) => {
-	const request = validateRequestInput(c, accountPathSchema, {
-		id: c.req.param("id"),
-	});
-	if (!request.ok) return request.response;
-	const accountId = request.data.id;
+app.get("/api/account", async (c) => {
+	const auth = requireAccountCredential(c.req.raw);
+	if (!auth.ok) return auth.response;
+	const accountId = auth.accountId;
 
 	if (!shouldSkipRateLimit(c)) {
 		const ip = getClientIP(c.req.raw);
@@ -970,23 +958,25 @@ app.get("/api/account/:id", async (c) => {
 		await c.env.ACCOUNTS.put(trashKey, JSON.stringify(deletedColumns));
 	}
 
-	return c.json({ account, ownedColumns, sharedColumns, deletedColumns });
+	return c.json(
+		{ account, ownedColumns, sharedColumns, deletedColumns },
+		200,
+		{ "Cache-Control": "private, no-store" },
+	);
 });
 
 /**
  * Update column order for an account
  */
-app.put("/api/account/:id/columns", async (c) => {
+app.put("/api/account/columns", async (c) => {
 	const readOnlyResponse = blockWritesIfReadOnly(c);
 	if (readOnlyResponse) return readOnlyResponse;
 
-	const request = validateRequestInput(c, accountPathSchema, {
-		id: c.req.param("id"),
-	});
-	if (!request.ok) return request.response;
+	const auth = requireAccountCredential(c.req.raw);
+	if (!auth.ok) return auth.response;
 	const body = await validateJsonBody(c, columnOrderBodySchema);
 	if (!body.ok) return body.response;
-	const accountId = request.data.id;
+	const accountId = auth.accountId;
 
 	return withIdempotentWrite(
 		c,
@@ -1015,17 +1005,15 @@ app.put("/api/account/:id/columns", async (c) => {
 /**
  * Update hidden shared columns for an account
  */
-app.put("/api/account/:id/hidden", async (c) => {
+app.put("/api/account/hidden", async (c) => {
 	const readOnlyResponse = blockWritesIfReadOnly(c);
 	if (readOnlyResponse) return readOnlyResponse;
 
-	const request = validateRequestInput(c, accountPathSchema, {
-		id: c.req.param("id"),
-	});
-	if (!request.ok) return request.response;
+	const auth = requireAccountCredential(c.req.raw);
+	if (!auth.ok) return auth.response;
 	const body = await validateJsonBody(c, hiddenColumnsBodySchema);
 	if (!body.ok) return body.response;
-	const accountId = request.data.id;
+	const accountId = auth.accountId;
 
 	return withIdempotentWrite(
 		c,
@@ -1054,25 +1042,11 @@ app.put("/api/account/:id/hidden", async (c) => {
 /**
  * Export account-owned columns as JSON (self-serve)
  */
-app.get("/api/account/:id/export", async (c) => {
-	const path = validateRequestInput(c, accountPathSchema, {
-		id: c.req.param("id"),
-	});
-	if (!path.ok) return path.response;
-	const headers = validateRequestInput(c, accountHeaderSchema, {
-		accountId: c.req.header("X-Account-ID"),
-	});
-	if (!headers.ok) return headers.response;
-	const accountIdParam = path.data.id;
-	const requesterAccountId = headers.data.accountId;
-
-	if (
-		normalizeAccountId(requesterAccountId) !== normalizeAccountId(accountIdParam)
-	) {
-		return apiErrorResponse("access_revoked", "Access denied", 403);
-	}
-
-	const normalizedId = normalizeAccountId(accountIdParam);
+app.get("/api/account/export", async (c) => {
+	const auth = requireAccountCredential(c.req.raw);
+	if (!auth.ok) return auth.response;
+	const accountId = auth.accountId;
+	const normalizedId = normalizeAccountId(accountId);
 	const accountData = await c.env.ACCOUNTS.get(`account:${normalizedId}`);
 	if (!accountData) {
 		return apiErrorResponse("not_found", "Account not found", 404);
@@ -1097,7 +1071,7 @@ app.get("/api/account/:id/export", async (c) => {
 		if (!parsedMeta.ok) continue;
 
 		if (
-			normalizeAccountId(parsedMeta.value.ownerId) !== normalizeAccountId(accountIdParam)
+			normalizeAccountId(parsedMeta.value.ownerId) !== normalizedId
 		) {
 			continue;
 		}
@@ -1115,40 +1089,27 @@ app.get("/api/account/:id/export", async (c) => {
 		ownedColumns,
 	};
 
-	return c.json(payload);
+	return c.json(payload, 200, { "Cache-Control": "private, no-store" });
 });
 
 /**
  * Import account data from self-serve export JSON
  */
-app.post("/api/account/:id/import", async (c) => {
+app.post("/api/account/import", async (c) => {
 	const readOnlyResponse = blockWritesIfReadOnly(c);
 	if (readOnlyResponse) return readOnlyResponse;
 
-	const path = validateRequestInput(c, accountPathSchema, {
-		id: c.req.param("id"),
-	});
-	if (!path.ok) return path.response;
-	const headers = validateRequestInput(c, accountHeaderSchema, {
-		accountId: c.req.header("X-Account-ID"),
-	});
-	if (!headers.ok) return headers.response;
+	const auth = requireAccountCredential(c.req.raw);
+	if (!auth.ok) return auth.response;
 	const body = await validateJsonBody(c, accountImportBodySchema);
 	if (!body.ok) return body.response;
-	const accountIdParam = path.data.id;
-	const requesterAccountId = headers.data.accountId;
-
-	if (
-		normalizeAccountId(requesterAccountId) !== normalizeAccountId(accountIdParam)
-	) {
-		return apiErrorResponse("access_revoked", "Access denied", 403);
-	}
+	const accountId = auth.accountId;
 
 	return withIdempotentWrite(
 		c,
-		{ scope: `account:${normalizeAccountId(accountIdParam)}:import`, accountId: requesterAccountId },
+		{ scope: `account:${normalizeAccountId(accountId)}:import`, accountId },
 		async () => {
-			const normalizedId = normalizeAccountId(accountIdParam);
+			const normalizedId = normalizeAccountId(accountId);
 			const accountData = await c.env.ACCOUNTS.get(`account:${normalizedId}`);
 			if (!accountData) {
 				return apiErrorResponse("not_found", "Account not found", 404);
@@ -1164,7 +1125,7 @@ app.post("/api/account/:id/import", async (c) => {
 			for (const column of body.data.ownedColumns) {
 				const cloned = await cloneColumnSnapshot({
 					env: c.env,
-					ownerId: accountIdParam,
+					ownerId: accountId,
 					snapshot: { meta: column.meta, yjs: column.yjs ?? null },
 				});
 				if (!cloned.ok) {
@@ -1189,9 +1150,11 @@ app.post("/api/column", async (c) => {
 	const readOnlyResponse = blockWritesIfReadOnly(c);
 	if (readOnlyResponse) return readOnlyResponse;
 
+	const auth = requireAccountCredential(c.req.raw);
+	if (!auth.ok) return auth.response;
 	const body = await validateJsonBody(c, createColumnBodySchema);
 	if (!body.ok) return body.response;
-	const accountId = body.data.accountId;
+	const accountId = auth.accountId;
 	const requestedColumnId = body.data.columnId;
 
 	const normalizedAccountId = normalizeAccountId(accountId);
@@ -1341,12 +1304,10 @@ app.delete("/api/column/:id", async (c) => {
 
 	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
 	if (!path.ok) return path.response;
-	const headers = validateRequestInput(c, accountHeaderSchema, {
-		accountId: c.req.header("X-Account-ID"),
-	});
-	if (!headers.ok) return headers.response;
+	const auth = requireAccountCredential(c.req.raw);
+	if (!auth.ok) return auth.response;
 	const columnId = path.data.id;
-	const accountId = headers.data.accountId;
+	const accountId = auth.accountId;
 
 	return withIdempotentWrite(
 		c,
@@ -1372,12 +1333,10 @@ app.post("/api/column/:id/restore", async (c) => {
 
 	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
 	if (!path.ok) return path.response;
-	const headers = validateRequestInput(c, accountHeaderSchema, {
-		accountId: c.req.header("X-Account-ID"),
-	});
-	if (!headers.ok) return headers.response;
+	const auth = requireAccountCredential(c.req.raw);
+	if (!auth.ok) return auth.response;
 	const columnId = path.data.id;
-	const accountId = headers.data.accountId;
+	const accountId = auth.accountId;
 
 	return withIdempotentWrite(
 		c,
@@ -1400,12 +1359,10 @@ app.post("/api/column/:id/restore", async (c) => {
 app.get("/api/column/:id", async (c) => {
 	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
 	if (!path.ok) return path.response;
-	const headers = validateRequestInput(c, optionalAccountHeaderSchema, {
-		accountId: c.req.header("X-Account-ID"),
-	});
-	if (!headers.ok) return headers.response;
+	const auth = requireAccountCredential(c.req.raw);
+	if (!auth.ok) return auth.response;
 	const columnId = path.data.id;
-	const accountId = headers.data.accountId;
+	const accountId = auth.accountId;
 
 		const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
 	const metaResponse = await stub.fetch(new Request("http://do/meta"));
@@ -1420,12 +1377,7 @@ app.get("/api/column/:id", async (c) => {
 	}
 	const meta = parsedMeta.value;
 
-	// Check access
-	if (accountId) {
-		if (!hasColumnAccess(meta, accountId)) {
-			return apiErrorResponse("access_revoked", "Access denied", 403);
-		}
-	} else {
+	if (!hasColumnAccess(meta, accountId)) {
 		return apiErrorResponse("access_revoked", "Access denied", 403);
 	}
 
@@ -1435,16 +1387,27 @@ app.get("/api/column/:id", async (c) => {
 /**
  * WebSocket connection for column sync
  */
+app.post("/api/column/:id/ws-ticket", async (c) => {
+	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
+	if (!path.ok) return path.response;
+	const auth = requireAccountCredential(c.req.raw);
+	if (!auth.ok) return auth.response;
+	const columnId = path.data.id;
+	const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
+	return stub.fetch("http://do/ws-ticket", {
+		method: "POST",
+		headers: { "X-Authenticated-Account-ID": auth.accountId },
+	});
+});
+
 app.get("/api/column/:id/ws", async (c) => {
 	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
 	if (!path.ok) return path.response;
-	const query = validateRequestInput(c, columnSocketQuerySchema, {
-		accountId: c.req.query("accountId"),
-	});
-	if (!query.ok) return query.response;
-	const columnId = path.data.id;
-
-	const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
+	const ticket = c.req.query("ticket");
+	if (!ticket || !/^[A-Za-z0-9_-]{43}$/.test(ticket)) {
+		return apiErrorResponse("access_revoked", "Invalid WebSocket ticket", 403);
+	}
+	const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(path.data.id));
 
 	// Important: forward the original upgrade request as-is.
 	// Rewriting/cloning upgrade requests can break WebSocket upgrades in local dev.
@@ -1464,14 +1427,12 @@ app.post("/api/column/:id/share", async (c) => {
 
 	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
 	if (!path.ok) return path.response;
-	const headers = validateRequestInput(c, accountHeaderSchema, {
-		accountId: c.req.header("X-Account-ID"),
-	});
-	if (!headers.ok) return headers.response;
+	const auth = requireAccountCredential(c.req.raw);
+	if (!auth.ok) return auth.response;
 	const body = await validateJsonBody(c, shareColumnBodySchema);
 	if (!body.ok) return body.response;
 	const columnId = path.data.id;
-	const accountId = headers.data.accountId;
+	const accountId = auth.accountId;
 	const targetAccountId = body.data.targetAccountId;
 
 	return withIdempotentWrite(
@@ -1498,22 +1459,19 @@ app.post("/api/column/:id/share", async (c) => {
 /**
  * Revoke sharing for a column
  */
-app.delete("/api/column/:id/share/:targetId", async (c) => {
+app.delete("/api/column/:id/share", async (c) => {
 	const readOnlyResponse = blockWritesIfReadOnly(c);
 	if (readOnlyResponse) return readOnlyResponse;
 
-	const path = validateRequestInput(c, columnSharePathSchema, {
-		id: c.req.param("id"),
-		targetId: c.req.param("targetId"),
-	});
+	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
 	if (!path.ok) return path.response;
-	const headers = validateRequestInput(c, accountHeaderSchema, {
-		accountId: c.req.header("X-Account-ID"),
-	});
-	if (!headers.ok) return headers.response;
+	const auth = requireAccountCredential(c.req.raw);
+	if (!auth.ok) return auth.response;
+	const body = await validateJsonBody(c, shareColumnBodySchema);
+	if (!body.ok) return body.response;
 	const columnId = path.data.id;
-	const targetAccountId = path.data.targetId;
-	const accountId = headers.data.accountId;
+	const targetAccountId = body.data.targetAccountId;
+	const accountId = auth.accountId;
 
 	return withIdempotentWrite(
 		c,
@@ -1548,12 +1506,10 @@ app.post("/api/column/:id/public", async (c) => {
 
 	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
 	if (!path.ok) return path.response;
-	const headers = validateRequestInput(c, accountHeaderSchema, {
-		accountId: c.req.header("X-Account-ID"),
-	});
-	if (!headers.ok) return headers.response;
+	const auth = requireAccountCredential(c.req.raw);
+	if (!auth.ok) return auth.response;
 	const columnId = path.data.id;
-	const accountId = headers.data.accountId;
+	const accountId = auth.accountId;
 
 	return withIdempotentWrite(
 		c,
@@ -1588,12 +1544,10 @@ app.delete("/api/column/:id/public", async (c) => {
 
 	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
 	if (!path.ok) return path.response;
-	const headers = validateRequestInput(c, accountHeaderSchema, {
-		accountId: c.req.header("X-Account-ID"),
-	});
-	if (!headers.ok) return headers.response;
+	const auth = requireAccountCredential(c.req.raw);
+	if (!auth.ok) return auth.response;
 	const columnId = path.data.id;
-	const accountId = headers.data.accountId;
+	const accountId = auth.accountId;
 
 	return withIdempotentWrite(
 		c,
@@ -1689,14 +1643,12 @@ app.get("/api/p/:publicId/ws", async (c) => {
 /**
  * Restore all owned columns for an account from latest backups
  */
-app.post("/api/admin/backups/account/:id/restore", async (c) => {
-	const request = validateRequestInput(c, accountPathSchema, {
-		id: c.req.param("id"),
-	});
-	if (!request.ok) return request.response;
+app.post("/api/admin/backups/account/restore", async (c) => {
 	const authError = requireBackupAdmin(c);
 	if (authError) return authError;
-	const accountId = request.data.id;
+	const body = await validateJsonBody(c, accountAdminBodySchema);
+	if (!body.ok) return body.response;
+	const accountId = body.data.accountId;
 
 	const normalizedId = normalizeAccountId(accountId);
 	const accountData = await c.env.ACCOUNTS.get(`account:${normalizedId}`);

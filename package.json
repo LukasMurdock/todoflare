@@ -18,15 +18,16 @@
     "check:verification-config": "node scripts/check-verification-config.mjs",
 		"check:architecture": "node scripts/check-browser-boundaries.mjs",
 		"check:agent-routes": "node scripts/check-agent-route-contracts.mjs",
+		"check:sensitive-url-observability": "node scripts/check-sensitive-url-observability.mjs",
 		"lint:hooks": "eslint src --max-warnings 0",
-		"verify:checks": "pnpm check:verification-config && pnpm check:architecture && pnpm check:agent-routes && pnpm lint:hooks && pnpm typecheck && pnpm typecheck:test && pnpm test:run",
+		"verify:checks": "pnpm check:verification-config && pnpm check:architecture && pnpm check:agent-routes && pnpm check:sensitive-url-observability && pnpm lint:hooks && pnpm typecheck && pnpm typecheck:test && pnpm test:run",
     "verify:fast": "pnpm verify:checks && pnpm build",
     "verify": "pnpm verify:checks && pnpm build:e2e && pnpm test:e2e:run",
     "backup:list": "node scripts/backup-admin.mjs list",
     "backup:create": "node scripts/backup-admin.mjs create",
     "backup:restore": "node scripts/backup-admin.mjs restore",
     "backup:restore-account": "node scripts/backup-admin.mjs restore-account",
-    "deploy": "vite build && wrangler deploy"
+		"deploy": "pnpm check:sensitive-url-observability && vite build && wrangler deploy"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

@@ -26,6 +26,10 @@ import {
 } from "../src/server/workflows/disable-public-column";
 import type { Account, ColumnMeta } from "../src/types/account";
 
+function accountHeaders(accountId: string): Record<string, string> {
+	return { Authorization: `Bearer ${accountId.replace(/\D/g, "")}` };
+}
+
 function normalizeAccountId(id: string): string {
 	return id.replace(/\D/g, "");
 }
@@ -43,8 +47,11 @@ async function createAccount(): Promise<string> {
 async function createColumn(accountId: string): Promise<string> {
 	const response = await SELF.fetch("http://example.com/api/column", {
 		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ accountId }),
+		headers: {
+			"Content-Type": "application/json",
+			Authorization: `Bearer ${accountId.replace(/\D/g, "")}`,
+		},
+		body: JSON.stringify({}),
 	});
 	expect(response.ok).toBe(true);
 	return ((await response.json()) as { column: ColumnMeta }).column.id;
@@ -61,7 +68,7 @@ async function shareColumn(
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
-				"X-Account-ID": ownerId,
+				...accountHeaders(ownerId),
 			},
 			body: JSON.stringify({ targetAccountId: targetId }),
 		},
@@ -72,7 +79,7 @@ async function shareColumn(
 async function enablePublic(ownerId: string, columnId: string): Promise<string> {
 	const response = await SELF.fetch(
 		`http://example.com/api/column/${columnId}/public`,
-		{ method: "POST", headers: { "X-Account-ID": ownerId } },
+		{ method: "POST", headers: accountHeaders(ownerId) },
 	);
 	expect(response.ok).toBe(true);
 	return ((await response.json()) as { publicId: string }).publicId;
@@ -81,7 +88,7 @@ async function enablePublic(ownerId: string, columnId: string): Promise<string> 
 async function routeDelete(ownerId: string, columnId: string): Promise<void> {
 	const response = await SELF.fetch(`http://example.com/api/column/${columnId}`, {
 		method: "DELETE",
-		headers: { "X-Account-ID": ownerId },
+		headers: accountHeaders(ownerId),
 	});
 	expect(response.ok).toBe(true);
 }

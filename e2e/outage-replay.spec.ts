@@ -64,9 +64,11 @@ test.describe("collaborative editing", () => {
 		await expect
 			.poll(
 				async () => {
-					const response = await request.get(
-						`${appUrl}/api/account/${collaboratorId.replace(/\D/g, "")}`,
-					);
+					const response = await request.get(`${appUrl}/api/account`, {
+						headers: {
+							Authorization: `Bearer ${collaboratorId.replace(/\D/g, "")}`,
+						},
+					});
 					if (!response.ok()) return false;
 					const payload = (await response.json()) as {
 						sharedColumns?: Array<{ id?: string }>;
@@ -212,7 +214,6 @@ test.describe("collaborative editing", () => {
 			timeout: 15000,
 		});
 
-		const normalizedOwnerId = ownerId.replace(/\D/g, "");
 
 		const dragColumn = async (fromIndex: number, toIndex: number) => {
 			const handles = page.locator("button.cursor-grab");
@@ -244,7 +245,7 @@ test.describe("collaborative editing", () => {
 
 		await withTemporaryBackendOutage(
 			page,
-			`**/api/account/${normalizedOwnerId}/columns`,
+			"**/api/account/columns",
 			async () => {
 				await dragColumn(0, 1);
 				const queuedAfterFirstDrag =
@@ -282,7 +283,7 @@ test.describe("collaborative editing", () => {
 			{
 				headers: {
 					"Content-Type": "application/json",
-					"X-Account-ID": ownerId,
+					Authorization: `Bearer ${ownerId.replace(/\D/g, "")}`,
 				},
 				data: {
 					targetAccountId: collaboratorId,
@@ -300,11 +301,10 @@ test.describe("collaborative editing", () => {
 		const ownerShort = `${compactOwnerId.slice(0, 4)}...${compactOwnerId.slice(-4)}`;
 		await expect(page.getByText(`Shared by ${ownerShort}`)).toBeVisible({ timeout: 15000 });
 
-		const normalizedCollaboratorId = collaboratorId.replace(/\D/g, "");
 
 		await withTemporaryBackendOutage(
 			page,
-			`**/api/account/${normalizedCollaboratorId}/hidden`,
+			"**/api/account/hidden",
 			async () => {
 				await page.locator('button[title="Hide column"]').first().click();
 				await expect(page.getByText(`Shared by ${ownerShort}`)).toHaveCount(0);

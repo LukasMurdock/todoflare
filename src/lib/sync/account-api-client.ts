@@ -15,6 +15,7 @@ import {
 	type AccountConvergenceError,
 } from "./account-convergence-machine";
 import { projectionFromServer, type AccountProjection } from "./account-projection";
+import { accountAuthorizationHeader } from "../http-account-auth";
 
 function malformedResponse(message: string): AccountConvergenceFailure {
 	return new AccountConvergenceFailure(
@@ -80,7 +81,10 @@ export async function fetchAccountProjection(
 			"Invalid account ID format",
 		);
 	}
-	const response = await fetch(`/api/account/${normalizeAccountId(id)}`, { signal });
+	const response = await fetch("/api/account", {
+		signal,
+		headers: { Authorization: accountAuthorizationHeader(id) },
+	});
 	if (response.status === 404) {
 		await throwResponseFailure(
 			response,

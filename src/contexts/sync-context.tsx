@@ -34,6 +34,7 @@ import {
 	WS_OP_AWARENESS,
 } from "@/lib/collaboration/websocket-protocol";
 import { ColumnSessionManager } from "@/lib/sync/column-session-manager";
+import { ColumnSocketAuthorizationError } from "@/lib/sync/column-session-machine";
 import type {
 	ColumnSocketFrame,
 	ColumnSocketLike,
@@ -69,6 +70,7 @@ import {
 	normalizeAccountId,
 	displayAccountId,
 } from "@/lib/account";
+import { accountAuthorizationHeader } from "@/lib/http-account-auth";
 
 const ACCOUNT_STORAGE_KEY = "todoflare-account";
 const E2E_REPLAY_WAKE_EVENT = "todoflare:e2e:replay-wake";
@@ -555,9 +557,24 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			dependencies: {
 				createSocket: (url) =>
 					new WebSocket(url) as unknown as ColumnSocketLike,
-				getSocketUrl: (activeAccountId, columnId) => {
+				getSocketUrl: async (activeAccountId, columnId, signal) => {
+					const response = await fetch(`/api/column/${columnId}/ws-ticket`, {
+						method: "POST",
+						signal,
+						headers: {
+							Authorization: accountAuthorizationHeader(activeAccountId),
+						},
+					});
+					if ([401, 403, 404].includes(response.status)) {
+						throw new ColumnSocketAuthorizationError(response.status);
+					}
+					if (!response.ok) throw new Error(`WebSocket ticket failed: ${response.status}`);
+					const payload = (await response.json()) as { ticket?: unknown };
+					if (typeof payload.ticket !== "string") {
+						throw new Error("WebSocket ticket response is invalid");
+					}
 					const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-					return `${protocol}//${window.location.host}/api/column/${columnId}/ws?accountId=${normalizeAccountId(activeAccountId)}`;
+					return `${protocol}//${window.location.host}/api/column/${columnId}/ws?ticket=${encodeURIComponent(payload.ticket)}`;
 				},
 				persistUpdate: (activeAccountId, columnId, kind, update) => {
 					const outboxId = yjsOutbox.enqueue({
@@ -983,12 +1000,9 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		if (!accountId) return null;
 
 		try {
-			const response = await fetch(
-				`/api/account/${normalizeAccountId(accountId)}/export`,
-				{
-					headers: { "X-Account-ID": accountId },
-				},
-			);
+			const response = await fetch("/api/account/export", {
+				headers: { Authorization: accountAuthorizationHeader(accountId) },
+			});
 
 			if (!response.ok) {
 				throw new Error("Failed to export account data");
@@ -1008,12 +1022,12 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 
 			try {
 				const response = await fetch(
-					`/api/account/${normalizeAccountId(accountId)}/import`,
+					"/api/account/import",
 					{
 						method: "POST",
-						headers: {
-							"Content-Type": "application/json",
-							"X-Account-ID": accountId,
+							headers: {
+								"Content-Type": "application/json",
+								Authorization: accountAuthorizationHeader(accountId),
 						},
 						body: JSON.stringify(payload),
 					},

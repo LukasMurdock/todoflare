@@ -32,7 +32,7 @@ test.describe("collaborative editing", () => {
 		const staleResponseRelease = new Promise<void>((resolve) => {
 			releaseStaleResponse = resolve;
 		});
-		const accountUrl = `**/api/account/${ownerId.replace(/\D/g, "")}`;
+		const accountUrl = "**/api/account";
 		await page.route(accountUrl, async (route) => {
 			const staleResponse = await route.fetch();
 			markStaleResponseCaptured();
@@ -203,11 +203,13 @@ test.describe("collaborative editing", () => {
 		).toBeVisible({ timeout: 15000 });
 
 		const revokeResponse = await request.delete(
-			`${appUrl}/api/column/${columnId}/share/${collaboratorId.replace(/\s/g, "")}`,
+			`${appUrl}/api/column/${columnId}/share`,
 			{
 				headers: {
-					"X-Account-ID": ownerId,
+					"Content-Type": "application/json",
+					Authorization: `Bearer ${ownerId.replace(/\D/g, "")}`,
 				},
+				data: { targetAccountId: collaboratorId },
 			},
 		);
 		expect(revokeResponse.ok()).toBeTruthy();
@@ -298,11 +300,13 @@ test.describe("collaborative editing", () => {
 			.toBeGreaterThan(0);
 
 		const revokeResponse = await request.delete(
-			`${appUrl}/api/column/${columnId}/share/${collaboratorId.replace(/\s/g, "")}`,
+			`${appUrl}/api/column/${columnId}/share`,
 			{
 				headers: {
-					"X-Account-ID": ownerId,
+					"Content-Type": "application/json",
+					Authorization: `Bearer ${ownerId.replace(/\D/g, "")}`,
 				},
+				data: { targetAccountId: collaboratorId },
 			},
 		);
 		expect(revokeResponse.ok()).toBeTruthy();
@@ -487,7 +491,7 @@ test.describe("collaborative editing", () => {
 			(response) =>
 				response.request().method() === "DELETE" &&
 				response.url().includes("/api/column/") &&
-				response.url().includes("/share/"),
+				response.url().endsWith("/share"),
 		);
 
 		await page.context().setOffline(false);

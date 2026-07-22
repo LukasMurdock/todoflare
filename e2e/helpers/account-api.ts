@@ -1,5 +1,9 @@
 import type { APIRequestContext } from "@playwright/test";
 
+function accountHeaders(accountId: string): Record<string, string> {
+	return { Authorization: `Bearer ${accountId.replace(/\D/g, "")}` };
+}
+
 export async function createAccount(
 	request: APIRequestContext,
 	baseURL: string,
@@ -30,8 +34,8 @@ export async function createColumn(
 	accountId: string,
 ): Promise<string> {
 	const response = await request.post(`${baseURL}/api/column`, {
-		headers: { "Content-Type": "application/json" },
-		data: { accountId },
+		headers: { "Content-Type": "application/json", ...accountHeaders(accountId) },
+		data: {},
 	});
 	if (!response.ok()) {
 		throw new Error(
@@ -52,9 +56,9 @@ export async function getAccountColumnOrder(
 	baseURL: string,
 	accountId: string,
 ): Promise<string[]> {
-	const response = await request.get(
-		`${baseURL}/api/account/${accountId.replace(/\D/g, "")}`,
-	);
+	const response = await request.get(`${baseURL}/api/account`, {
+		headers: accountHeaders(accountId),
+	});
 
 	if (!response.ok()) {
 		throw new Error(
