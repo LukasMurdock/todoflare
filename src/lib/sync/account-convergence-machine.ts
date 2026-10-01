@@ -10,7 +10,7 @@ import { summarizeReplayReport } from "./account-command-reconciliation";
 import type { QueuedMutation, ReplayReport } from "./contracts";
 
 export type AccountConvergenceError =
-	| { scope: "auth"; kind: "invalid" | "not_found" | "server" }
+	| { scope: "auth"; kind: "invalid" | "not_found" | "reauth_required" | "server" }
 	| { scope: "hydrate"; kind: "rate_limited" | "server" }
 	| { scope: "replay"; kind: "retryable" | "terminal" }
 	| { scope: "access"; kind: "revoked"; columnId: string };

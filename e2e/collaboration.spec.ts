@@ -80,10 +80,10 @@ test.describe("collaborative editing", () => {
 
 		await page.goto("/");
 		await expect(
-			page.getByRole("heading", { name: "You have existing local data" }),
+			page.getByRole("heading", { name: "You have local data" }),
 		).toBeVisible();
 
-		await page.getByRole("button", { name: "Generate Account & Claim Data" }).click();
+		await page.getByRole("button", { name: "Create account and claim data" }).click();
 
 		await expect(
 			page.getByRole("heading", { name: "You have existing local data" }),
@@ -119,9 +119,9 @@ test.describe("collaborative editing", () => {
 
 		await expect(page.getByRole("dialog")).toBeVisible({ timeout: 15000 });
 		await expect(
-			page.getByRole("heading", { name: "Welcome to Todoflare" }),
+			page.getByRole("heading", { name: "Sync with a passkey" }),
 		).toBeVisible();
-		await expect(page.getByRole("button", { name: "Generate New Account" })).toBeVisible();
+		await expect(page.getByRole("button", { name: "Create synced account" })).toBeVisible();
 	});
 
 	test("syncs edits between two tabs of the same account", async ({

@@ -184,7 +184,7 @@ describe("local-first IndexedDB record contract", () => {
 			terminalReason: null,
 			lastError: null,
 		});
-		await db.flush();
+		await expect(db.flush()).rejects.toThrow();
 
 		const stored = await readRawCollection("yjsUpdateOutbox");
 		expect(stored?.entries).toEqual([["future-yjs", future]]);

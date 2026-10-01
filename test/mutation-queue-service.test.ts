@@ -200,7 +200,7 @@ describe("LocalMutationQueueService", () => {
 			latestQueueIds = pending.map((mutation) => mutation.queueId);
 		});
 
-		queue.swapStorage(swappedStorage);
+		await queue.swapStorage(swappedStorage);
 		subscription.unsubscribe();
 
 		expect(new Set(latestQueueIds)).toEqual(

@@ -420,6 +420,8 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 		onColumnMessage,
 		sendUpdate,
 		sendAwareness,
+		browserStorageError,
+		syncStateSummary,
 	} = useSyncContext();
 
 	const isSyncedMode = !!accountId && !!account;
@@ -692,6 +694,7 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 			>
 				<Editor
 					variant="column"
+					readOnly={browserStorageError !== null || (isSyncedMode && syncStateSummary.storageState !== "durable")}
 					role="textbox"
 					aria-multiline="true"
 					aria-label="Todo editor"

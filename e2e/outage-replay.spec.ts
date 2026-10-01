@@ -9,7 +9,6 @@ import {
 	waitForQueueToDrain,
 	waitForQueuedMutations,
 } from "./helpers/sync-outage";
-import { getSyncStateSnapshot } from "./helpers/local-first-readers";
 import {
 	addColumnAndGetId,
 	bootstrapAuthenticatedPage,
@@ -66,7 +65,7 @@ test.describe("collaborative editing", () => {
 				async () => {
 					const response = await request.get(`${appUrl}/api/account`, {
 						headers: {
-							Authorization: `Bearer ${collaboratorId.replace(/\D/g, "")}`,
+							"X-Todoflare-Test-Account": collaboratorId.replace(/\D/g, ""),
 						},
 					});
 					if (!response.ok()) return false;
@@ -248,11 +247,7 @@ test.describe("collaborative editing", () => {
 			"**/api/account/columns",
 			async () => {
 				await dragColumn(0, 1);
-				const queuedAfterFirstDrag =
-					(await getSyncStateSnapshot(page, ownerId))?.queueDepth ?? 0;
-				if (queuedAfterFirstDrag === 0) {
-					await dragColumn(1, 0);
-				}
+
 
 				await waitForQueuedMutations(page, ownerId);
 			},
@@ -283,7 +278,7 @@ test.describe("collaborative editing", () => {
 			{
 				headers: {
 					"Content-Type": "application/json",
-					Authorization: `Bearer ${ownerId.replace(/\D/g, "")}`,
+					"X-Todoflare-Test-Account": ownerId.replace(/\D/g, ""),
 				},
 				data: {
 					targetAccountId: collaboratorId,

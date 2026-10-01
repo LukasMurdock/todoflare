@@ -133,6 +133,7 @@ export function accountConvergenceErrorMessage(
 	if (error.scope === "auth") {
 		if (error.kind === "invalid") return "Invalid account ID format";
 		if (error.kind === "not_found") return "Account not found";
+		if (error.kind === "reauth_required") return "Sign in with a passkey to resume syncing";
 		return "Failed to authenticate account";
 	}
 	if (error.scope === "access") return "Access revoked";

@@ -1,3 +1,6 @@
+import type { QueuedMutation } from "@/lib/sync/contracts";
+import type { YjsOutboxEntry } from "@/lib/sync/yjs-update-outbox";
+import { isColumnEmpty, type Column } from "@/types/column";
 import {
 	createContext,
 	useContext,
@@ -57,7 +60,10 @@ import { projectionFromLocalSnapshot } from "@/lib/sync/account-projection";
 import {
 	createAccountProjection,
 	fetchAccountProjection,
+	signInWithPasskey,
 } from "@/lib/sync/account-api-client";
+import { authClient, recoverAccount } from "@/lib/auth-client";
+import { e2eAccountHeaders } from "@/lib/e2e-auth";
 import type { LocalFirstDatabase } from "@/lib/local-first/database";
 import type {
 	Account,
@@ -74,7 +80,6 @@ import {
 	normalizeAccountId,
 	displayAccountId,
 } from "@/lib/account";
-import { accountAuthorizationHeader } from "@/lib/http-account-auth";
 
 const ACCOUNT_STORAGE_KEY = "todoflare-account";
 const E2E_REPLAY_WAKE_EVENT = "todoflare:e2e:replay-wake";
@@ -138,10 +143,14 @@ interface SyncContextValue {
 	syncMode: SyncMode;
 	syncStateSummary: SyncStateSummary;
 	yjsOutboxSummary: YjsOutboxSummary;
+	browserStorageError: string | null;
+	reportBrowserStorageError: (error: unknown, guestColumns?: Column[]) => void;
+	retryBrowserStorage: () => Promise<void>;
 
 	// Account operations
 	createAccount: () => Promise<Account | null>;
-	loginWithAccountId: (id: string) => Promise<boolean>;
+	loginWithPasskey: (autoFill?: boolean) => Promise<boolean>;
+	loginWithRecoveryCode: (accountId: string, recoveryCode: string) => Promise<string | null>;
 	logout: () => void;
 	resetSyncTelemetry: () => void;
 
@@ -183,6 +192,9 @@ interface SyncContextValue {
 		schemaVersion: 1;
 		exportedAt: number;
 		records: QuarantinedRecord[];
+		pendingYjs: YjsOutboxEntry[];
+		pendingCommands: QueuedMutation[];
+		guestColumns: Column[] | null;
 	}>;
 
 	// Check for existing localStorage data
@@ -235,6 +247,12 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			source: "websocket" | "replay",
 		) => Promise<void>
 	>(async () => {});
+	const [browserStorageError, setBrowserStorageError] = useState<string | null>(null);
+	const guestRecoveryColumnsRef = useRef<Column[] | null>(null);
+	const reportBrowserStorageError = useCallback((error: unknown, guestColumns?: Column[]) => {
+		if (guestColumns) guestRecoveryColumnsRef.current = guestColumns;
+		setBrowserStorageError(error instanceof Error ? error.message : "Browser storage could not save changes");
+	}, []);
 	const localFirstDbRef = useRef<LocalFirstDatabase | null>(null);
 	const accountCommandExecutorRef = useRef<ReturnType<
 		typeof createAccountCommandExecutor
@@ -251,6 +269,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 
 	if (!mutationQueueRef.current) {
 		mutationQueueRef.current = new LocalMutationQueueService({
+			onPersistenceError: reportBrowserStorageError,
 			executor: (mutation, options) =>
 				accountCommandExecutorRef.current!.execute(mutation, options),
 		});
@@ -259,7 +278,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 	const mutationQueue = mutationQueueRef.current!;
 
 	if (!yjsOutboxRef.current) {
-		yjsOutboxRef.current = new LocalYjsUpdateOutbox();
+		yjsOutboxRef.current = new LocalYjsUpdateOutbox({ onPersistenceError: reportBrowserStorageError });
 	}
 
 	const yjsOutbox = yjsOutboxRef.current;
@@ -276,8 +295,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 
 	const ensureDurableQueueStorage = useCallback(() => {
 		if (!durableQueueStoragePromiseRef.current) {
-			durableQueueStoragePromiseRef.current = ensureLocalFirstDb().then((db) => {
-				mutationQueue.swapStorage(createLocalFirstMutationQueueStorage(db));
+			durableQueueStoragePromiseRef.current = ensureLocalFirstDb().then(async (db) => {
+				await mutationQueue.swapStorage(createLocalFirstMutationQueueStorage(db));
 				yjsOutbox.swapStorage(createLocalFirstYjsOutboxStorage(db));
 				return db;
 			});
@@ -475,11 +494,12 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		void ensureDurableQueueStorage().then(() => {
 			refreshYjsOutboxSummary();
 			accountConvergenceActor.send({ type: "COMMAND_PERSISTED" });
-		});
+		}).catch(reportBrowserStorageError);
 	}, [
 		accountConvergenceActor,
 		ensureDurableQueueStorage,
 		refreshYjsOutboxSummary,
+		reportBrowserStorageError,
 	]);
 
 	useEffect(() => {
@@ -571,9 +591,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 					const response = await fetch(`/api/column/${columnId}/ws-ticket`, {
 						method: "POST",
 						signal,
-						headers: {
-							Authorization: accountAuthorizationHeader(activeAccountId),
-						},
+						headers: e2eAccountHeaders(activeAccountId),
 					});
 					const hasPendingCreate = mutationQueue
 						.getPending(activeAccountId)
@@ -718,13 +736,18 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		return created;
 	}, [accountConvergenceActor]);
 
-	const loginWithAccountId = useCallback(
-		async (id: string) => {
-			if (!validateAccountId(id)) {
-				setError("Invalid account ID format");
+	const loginWithPasskey = useCallback(
+		async (autoFill = false) => {
+			setError(null);
+			let formattedId: string;
+			try {
+				formattedId = displayAccountId(await signInWithPasskey(autoFill));
+			} catch (error) {
+				if (!autoFill) {
+					setError(error instanceof Error ? error.message : "Passkey sign-in failed");
+				}
 				return false;
 			}
-			const formattedId = displayAccountId(id);
 			accountConvergenceActor.send({ type: "LOGIN", accountId: formattedId });
 			const snapshot = await waitFor(
 				accountConvergenceActor,
@@ -744,8 +767,35 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		[accountConvergenceActor],
 	);
 
+	const loginWithRecoveryCode = useCallback(
+		async (accountIdInput: string, recoveryCode: string) => {
+			setError(null);
+			let formattedId: string;
+			let nextRecoveryCode: string;
+			try {
+				const recovered = await recoverAccount(accountIdInput, recoveryCode);
+				formattedId = displayAccountId(recovered.accountId);
+				nextRecoveryCode = recovered.recoveryCode;
+			} catch (error) {
+				setError(error instanceof Error ? error.message : "Recovery failed");
+				return null;
+			}
+			accountConvergenceActor.send({ type: "LOGIN", accountId: formattedId });
+			const snapshot = await waitFor(
+				accountConvergenceActor,
+				(state) =>
+					(state.context.accountId !== null &&
+						normalizeAccountId(state.context.accountId) === normalizeAccountId(formattedId)) ||
+					(state.matches("signedOut") && state.context.error !== null),
+			);
+			return snapshot.context.accountId !== null ? nextRecoveryCode : null;
+		},
+		[accountConvergenceActor],
+	);
+
 	// Logout
 	const logout = useCallback(() => {
+		void authClient.signOut();
 		columnSessionManagerRef.current?.manager.stop();
 		columnSessionManagerRef.current = null;
 		accountConvergenceActor.send({ type: "LOGOUT" });
@@ -1035,7 +1085,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 
 		try {
 			const response = await fetch("/api/account/export", {
-				headers: { Authorization: accountAuthorizationHeader(accountId) },
+				headers: e2eAccountHeaders(accountId),
 			});
 
 			if (!response.ok) {
@@ -1060,8 +1110,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 					{
 						method: "POST",
 							headers: {
+								...e2eAccountHeaders(accountId),
 								"Content-Type": "application/json",
-								Authorization: accountAuthorizationHeader(accountId),
 						},
 						body: JSON.stringify(payload),
 					},
@@ -1088,24 +1138,49 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		try {
 			return parseLocalColumns(
 				localStorage.getItem(LOCAL_COLUMNS_STORAGE_KEY),
-			) !== null;
+			)?.some(column => !isColumnEmpty(column)) ?? false;
 		} catch {
 			// Ignore errors
 		}
 		return false;
 	}, []);
 
+	const retryBrowserStorage = useCallback(async () => {
+		const db = await ensureLocalFirstDb();
+		try {
+			if (guestRecoveryColumnsRef.current) {
+				localStorage.setItem(LOCAL_COLUMNS_STORAGE_KEY, JSON.stringify(guestRecoveryColumnsRef.current));
+			}
+			await db.retryFailedWrites?.();
+			await mutationQueue.swapStorage(createLocalFirstMutationQueueStorage(db));
+			yjsOutbox.swapStorage(createLocalFirstYjsOutboxStorage(db));
+			yjsOutbox.retryPersistence();
+			await mutationQueue.retryPersistence();
+			await db.flush();
+			durableQueueStoragePromiseRef.current = Promise.resolve(db);
+			setBrowserStorageError(null);
+			accountConvergenceActor.send({ type: "COMMAND_PERSISTED" });
+		} catch (error) { reportBrowserStorageError(error); throw error; }
+	}, [ensureLocalFirstDb, yjsOutbox, mutationQueue, accountConvergenceActor, reportBrowserStorageError]);
+
 	const exportStorageRecoveryData = useCallback(async () => {
 		const db = await ensureLocalFirstDb();
+		let guestColumns = guestRecoveryColumnsRef.current;
+		if (!guestColumns) {
+			try { guestColumns = parseLocalColumns(localStorage.getItem(LOCAL_COLUMNS_STORAGE_KEY)); } catch { guestColumns = []; }
+		}
 		return {
 			schemaVersion: 1 as const,
 			exportedAt: Date.now(),
+			pendingYjs: yjsOutbox.getAllEntries(),
+			pendingCommands: accountId ? mutationQueue.getPending(accountId) : [],
+			guestColumns,
 			records: [
 				...db.collections.quarantine.values(),
 				...readAllLocalStorageQuarantine(),
 			],
 		};
-	}, [ensureLocalFirstDb]);
+	}, [ensureLocalFirstDb, yjsOutbox, mutationQueue, accountId]);
 
 	const value: SyncContextValue = {
 		accountId,
@@ -1116,8 +1191,12 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		syncMode,
 		syncStateSummary,
 		yjsOutboxSummary,
+		browserStorageError,
+		reportBrowserStorageError,
+		retryBrowserStorage,
 		createAccount,
-		loginWithAccountId,
+		loginWithPasskey,
+		loginWithRecoveryCode,
 		logout,
 		resetSyncTelemetry,
 		sharedColumns,

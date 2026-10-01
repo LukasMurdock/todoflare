@@ -148,6 +148,10 @@ export async function deleteColumn<TColumnRoomId>(
 	await afterWrite?.("column-public");
 
 	const deletedAt = now();
+	const trashResponse = await stub.fetch(new Request("http://do/trash", {
+		method: "POST", body: JSON.stringify({ deletedAt }),
+	}));
+	if (!trashResponse.ok) throw new Error(`Failed to mark column trash: ${trashResponse.status}`);
 	await mutateAccountRecord(env, trashKey, {
 		kind: "trash-upsert",
 		columnId,

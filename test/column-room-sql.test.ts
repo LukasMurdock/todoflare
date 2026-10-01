@@ -579,11 +579,13 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 		docA.getText("t").insert(0, "hello");
 		const update = encodeStateAsUpdate(docA);
 
+		const echoPromise = waitForPayloadWithOp(wsA, WS_OP_SYNC, 2000);
 		const ackPromise = waitForPayloadWithOp(wsA, WS_OP_SYNC_ACK, 2000);
 		wsA.send(encodeDurableSyncSubmission("delivery-1", update));
 
 		const received = await waitForPayloadWithOp(wsB, WS_OP_SYNC, 2000);
 		const ackPayload = await ackPromise;
+		expect(Array.from(await echoPromise)).toEqual(Array.from(update));
 		expect(Array.from(received)).toEqual(Array.from(update));
 		expect(
 			decodeWsMessage(encodeWsFrame(WS_OP_SYNC_ACK, ackPayload)),

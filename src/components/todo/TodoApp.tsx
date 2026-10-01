@@ -1,5 +1,7 @@
 "use client";
 
+import { StorageRecoveryBanner } from "@/components/account/StorageRecoveryBanner";
+
 import * as React from "react";
 import {
 	DndContext,
@@ -53,6 +55,7 @@ export function TodoApp() {
 
 	return (
 		<div className="relative min-h-screen">
+			<StorageRecoveryBanner />
 			{/* Account badge in top-right corner */}
 			<div className="fixed top-2 right-2 z-50">
 				<AccountBadge />

@@ -21,7 +21,9 @@ async function seedTrash(
 		String(byte % 10),
 	).join("");
 	seededAccountIds.push(accountId);
-	await env.ACCOUNTS.put(`account:${accountId}`, "{}");
+	await env.ACCOUNTS.put(`account:${accountId}`, JSON.stringify({
+		schemaVersion: 1, id: accountId, columnOrder: [], hiddenSharedColumns: [], createdAt: 1,
+	}));
 	await env.ACCOUNTS.put(`trash:${accountId}`, JSON.stringify(entries));
 	return accountId;
 }
@@ -55,8 +57,11 @@ describe("purgeExpiredTrashedColumns workflow", () => {
 			}),
 		);
 		expect(initResponse.ok).toBe(true);
+		await stub.fetch("http://do/trash", { method: "POST", body: JSON.stringify({ deletedAt: FIXED_NOW - TRASH_RETENTION_MS }) });
 
+		const clock = vi.spyOn(Date, "now").mockReturnValue(FIXED_NOW);
 		const result = await purgeExpiredTrashedColumns({ env, now: () => FIXED_NOW });
+		clock.mockRestore();
 
 		expect(result).toEqual({
 			accountsScanned: 1,

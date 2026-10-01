@@ -113,6 +113,8 @@ export async function restoreColumn<TColumnRoomId>(
 		};
 	}
 
+	const activeResponse = await stub.fetch(new Request("http://do/restore-active", { method: "POST" }));
+	if (!activeResponse.ok) return lifecycleNotFound("Column expired or unavailable", activeResponse.status === 410 ? 410 : 404);
 	if (!account.columnOrder.includes(columnId)) {
 		await mutateAccountRecord(env, accountKey, {
 			kind: "account-add-column",

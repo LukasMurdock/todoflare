@@ -3,14 +3,11 @@ import {
 	Dialog,
 	DialogContent,
 	DialogDescription,
-	DialogFooter,
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { useAccount } from "@/hooks/useAccount";
-import { formatAccountId, validateAccountId } from "@/lib/account";
 import { clearLocalColumns } from "@/hooks/useColumns";
 
 interface ClaimDataModalProps {
@@ -19,182 +16,56 @@ interface ClaimDataModalProps {
 }
 
 export function ClaimDataModal({ open, onOpenChange }: ClaimDataModalProps) {
-	const { createAccount, loginWithAccountId, isLoading, error } = useAccount();
-	const [mode, setMode] = useState<"choose" | "enter">("choose");
-	const [accountIdInput, setAccountIdInput] = useState("");
-	const [localError, setLocalError] = useState<string | null>(null);
-	const [isClaimingData, setIsClaimingData] = useState(false);
+	const { createAccount, loginWithPasskey, isLoading, error } = useAccount();
+	const [operation, setOperation] = useState<"claim" | "fresh" | "signin" | null>(null);
 
-	const handleClaimData = async () => {
-		setLocalError(null);
-		setIsClaimingData(true);
-
+	const create = async (startFresh: boolean) => {
+		setOperation(startFresh ? "fresh" : "claim");
 		try {
-			// Create new account
-			const account = await createAccount();
-			if (!account) {
-				setIsClaimingData(false);
-				return;
+			if (await createAccount()) {
+				if (startFresh) clearLocalColumns();
+				onOpenChange(false);
 			}
-
-			onOpenChange(false);
-		} catch (err) {
-			setLocalError("Failed to claim data. Please try again.");
 		} finally {
-			setIsClaimingData(false);
+			setOperation(null);
 		}
 	};
 
-	const handleStartFresh = async () => {
-		setLocalError(null);
-
-		// Create account without claiming data
-		const account = await createAccount();
-		if (account) {
-			// Clear local data
-			clearLocalColumns();
-			onOpenChange(false);
+	const signIn = async () => {
+		setOperation("signin");
+		try {
+			if (await loginWithPasskey()) {
+				clearLocalColumns();
+				onOpenChange(false);
+			}
+		} finally {
+			setOperation(null);
 		}
 	};
 
-	const handleLogin = async () => {
-		setLocalError(null);
-
-		if (!validateAccountId(accountIdInput)) {
-			setLocalError("Please enter a valid 16-digit account ID");
-			return;
-		}
-
-		const success = await loginWithAccountId(accountIdInput);
-		if (success) {
-			// Clear local data when logging into existing account
-			clearLocalColumns();
-			onOpenChange(false);
-		}
-	};
-
-	const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-		const formatted = formatAccountId(e.target.value);
-		setAccountIdInput(formatted);
-		setLocalError(null);
-	};
-
-	const handleKeyDown = (e: React.KeyboardEvent) => {
-		if (e.key === "Enter" && mode === "enter") {
-			handleLogin();
-		}
-	};
-
-	const displayError = localError || error;
-	const isProcessing = isLoading || isClaimingData;
-
+	const busy = isLoading || operation !== null;
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent showCloseButton={false}>
 				<DialogHeader>
-					<DialogTitle>
-						{mode === "choose"
-							? "You have existing local data"
-							: "Enter Account ID"}
-					</DialogTitle>
+					<DialogTitle>You have local data</DialogTitle>
 					<DialogDescription>
-						{mode === "choose"
-							? "Claim it with a new account to sync across devices, or log in to an existing account."
-							: "Enter your 16-digit account ID. Note: your local data will be replaced."}
+						Create a passkey-protected account to claim it, or sign in to replace
+						it with an existing synced account.
 					</DialogDescription>
 				</DialogHeader>
-
-				{mode === "choose" ? (
-					<div className="flex flex-col gap-4">
-						<Button
-							onClick={handleClaimData}
-							disabled={isProcessing}
-							className="w-full"
-						>
-							{isClaimingData
-								? "Claiming Data..."
-								: "Generate Account & Claim Data"}
-						</Button>
-
-						<Button
-							variant="outline"
-							onClick={handleStartFresh}
-							disabled={isProcessing}
-							className="w-full"
-						>
-							Start Fresh Instead
-						</Button>
-
-						<div className="relative">
-							<div className="absolute inset-0 flex items-center">
-								<span className="w-full border-t" />
-							</div>
-							<div className="relative flex justify-center text-xs uppercase">
-								<span className="bg-background px-2 text-muted-foreground">
-									or
-								</span>
-							</div>
-						</div>
-
-						<Button
-							variant="ghost"
-							onClick={() => setMode("enter")}
-							disabled={isProcessing}
-							className="w-full"
-						>
-							Enter Existing Account
-						</Button>
-
-						<p className="text-xs text-muted-foreground text-center">
-							Entering an existing account will replace your local data.
-						</p>
-					</div>
-				) : (
-					<div className="flex flex-col gap-4">
-						<div className="space-y-2">
-							<Input
-								placeholder="0000 0000 0000 0000"
-								value={accountIdInput}
-								onChange={handleInputChange}
-								onKeyDown={handleKeyDown}
-								disabled={isProcessing}
-								className="font-mono text-center text-lg tracking-wider"
-								maxLength={19}
-								autoFocus
-							/>
-							<p className="text-xs text-muted-foreground text-center">
-								Your local data will be replaced.
-							</p>
-							{displayError && (
-								<p className="text-sm text-destructive">{displayError}</p>
-							)}
-						</div>
-
-						<DialogFooter className="gap-2 sm:gap-0">
-							<Button
-								variant="outline"
-								onClick={() => {
-									setMode("choose");
-									setAccountIdInput("");
-									setLocalError(null);
-								}}
-								disabled={isProcessing}
-							>
-								Back
-							</Button>
-							<Button
-								onClick={handleLogin}
-								disabled={isProcessing || !validateAccountId(accountIdInput)}
-							>
-								{isLoading ? "Connecting..." : "Continue"}
-							</Button>
-						</DialogFooter>
-					</div>
-				)}
-
-				{displayError && mode === "choose" && (
-					<p className="text-sm text-destructive text-center">{displayError}</p>
-				)}
+				<div className="flex flex-col gap-4">
+					<Button onClick={() => create(false)} disabled={busy} className="w-full">
+						{operation === "claim" ? "Creating passkey..." : "Create account and claim data"}
+					</Button>
+					<Button variant="outline" onClick={() => create(true)} disabled={busy}>
+						Start fresh with a passkey
+					</Button>
+					<Button variant="ghost" onClick={signIn} disabled={busy}>
+						{operation === "signin" ? "Signing in..." : "Sign in with a passkey"}
+					</Button>
+					{error && <p className="text-sm text-destructive text-center">{error}</p>}
+				</div>
 			</DialogContent>
 		</Dialog>
 	);

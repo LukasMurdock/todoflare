@@ -10,7 +10,7 @@ import type { Account, ColumnMeta } from "../src/types/account";
 
 function headers(accountId: string): Record<string, string> {
 	return {
-		Authorization: `Bearer ${normalizeAccountId(accountId)}`,
+		"X-Todoflare-Test-Account": normalizeAccountId(accountId),
 		"Content-Type": "application/json",
 	};
 }

@@ -17,7 +17,8 @@ export function useAccount() {
 		syncStateSummary,
 		yjsOutboxSummary,
 		createAccount,
-		loginWithAccountId,
+		loginWithPasskey,
+		loginWithRecoveryCode,
 		logout,
 		resetSyncTelemetry,
 		restoreColumn,
@@ -44,7 +45,8 @@ export function useAccount() {
 
 		// Operations
 		createAccount,
-		loginWithAccountId,
+		loginWithPasskey,
+		loginWithRecoveryCode,
 		logout,
 		resetSyncTelemetry,
 		restoreColumn,

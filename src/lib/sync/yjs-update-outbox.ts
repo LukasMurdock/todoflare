@@ -3,7 +3,7 @@ import {
 	replaceLocalFirstCollection,
 	type LocalFirstDatabase,
 } from "../local-first/database";
-import { readVersionedLocalStorageArray } from "../local-first/local-storage-quarantine";
+import { createOutboxJournal } from "../local-first/outbox-journal";
 
 const DEFAULT_STORAGE_KEY = "todoflare-yjs-update-outbox-v1";
 const DEFAULT_AWARENESS_MAX_AGE_MS = 30_000;
@@ -118,24 +118,28 @@ function normalizeEntry(raw: unknown): YjsOutboxEntry | null {
 export class LocalYjsUpdateOutbox {
 	private entries: YjsOutboxEntry[];
 	private storage: YjsOutboxStorage;
+	private readonly journal: YjsOutboxStorage;
+	private readonly onPersistenceError?: (error: unknown) => void;
 
-	constructor(options?: { storage?: YjsOutboxStorage }) {
+	constructor(options?: { storage?: YjsOutboxStorage; onPersistenceError?: (error: unknown) => void }) {
+		this.onPersistenceError = options?.onPersistenceError;
 		this.storage =
 			options?.storage ??
 			createLocalStorageYjsOutboxStorage(DEFAULT_STORAGE_KEY);
+		this.journal = this.storage;
 		this.entries = this.storage.read().sort(byCreatedAt);
 	}
 
 	swapStorage(storage: YjsOutboxStorage) {
-		const synchronousMirror = this.storage;
+		const synchronousMirror = this.journal;
 		const persistedEntries = storage.read().sort(byCreatedAt);
 		this.storage = {
 			read: () => storage.read(),
 			write: (entries) => {
 				// Keep the original localStorage-backed writer as a synchronous
 				// crash/refresh journal while IndexedDB persistence catches up.
-				synchronousMirror.write(entries);
 				storage.write(entries);
+				synchronousMirror.write(entries);
 			},
 		};
 		this.entries = mergeEntriesById(persistedEntries, this.entries).sort(byCreatedAt);
@@ -285,39 +289,27 @@ export class LocalYjsUpdateOutbox {
 		this.persist();
 	}
 
+	retryPersistence() { this.storage.write(this.entries); }
+
 	private persist() {
 		this.entries.sort(byCreatedAt);
-		this.storage.write(this.entries);
+		try { this.storage.write(this.entries); }
+		catch (error) {
+			if (!this.onPersistenceError) throw error;
+			// Keep the actor alive so retained memory edits can still reach the
+			// server. The UI callback immediately blocks further editing.
+			this.onPersistenceError(error);
+		}
 	}
 }
 
-export function createLocalStorageYjsOutboxStorage(
-	storageKey: string,
-): YjsOutboxStorage {
-	let writeBlocked = false;
-	return {
-		read() {
-			const result = readVersionedLocalStorageArray({
-				storageKey,
-				collection: "yjsUpdateOutbox",
-				parse: normalizeEntry,
-			});
-			writeBlocked ||= result.writeBlocked;
-			return result.records.sort(byCreatedAt);
-		},
-		write(entries) {
-			if (typeof window === "undefined" || writeBlocked) return;
-
-			try {
-				window.localStorage.setItem(
-					storageKey,
-					JSON.stringify(entries.map((entry) => ({ ...entry, schemaVersion: 1 }))),
-				);
-			} catch {
-				return;
-			}
-		},
-	};
+export function createLocalStorageYjsOutboxStorage(storageKey: string): YjsOutboxStorage {
+	return createOutboxJournal({
+		storageKey,
+		collection: "yjsUpdateOutbox",
+		parse: normalizeEntry,
+		id: (entry) => entry.id,
+	});
 }
 
 export function createMemoryYjsOutboxStorage(

@@ -5,98 +5,202 @@
 	"preview_urls": false,
 	"account_id": "8818a1fbe40a0fdc63ec6ab52cb62e3b",
 	"compatibility_date": "2026-01-01",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
 	"main": "./src/index.tsx",
 	"assets": {
 		"directory": "./dist",
 		"not_found_handling": "single-page-application",
-		"run_worker_first": ["/api/*"],
+		"run_worker_first": [
+			"/api/*"
+		]
 	},
 	"vars": {
 		"READ_ONLY_MODE": "false",
-		"AUTO_BACKUP_ENABLED": "false",
+		"AUTH_ORIGIN": "https://todo.tamesystems.org",
+		"AUTH_RP_ID": "todo.tamesystems.org",
+		"AUTO_BACKUP_ENABLED": "true",
 		"BACKUP_MAX_COLUMNS": "1000",
+		"ENVIRONMENT": "production"
 	},
+	"d1_databases": [
+		{
+			"binding": "AUTH_DB",
+			"database_name": "todoflare-auth",
+			"database_id": "6314b61f-579a-474b-88dc-df715faff5fc",
+			"migrations_dir": "migrations"
+		}
+	],
 	"observability": {
 		"enabled": true,
 		"logs": {
 			"enabled": false,
 			"invocation_logs": false,
 			"persist": false,
-			"head_sampling_rate": 0,
+			"head_sampling_rate": 0
 		},
 		"traces": {
 			"enabled": false,
 			"persist": false,
-			"head_sampling_rate": 0,
-		},
+			"head_sampling_rate": 0
+		}
 	},
 	"kv_namespaces": [
 		{
 			"binding": "ACCOUNTS",
-			"id": "b2a26a39720746e2b67d8a07ee1a2d68",
-		},
+			"id": "b2a26a39720746e2b67d8a07ee1a2d68"
+		}
 	],
 	"analytics_engine_datasets": [
 		{
 			"binding": "LIFECYCLE_METRICS",
-			"dataset": "todoflare_lifecycle_invariants",
-		},
+			"dataset": "todoflare_lifecycle_invariants"
+		}
 	],
 	"r2_buckets": [
 		{
 			"binding": "BACKUPS",
-			"bucket_name": "todoflare-backups",
-		},
+			"bucket_name": "todoflare-backups"
+		}
 	],
 	"durable_objects": {
 		"bindings": [
 			{
 				"name": "COLUMN_ROOM",
-				"class_name": "ColumnRoomSql",
+				"class_name": "ColumnRoomSql"
 			},
 			{
 				"name": "IDEMPOTENCY_COORDINATOR",
-				"class_name": "IdempotencyCoordinatorSql",
+				"class_name": "IdempotencyCoordinatorSql"
 			},
 			{
 				"name": "RATE_LIMIT_COORDINATOR",
-				"class_name": "RateLimitCoordinatorSql",
+				"class_name": "RateLimitCoordinatorSql"
 			},
 			{
 				"name": "ACCOUNT_COORDINATOR",
-				"class_name": "AccountCoordinatorSql",
+				"class_name": "AccountCoordinatorSql"
 			},
 			{
 				"name": "PUBLIC_ID_COORDINATOR",
-				"class_name": "PublicIdCoordinatorSql",
-			},
-		],
+				"class_name": "PublicIdCoordinatorSql"
+			}
+		]
 	},
 	"migrations": [
 		{
 			"tag": "v1",
-			"new_sqlite_classes": ["ColumnRoomSql"],
+			"new_sqlite_classes": [
+				"ColumnRoomSql"
+			]
 		},
 		{
 			"tag": "v2",
-			"new_sqlite_classes": ["IdempotencyCoordinatorSql", "RateLimitCoordinatorSql"],
+			"new_sqlite_classes": [
+				"IdempotencyCoordinatorSql",
+				"RateLimitCoordinatorSql"
+			]
 		},
 		{
 			"tag": "v3",
-			"new_sqlite_classes": ["AccountCoordinatorSql"],
+			"new_sqlite_classes": [
+				"AccountCoordinatorSql"
+			]
 		},
 		{
 			"tag": "v4",
-			"new_sqlite_classes": ["PublicIdCoordinatorSql"],
-		},
+			"new_sqlite_classes": [
+				"PublicIdCoordinatorSql"
+			]
+		}
 	],
 	"triggers": {
-		"crons": ["0 * * * *"],
+		"crons": [
+			"0 * * * *"
+		]
 	},
 	"routes": [
 		{
 			"pattern": "todo.tamesystems.org",
-			"custom_domain": true,
-		},
+			"custom_domain": true
+		}
 	],
+	"env": {
+		"staging": {
+			"name": "todoflare-staging",
+			"main": "./src/staging.ts",
+			"workers_dev": false,
+			"preview_urls": false,
+			"routes": [
+				{
+					"pattern": "staging.todo.tamesystems.org",
+					"custom_domain": true
+				}
+			],
+			"vars": {
+				"READ_ONLY_MODE": "false",
+				"AUTH_ORIGIN": "https://staging.todo.tamesystems.org",
+				"AUTH_RP_ID": "staging.todo.tamesystems.org",
+				"AUTO_BACKUP_ENABLED": "true",
+				"BACKUP_MAX_COLUMNS": "1000",
+				"ENVIRONMENT": "staging"
+			},
+			"kv_namespaces": [
+				{
+					"binding": "ACCOUNTS",
+					"id": "000084374c0d46949985ce0331cd67bd"
+				}
+			],
+			"d1_databases": [
+				{
+					"binding": "AUTH_DB",
+					"database_name": "todoflare-auth-staging",
+					"database_id": "b978ef4f-261e-45ba-bba0-c008136e51ef",
+					"migrations_dir": "migrations"
+				}
+			],
+			"r2_buckets": [
+				{
+					"binding": "BACKUPS",
+					"bucket_name": "todoflare-backups-staging"
+				}
+			],
+			"analytics_engine_datasets": [
+				{
+					"binding": "LIFECYCLE_METRICS",
+					"dataset": "todoflare_lifecycle_invariants_staging"
+				}
+			],
+			"durable_objects": {
+				"bindings": [
+					{
+						"name": "COLUMN_ROOM",
+						"class_name": "ColumnRoomSql"
+					},
+					{
+						"name": "IDEMPOTENCY_COORDINATOR",
+						"class_name": "IdempotencyCoordinatorSql"
+					},
+					{
+						"name": "RATE_LIMIT_COORDINATOR",
+						"class_name": "RateLimitCoordinatorSql"
+					},
+					{
+						"name": "ACCOUNT_COORDINATOR",
+						"class_name": "AccountCoordinatorSql"
+					},
+					{
+						"name": "PUBLIC_ID_COORDINATOR",
+						"class_name": "PublicIdCoordinatorSql"
+					}
+				]
+			},
+			"triggers": {
+				"crons": [
+					"0 * * * *"
+				]
+			}
+		}
+	}
 }

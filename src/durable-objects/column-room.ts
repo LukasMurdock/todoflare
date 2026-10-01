@@ -9,7 +9,7 @@ import {
 	isColumnOwner,
 	normalizeAccountIdSet,
 } from "../lib/column-access";
-import { parseColumnMetaRecord } from "../server/persistence-records";
+import { TRASH_RETENTION_MS, parseColumnMetaRecord } from "../server/persistence-records";
 import { columnSnapshotImportSchema } from "../server/column-backup-payload";
 import {
 	isReadOnlyMode,
@@ -85,6 +85,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 	private awareness: awarenessProtocol.Awareness | null = null;
 	private meta: ColumnMeta | null = null;
 	private nextCompactionAlarmAt = 0;
+	private storageLoadError: string | null = null;
 
 	constructor(ctx: DurableObjectState, env: ReadOnlyModeEnv) {
 		super(ctx, env);
@@ -99,6 +100,11 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 
 	private setupSchema() {
 		this.ctx.storage.sql.exec(`
+			CREATE TABLE IF NOT EXISTS column_lifecycle (
+				id INTEGER PRIMARY KEY CHECK (id = 1),
+				trashed_at INTEGER
+			);
+
 			CREATE TABLE IF NOT EXISTS meta (
 				id INTEGER PRIMARY KEY CHECK (id = 1),
 				meta TEXT NOT NULL
@@ -128,6 +134,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 
 			CREATE INDEX IF NOT EXISTS idx_received_outbox_received_at
 				ON received_outbox(received_at);
+
 
 			CREATE TABLE IF NOT EXISTS ws_tickets (
 				token_hash TEXT PRIMARY KEY,
@@ -170,9 +177,11 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 				if (validated.ok) {
 					this.meta = validated.value;
 				} else {
+					this.storageLoadError = "invalid_stored_metadata";
 					console.error("Stored column metadata failed validation", validated);
 				}
 			} catch (err) {
+				this.storageLoadError = "invalid_stored_metadata";
 				console.error("Failed to parse stored meta:", err);
 			}
 		}
@@ -186,6 +195,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 			try {
 				applyUpdate(this.doc, toUint8Array(snapshotRow.snapshot) ?? new Uint8Array());
 			} catch (err) {
+				this.storageLoadError = "invalid_stored_snapshot";
 				console.error("Failed to apply snapshot:", err);
 			}
 		}
@@ -197,10 +207,14 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 			.toArray();
 		for (const row of updates) {
 			const bytes = toUint8Array(row.update_blob);
-			if (!bytes) continue;
+			if (!bytes) {
+				this.storageLoadError = "invalid_stored_update";
+				continue;
+			}
 			try {
 				applyUpdate(this.doc, bytes);
 			} catch (err) {
+				this.storageLoadError = "invalid_stored_update";
 				console.error("Failed to apply queued update:", err);
 			}
 		}
@@ -208,6 +222,10 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 
 	private restoreHibernatedWebSockets() {
 		try {
+			if (this.storageLoadError) {
+				for (const ws of this.ctx.getWebSockets()) ws.close(1011, "Stored column requires recovery");
+				return;
+			}
 			for (const ws of this.ctx.getWebSockets()) {
 				const attachment = ws.deserializeAttachment();
 				if (attachment) {
@@ -325,6 +343,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 	}
 
 	async alarm() {
+		if (this.storageLoadError) return;
 		try {
 			this.ctx.storage.transactionSync(() => {
 				this.persistSnapshot();
@@ -372,6 +391,26 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 	async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url);
 
+		// Preserve the original bytes for incident recovery even when Yjs cannot
+		// decode them. Raw exports are internal DO calls, never public routes.
+		if (request.method === "GET" && url.pathname === "/export-raw") {
+			const snapshot = this.ctx.storage.sql.exec<{ snapshot: ArrayBuffer }>(
+				"SELECT snapshot FROM yjs_snapshot WHERE id = 1",
+			).toArray()[0];
+			return Response.json({
+				schemaVersion: 1,
+				loadError: this.storageLoadError,
+				meta: this.ctx.storage.sql.exec("SELECT meta FROM meta WHERE id = 1").toArray(),
+				snapshot: snapshot ? Array.from(new Uint8Array(snapshot.snapshot)) : null,
+				updates: this.ctx.storage.sql.exec<{ seq: number; update_blob: ArrayBuffer; ts: number }>(
+					"SELECT seq, update_blob, ts FROM yjs_updates ORDER BY seq",
+				).toArray().map((row) => ({ seq: row.seq, ts: row.ts, bytes: Array.from(new Uint8Array(row.update_blob)) })),
+			});
+		}
+		if (this.storageLoadError && url.pathname !== "/import") {
+			return Response.json({ error: "column_storage_corrupt", code: "durable_object_unavailable" }, { status: 503 });
+		}
+
 		if (request.headers.get("Upgrade") === "websocket") {
 			return this.handleWebSocket(request);
 		}
@@ -391,6 +430,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		}
 
 		if (request.method === "POST" && url.pathname === "/ws-ticket") {
+			if (this.isTrashed()) return Response.json({ code: "durable_object_unavailable", error: "Column is in trash" }, { status: 503 });
 			if (isReadOnlyMode(this.env)) return readOnlyModeResponse();
 
 			const accountId = request.headers.get("X-Authenticated-Account-ID");
@@ -439,6 +479,9 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 			}
 			this.meta = parsedMeta.value;
 			this.persistMeta();
+			// Initial creation records active state. Legacy rooms have no row until
+			// their first lifecycle operation, allowing safe legacy trash cleanup.
+			this.ctx.storage.sql.exec("INSERT OR IGNORE INTO column_lifecycle VALUES (1, NULL)");
 			return Response.json({ success: true });
 		}
 
@@ -469,9 +512,12 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 			const snapshot = encodeStateAsUpdate(candidateDoc);
 			try {
 				this.ctx.storage.transactionSync(() => {
+					this.ctx.storage.sql.exec("INSERT INTO column_lifecycle VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET trashed_at = excluded.trashed_at", parsed.data.trashedAt ?? null);
 					this.persistMetaValue(parsed.data.meta);
 					this.persistSnapshotBytes(snapshot);
 					this.ctx.storage.sql.exec("DELETE FROM yjs_updates");
+					this.ctx.storage.sql.exec("DELETE FROM received_outbox");
+					this.ctx.storage.sql.exec("DELETE FROM ws_tickets");
 				});
 			} catch (err) {
 				candidateDoc.destroy();
@@ -479,9 +525,11 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 				return Response.json({ error: "import_persist_failed" }, { status: 500 });
 			}
 
+			this.closeDeletedSessions();
 			const previousDoc = this.doc;
 			this.meta = parsed.data.meta;
 			this.doc = candidateDoc;
+			this.storageLoadError = null;
 			this.destroyAwareness();
 			previousDoc.destroy();
 
@@ -505,11 +553,45 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 			return Response.json(this.meta);
 		}
 
+		if (request.method === "POST" && url.pathname === "/trash") {
+			if (isReadOnlyMode(this.env)) return readOnlyModeResponse();
+			if (!this.meta) return new Response("Column not found", { status: 404 });
+			const { deletedAt } = await request.json() as { deletedAt: number };
+			if (!Number.isFinite(deletedAt) || deletedAt < 0) return new Response("Invalid deletion timestamp", { status: 400 });
+			this.ctx.storage.sql.exec("INSERT INTO column_lifecycle VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET trashed_at = excluded.trashed_at", deletedAt);
+			this.closeDeletedSessions();
+			return Response.json({ success: true });
+		}
+		if (request.method === "POST" && url.pathname === "/restore-active") {
+			if (isReadOnlyMode(this.env)) return readOnlyModeResponse();
+			if (!this.meta) return new Response("Column not found", { status: 404 });
+			const row = this.ctx.storage.sql.exec<{ trashed_at: number | null }>("SELECT trashed_at FROM column_lifecycle WHERE id = 1").toArray()[0];
+			if (row?.trashed_at !== undefined && row.trashed_at !== null && Date.now() - row.trashed_at >= TRASH_RETENTION_MS) return new Response("Column expired", { status: 410 });
+			this.ctx.storage.sql.exec("INSERT INTO column_lifecycle VALUES (1, NULL) ON CONFLICT(id) DO UPDATE SET trashed_at = NULL");
+			return Response.json({ success: true });
+		}
+		if (request.method === "DELETE" && url.pathname === "/purge") {
+			if (isReadOnlyMode(this.env)) return readOnlyModeResponse();
+			const { deletedAt, ownerId } = await request.json() as { deletedAt: number; ownerId: string };
+			if (!Number.isFinite(deletedAt) || Date.now() - deletedAt < TRASH_RETENTION_MS) return new Response("Column has not expired", { status: 409 });
+			if (!this.meta) return Response.json({ success: true });
+			if (!isColumnOwner(this.meta, ownerId)) return new Response("Owner mismatch", { status: 409 });
+			const row = this.ctx.storage.sql.exec<{ trashed_at: number | null }>("SELECT trashed_at FROM column_lifecycle WHERE id = 1").toArray()[0];
+			// A restore marks this row active in the same transaction as import.
+			// No stale purge invocation can cross that boundary and delete it.
+			if (row && row.trashed_at !== deletedAt) return new Response("Column lifecycle changed", { status: 409 });
+			this.closeDeletedSessions();
+			this.ctx.storage.transactionSync(() => {
+				for (const table of ["meta", "yjs_snapshot", "yjs_updates", "received_outbox", "ws_tickets", "column_lifecycle"]) this.ctx.storage.sql.exec(`DELETE FROM ${table}`);
+			});
+			this.meta = null;
+			this.doc.destroy(); this.doc = new Y.Doc();
+			return Response.json({ success: true });
+		}
+
 		if (request.method === "DELETE" && url.pathname === "/") {
-			this.broadcastBinary(WS_OP_COLUMN_DELETED);
-			for (const ws of this.sessions.keys()) {
-				ws.close(1000, "Column deleted");
-			}
+			if (isReadOnlyMode(this.env)) return readOnlyModeResponse();
+			this.closeDeletedSessions();
 			await this.ctx.storage.deleteAll();
 			this.meta = null;
 			this.sessions.clear();
@@ -521,8 +603,21 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		return new Response("Not found", { status: 404 });
 	}
 
+	private isTrashed(): boolean {
+		const row = this.ctx.storage.sql.exec<{ trashed_at: number | null }>("SELECT trashed_at FROM column_lifecycle WHERE id = 1").toArray()[0];
+		return !!row && row.trashed_at !== null;
+	}
+
+	private closeDeletedSessions() {
+		this.broadcastBinary(WS_OP_COLUMN_DELETED);
+		for (const ws of this.sessions.keys()) ws.close(1000, "Column deleted");
+		this.sessions.clear();
+		this.destroyAwareness();
+	}
+
 	private async handleWebSocket(request: Request): Promise<Response> {
 		const url = new URL(request.url);
+		if (this.isTrashed()) return new Response("Column is in trash", { status: 503 });
 		let accountId: string | null = null;
 		const requestedProtocols = (request.headers.get("Sec-WebSocket-Protocol") ?? "")
 			.split(",")
@@ -634,6 +729,13 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 			}
 		}
 		if (!session) return;
+		if (session.legacy) {
+			this.sessions.delete(ws); ws.close(1008, "Sign in with your passkey"); return;
+		}
+		if (this.storageLoadError) {
+			ws.close(1011, "Stored column requires recovery");
+			return;
+		}
 
 		if (typeof message === "string") {
 			ws.send(encodeWsTextFrame(WS_OP_ERROR, "Binary WebSocket required"));
@@ -710,6 +812,8 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		}
 
 		const digest = await updateDigest(update);
+		// Recheck after yielding: a delete, restore or access revocation may have run.
+		if (this.storageLoadError || !this.meta || this.isTrashed() || !this.sessions.has(origin) || !hasColumnAccess(this.meta, accountId)) return;
 		const outcome = this.ctx.storage.transactionSync<
 			"inserted" | "duplicate" | "conflict"
 		>(() => {
@@ -739,6 +843,9 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		});
 
 		if (outcome === "duplicate") {
+			// Replaying into a fresh tab must hydrate that tab too, even when
+			// this delivery was already durable before its previous socket closed.
+			origin.send(encodeWsFrame(WS_OP_SYNC, update));
 			origin.send(encodeDurableSyncAck(outboxId));
 			return;
 		}
@@ -754,7 +861,9 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		this.scheduleCompaction();
 
 		for (const [ws] of this.sessions) {
-			if (ws !== origin && ws.readyState === WebSocket.OPEN) {
+			if (ws.readyState === WebSocket.OPEN) {
+				// Echo before acknowledging: a new tab replaying another tab
+				// has not applied these bytes to its own in-memory Y.Doc yet.
 				ws.send(encodeWsFrame(WS_OP_SYNC, update));
 			}
 		}
@@ -866,6 +975,8 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 }
 
 interface SessionInfo {
+	/** Reject hibernated sockets from the retired credential scheme. Never set on new sessions. */
+	legacy?: boolean;
 	accountId: string | null;
 	isPublic: boolean;
 	readOnly: boolean;

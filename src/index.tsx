@@ -1,3 +1,6 @@
+import { restoreAccountBackup } from "./server/workflows/restore-account-backup";
+import { createAccountBackup, readAccountBackup } from "./server/account-backup";
+import { latestColumnBackupKey, listColumnBackups } from "./server/backup-catalog";
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import type {
@@ -84,6 +87,13 @@ import {
 	isReadOnlyMode,
 	readOnlyModeResponse,
 } from "./server/read-only-mode";
+import {
+	cleanupAbandonedProvisionalUsers,
+	createAuth,
+	sanitizedAuthResponse,
+} from "./server/auth";
+
+declare const __TODOFLARE_E2E__: boolean;
 
 // Re-export Durable Objects for Cloudflare
 export {
@@ -95,6 +105,11 @@ export {
 };
 
 export type Bindings = {
+	AUTH_DB: D1Database;
+	BETTER_AUTH_SECRET?: string;
+	AUTH_ORIGIN?: string;
+	AUTH_RP_ID?: string;
+	AUTH_TEST_BYPASS?: string;
 	ACCOUNTS: KVNamespace;
 	COLUMN_ROOM: DurableObjectNamespace;
 	IDEMPOTENCY_COORDINATOR: DurableObjectNamespace;
@@ -117,6 +132,59 @@ export type Bindings = {
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
+
+// Authentication remains available to validate recovery, while credential changes
+// must not race with a frozen account restore. Unknown auth routes fail closed.
+const frozenAuthRoutes = new Set([
+	"GET /api/auth/get-session",
+	"GET /api/auth/passkey/list-user-passkeys",
+	"GET /api/auth/passkey/generate-authenticate-options",
+	"POST /api/auth/passkey/verify-authentication",
+	"POST /api/auth/sign-out",
+]);
+
+app.on(["GET", "POST"], "/api/auth/*", async (c) => {
+	if (isReadOnlyMode(c.env) && !frozenAuthRoutes.has(`${c.req.method} ${new URL(c.req.url).pathname}`)) {
+		return readOnlyModeResponse();
+	}
+	const auth = createAuth(c.env, new URL(c.req.url).origin);
+	if (new URL(c.req.url).pathname.endsWith("/passkey/delete-passkey")) {
+		const session = await auth.api.getSession({ headers: c.req.raw.headers });
+		if (!session) return c.json({ error: "unauthorized" }, 401);
+		const createdAt = new Date(session.session.createdAt).getTime();
+		if (Date.now() - createdAt > 5 * 60 * 1000) {
+			return c.json({ error: "recent_authentication_required" }, 401);
+		}
+		const passkeys = await c.env.AUTH_DB.prepare(
+			'SELECT COUNT(*) AS count FROM "passkey" WHERE "userId" = ?',
+		)
+			.bind(session.user.id)
+			.first<{ count: number }>();
+		const recovery = await c.env.AUTH_DB.prepare(
+			'SELECT "recoveryCodeHash" FROM "user" WHERE "id" = ?',
+		)
+			.bind(session.user.id)
+			.first<{ recoveryCodeHash: string | null }>();
+		if ((passkeys?.count ?? 0) <= 1 && !recovery?.recoveryCodeHash) {
+			return c.json({ error: "last_recovery_method" }, 409);
+		}
+	}
+	const response = await auth.handler(c.req.raw);
+	return sanitizedAuthResponse(response);
+});
+
+app.use("/api/*", async (c, next) => {
+	if (["GET", "HEAD", "OPTIONS"].includes(c.req.method)) return next();
+	const origin = c.req.header("Origin");
+	const fetchSite = c.req.header("Sec-Fetch-Site");
+	if (
+		(origin && origin !== new URL(c.req.url).origin) ||
+		fetchSite === "cross-site"
+	) {
+		return c.json({ error: "cross_origin_request", code: "unauthorized" }, 403);
+	}
+	return next();
+});
 
 const COLUMN_ID_PATTERN =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -695,7 +763,7 @@ const backupRestoreBodySchema = z
 		mode: z.enum(["clone", "in_place"]).optional(),
 	})
 	.strict();
-const accountAdminBodySchema = z.object({ accountId: accountIdValueSchema }).strict();
+const accountAdminBodySchema = z.object({ accountId: accountIdValueSchema, key: z.string().optional() }).strict();
 
 type RequestValidationResult<T> =
 	| { ok: true; data: T }
@@ -781,7 +849,7 @@ async function restoreColumnFromBackupPayload(
 		env,
 		columnId,
 		payload,
-		createPreRestoreBackup: () => createColumnBackupSnapshot(env, columnId),
+		createPreRestoreBackup: () => createPreRestoreColumnBackup(env, columnId),
 	});
 }
 
@@ -829,7 +897,7 @@ async function rebuildSharedIndexesForColumns(env: Bindings, columns: ColumnMeta
 	}
 }
 
-async function createColumnBackupSnapshot(env: Bindings, columnId: string) {
+async function createColumnBackupSnapshot(env: Bindings, columnId: string, prefix = "columns") {
 	if (!env.BACKUPS) {
 		throw new Error("backup_not_configured");
 	}
@@ -837,6 +905,17 @@ async function createColumnBackupSnapshot(env: Bindings, columnId: string) {
 	const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
 	const exportResponse = await stub.fetch(new Request("http://do/export"));
 
+	if (exportResponse.status === 503) {
+		// Keep an independent copy of undecodable storage before any recovery
+		// replaces it. It is diagnostic data, never a valid document snapshot.
+		const raw = await stub.fetch(new Request("http://do/export-raw"));
+		if (!raw.ok) throw new Error("raw_column_backup_failed");
+		const snapshotAt = Date.now();
+		const key = `raw-columns/${columnId}/${snapshotAt}.json`;
+		const bytes = await raw.text();
+		await env.BACKUPS.put(key, bytes, { httpMetadata: { contentType: "application/json" } });
+		return { key, snapshotAt, checksum: "raw-recovery-source" };
+	}
 	if (!exportResponse.ok) {
 		throw new Error("column_not_found");
 	}
@@ -855,7 +934,7 @@ async function createColumnBackupSnapshot(env: Bindings, columnId: string) {
 	}
 
 	const snapshotAt = Date.now();
-	const key = backupObjectKey(columnId, snapshotAt);
+	const key = prefix === "columns" ? backupObjectKey(columnId, snapshotAt) : `${prefix}/${columnId}/${snapshotAt}-${crypto.randomUUID()}.json`;
 
 	const basePayload = {
 		schemaVersion: 1 as const,
@@ -880,69 +959,108 @@ async function createColumnBackupSnapshot(env: Bindings, columnId: string) {
 	return { key, snapshotAt, checksum };
 }
 
-async function collectColumnIdsForBackup(env: Bindings): Promise<string[]> {
-	const allColumnIds = new Set<string>();
-	let cursor: string | undefined;
-
-	while (true) {
-		const page = await env.ACCOUNTS.list({
-			prefix: "account:",
-			cursor,
-			limit: 1000,
-		});
-
-		for (const key of page.keys) {
-			const raw = await accountRecordStore(env).get(key.name);
-			if (!raw) continue;
-
-			const parsedAccount = parseAccountRecord(raw);
-			if (!parsedAccount.ok) continue;
-
-			for (const columnId of parsedAccount.value.columnOrder ?? []) {
-				allColumnIds.add(columnId);
-			}
-		}
-
-		if (page.list_complete) break;
-		cursor = page.cursor;
-	}
-
-	return Array.from(allColumnIds);
+async function createPreRestoreColumnBackup(env: Bindings, columnId: string) {
+	const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
+	const current = await stub.fetch(new Request("http://do/meta"));
+	if (current.status === 404) return { key: null };
+	return createColumnBackupSnapshot(env, columnId, "pre-restore/columns");
 }
 
-async function runScheduledBackups(env: Bindings) {
-	if (!env.BACKUPS) {
-		return { skipped: true, reason: "backup_not_configured" as const };
+async function collectBackupInventory(env: Bindings) {
+	const columnIds = new Set<string>();
+	const columnsByOwner = new Map<string, string[]>();
+	const accountIds: string[] = [];
+	let invalidAccounts = 0;
+	for (const prefix of ["account:", "column-registry:"]) {
+		let cursor: string | undefined;
+		do {
+			const page = await env.ACCOUNTS.list({ prefix, cursor, limit: 1000 });
+			for (const key of page.keys) {
+				if (prefix === "account:") {
+					const raw = await accountRecordStore(env).get(key.name);
+					const account = raw === null ? null : parseAccountRecord(raw);
+					const id = key.name.slice(prefix.length);
+					const trash = parseDeletedColumnRecords(await accountRecordStore(env).get(`trash:${id}`));
+					if (!account?.ok || !trash.ok) { invalidAccounts++; continue; }
+					accountIds.push(id);
+					for (const columnId of [...account.value.columnOrder, ...trash.value.map(row => row.columnId)]) columnIds.add(columnId);
+				} else {
+					const raw = await env.ACCOUNTS.get(key.name);
+					if (!raw) continue;
+					try {
+						const meta = parseColumnMetaRecord(JSON.parse(raw));
+						if (!meta.ok) { invalidAccounts++; continue; }
+						columnIds.add(meta.value.id);
+						const ownerId = normalizeAccountId(meta.value.ownerId);
+						columnsByOwner.set(ownerId, [...(columnsByOwner.get(ownerId) ?? []), meta.value.id]);
+					} catch { invalidAccounts++; }
+				}
+			}
+			if (page.list_complete) break;
+			cursor = page.cursor;
+		} while (cursor);
 	}
+	return { columnIds: Array.from(columnIds).sort(), columnsByOwner, accountIds, invalidAccounts };
+}
 
-	const maxColumns = parseBackupMaxColumns(env);
-	const allColumns = await collectColumnIdsForBackup(env);
-	const selected = allColumns.slice(0, maxColumns);
-
-	let backedUp = 0;
-	let failed = 0;
-
+export async function runScheduledBackups(env: Bindings) {
+	if (!env.BACKUPS) return { skipped: true, reason: "backup_not_configured" as const };
+	const inventory = await collectBackupInventory(env);
+	const stateObject = await env.BACKUPS.get("backup-state.json");
+	const state = stateObject ? await stateObject.json<{ afterColumnId?: string }>() : {};
+	const after = state.afterColumnId ?? "";
+	const split = inventory.columnIds.findIndex(id => id > after);
+	const ordered = split < 0 ? inventory.columnIds : [...inventory.columnIds.slice(split), ...inventory.columnIds.slice(0, split)];
+	const selected = ordered.slice(0, parseBackupMaxColumns(env));
+	let backedUp = 0, failed = 0, accountsBackedUp = 0, rawCopies = 0;
+	for (const accountId of inventory.accountIds) {
+		try { await createAccountBackup(env, accountId, inventory.columnsByOwner.get(accountId)); accountsBackedUp++; }
+		catch { failed++; }
+	}
 	for (const columnId of selected) {
 		try {
-			await createColumnBackupSnapshot(env, columnId);
-			backedUp += 1;
-		} catch {
-			failed += 1;
+			const snapshot = await createColumnBackupSnapshot(env, columnId);
+			if (snapshot.checksum === "raw-recovery-source") { rawCopies++; failed++; } else backedUp++;
 		}
+		catch { failed++; }
 	}
-
-	return {
-		skipped: false,
-		columnsDiscovered: allColumns.length,
-		columnsSelected: selected.length,
-		backedUp,
-		failed,
+	const result = {
+		skipped: false, completedAt: Date.now(),
+		columnsDiscovered: inventory.columnIds.length, columnsSelected: selected.length,
+		backedUp, accountsBackedUp, rawCopies, failed, invalidAccounts: inventory.invalidAccounts,
+		afterColumnId: selected.at(-1) ?? after,
 	};
+	await env.BACKUPS.put("backup-state.json", JSON.stringify(result));
+	env.LIFECYCLE_METRICS?.writeDataPoint({ indexes: ["scheduled-backups"], doubles: [result.columnsDiscovered, backedUp, accountsBackedUp, failed, result.invalidAccounts] });
+	return result;
 }
 
 // ============================================
 // Account Routes
 // ============================================
+
+app.get("/api/auth-status", async (c) => {
+	const auth = createAuth(c.env, new URL(c.req.url).origin);
+	const session = await auth.api.getSession({ headers: c.req.raw.headers });
+	if (!session || !validateAccountId(session.user.id)) {
+		return c.json({ accountId: null, state: "signed_out" as const });
+	}
+
+	const accountId = normalizeAccountId(session.user.id);
+	const credential = await c.env.AUTH_DB.prepare(
+		'SELECT 1 AS present FROM "passkey" WHERE "userId" = ? LIMIT 1',
+	)
+		.bind(accountId)
+		.first<{ present: number }>();
+	if (!credential) {
+		return c.json({ accountId, state: "provisional" as const });
+	}
+	const domainAccount = await accountRecordStore(c.env).get(`account:${accountId}`);
+	return c.json({
+		accountId,
+		state: domainAccount ? ("passkey" as const) : ("provisioning" as const),
+	});
+});
 
 /**
  * Create a new account
@@ -951,6 +1069,13 @@ async function runScheduledBackups(env: Bindings) {
 app.post("/api/account", async (c) => {
 	const readOnlyResponse = blockWritesIfReadOnly(c);
 	if (readOnlyResponse) return readOnlyResponse;
+	const compiledE2E =
+		typeof __TODOFLARE_E2E__ !== "undefined" && __TODOFLARE_E2E__;
+	const allowTestBootstrap =
+		(c.env.AUTH_TEST_BYPASS === "true" || compiledE2E) &&
+		c.req.header("X-Test-Disable-Auth-Bypass") !== "1";
+	const auth = await requireAccountCredential(c.req.raw, c.env);
+	if (!auth.ok && !allowTestBootstrap) return auth.response;
 
 	if (!shouldSkipRateLimit(c)) {
 		const ip = getClientIP(c.req.raw);
@@ -968,16 +1093,28 @@ app.post("/api/account", async (c) => {
 		}
 	}
 
-	const accountId = await allocateGeneratedId({
-		createId: generateAccountId,
-		isInUse: async (candidate) =>
-			(await accountRecordStore(c.env).get(`account:${normalizeAccountId(candidate)}`)) !== null,
-	});
-	const normalizedId = normalizeAccountId(accountId);
+	const normalizedId = auth.ok
+		? auth.accountId
+		: normalizeAccountId(
+				await allocateGeneratedId({
+					createId: generateAccountId,
+					isInUse: async (candidate) =>
+						(await accountRecordStore(c.env).get(
+							`account:${normalizeAccountId(candidate)}`,
+						)) !== null,
+				}),
+			);
+	const existing = await accountRecordStore(c.env).get(`account:${normalizedId}`);
+	if (existing) {
+		const parsed = parseAccountRecord(existing);
+		return parsed.ok
+			? c.json({ account: parsed.value })
+			: schemaErrorResponse("account", parsed);
+	}
 
 	const account: Account = {
 		schemaVersion: ACCOUNT_SCHEMA_VERSION,
-		id: accountId,
+		id: displayAccountId(normalizedId),
 		columnOrder: [],
 		hiddenSharedColumns: [],
 		createdAt: Date.now(),
@@ -993,7 +1130,7 @@ app.post("/api/account", async (c) => {
  * Rate limited: 20 per IP per minute
  */
 app.get("/api/account", async (c) => {
-	const auth = requireAccountCredential(c.req.raw);
+	const auth = await requireAccountCredential(c.req.raw, c.env);
 	if (!auth.ok) return auth.response;
 	const accountId = auth.accountId;
 
@@ -1136,7 +1273,7 @@ app.get("/api/account", async (c) => {
 		.filter((entry) => now - entry.deletedAt < TRASH_RETENTION_MS)
 		.sort((a, b) => b.deletedAt - a.deletedAt);
 
-	if (deletedColumns.length !== originalDeleted.length) {
+	if (!isReadOnlyMode(c.env) && deletedColumns.length !== originalDeleted.length) {
 		const retained = new Set(deletedColumns.map((entry) => entry.columnId));
 		for (const entry of originalDeleted) {
 			if (!retained.has(entry.columnId)) {
@@ -1162,7 +1299,7 @@ app.put("/api/account/columns", async (c) => {
 	const readOnlyResponse = blockWritesIfReadOnly(c);
 	if (readOnlyResponse) return readOnlyResponse;
 
-	const auth = requireAccountCredential(c.req.raw);
+	const auth = await requireAccountCredential(c.req.raw, c.env);
 	if (!auth.ok) return auth.response;
 	const body = await validateJsonBody(c, columnOrderBodySchema);
 	if (!body.ok) return body.response;
@@ -1204,7 +1341,7 @@ app.put("/api/account/hidden", async (c) => {
 	const readOnlyResponse = blockWritesIfReadOnly(c);
 	if (readOnlyResponse) return readOnlyResponse;
 
-	const auth = requireAccountCredential(c.req.raw);
+	const auth = await requireAccountCredential(c.req.raw, c.env);
 	if (!auth.ok) return auth.response;
 	const body = await validateJsonBody(c, hiddenColumnsBodySchema);
 	if (!body.ok) return body.response;
@@ -1243,7 +1380,7 @@ app.put("/api/account/hidden", async (c) => {
  * Export account-owned columns as JSON (self-serve)
  */
 app.get("/api/account/export", async (c) => {
-	const auth = requireAccountCredential(c.req.raw);
+	const auth = await requireAccountCredential(c.req.raw, c.env);
 	if (!auth.ok) return auth.response;
 	const accountId = auth.accountId;
 	const normalizedId = normalizeAccountId(accountId);
@@ -1299,7 +1436,7 @@ app.post("/api/account/import", async (c) => {
 	const readOnlyResponse = blockWritesIfReadOnly(c);
 	if (readOnlyResponse) return readOnlyResponse;
 
-	const auth = requireAccountCredential(c.req.raw);
+	const auth = await requireAccountCredential(c.req.raw, c.env);
 	if (!auth.ok) return auth.response;
 	const body = await validateJsonBody(c, accountImportBodySchema);
 	if (!body.ok) return body.response;
@@ -1350,7 +1487,7 @@ app.post("/api/column", async (c) => {
 	const readOnlyResponse = blockWritesIfReadOnly(c);
 	if (readOnlyResponse) return readOnlyResponse;
 
-	const auth = requireAccountCredential(c.req.raw);
+	const auth = await requireAccountCredential(c.req.raw, c.env);
 	if (!auth.ok) return auth.response;
 	const body = await validateJsonBody(c, createColumnBodySchema);
 	if (!body.ok) return body.response;
@@ -1521,7 +1658,7 @@ app.delete("/api/column/:id", async (c) => {
 
 	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
 	if (!path.ok) return path.response;
-	const auth = requireAccountCredential(c.req.raw);
+	const auth = await requireAccountCredential(c.req.raw, c.env);
 	if (!auth.ok) return auth.response;
 	const columnId = path.data.id;
 	const accountId = auth.accountId;
@@ -1561,7 +1698,7 @@ app.post("/api/column/:id/restore", async (c) => {
 
 	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
 	if (!path.ok) return path.response;
-	const auth = requireAccountCredential(c.req.raw);
+	const auth = await requireAccountCredential(c.req.raw, c.env);
 	if (!auth.ok) return auth.response;
 	const columnId = path.data.id;
 	const accountId = auth.accountId;
@@ -1598,7 +1735,7 @@ app.post("/api/column/:id/restore", async (c) => {
 app.get("/api/column/:id", async (c) => {
 	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
 	if (!path.ok) return path.response;
-	const auth = requireAccountCredential(c.req.raw);
+	const auth = await requireAccountCredential(c.req.raw, c.env);
 	if (!auth.ok) return auth.response;
 	const columnId = path.data.id;
 	const accountId = auth.accountId;
@@ -1632,7 +1769,7 @@ app.post("/api/column/:id/ws-ticket", async (c) => {
 
 	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
 	if (!path.ok) return path.response;
-	const auth = requireAccountCredential(c.req.raw);
+	const auth = await requireAccountCredential(c.req.raw, c.env);
 	if (!auth.ok) return auth.response;
 	const columnId = path.data.id;
 	const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
@@ -1672,7 +1809,7 @@ app.post("/api/column/:id/share", async (c) => {
 
 	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
 	if (!path.ok) return path.response;
-	const auth = requireAccountCredential(c.req.raw);
+	const auth = await requireAccountCredential(c.req.raw, c.env);
 	if (!auth.ok) return auth.response;
 	const body = await validateJsonBody(c, shareColumnBodySchema);
 	if (!body.ok) return body.response;
@@ -1723,7 +1860,7 @@ app.delete("/api/column/:id/share", async (c) => {
 
 	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
 	if (!path.ok) return path.response;
-	const auth = requireAccountCredential(c.req.raw);
+	const auth = await requireAccountCredential(c.req.raw, c.env);
 	if (!auth.ok) return auth.response;
 	const body = await validateJsonBody(c, shareColumnBodySchema);
 	if (!body.ok) return body.response;
@@ -1777,7 +1914,7 @@ app.post("/api/column/:id/public", async (c) => {
 
 	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
 	if (!path.ok) return path.response;
-	const auth = requireAccountCredential(c.req.raw);
+	const auth = await requireAccountCredential(c.req.raw, c.env);
 	if (!auth.ok) return auth.response;
 	const columnId = path.data.id;
 	const accountId = auth.accountId;
@@ -1822,7 +1959,7 @@ app.delete("/api/column/:id/public", async (c) => {
 
 	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
 	if (!path.ok) return path.response;
-	const auth = requireAccountCredential(c.req.raw);
+	const auth = await requireAccountCredential(c.req.raw, c.env);
 	if (!auth.ok) return auth.response;
 	const columnId = path.data.id;
 	const accountId = auth.accountId;
@@ -1925,17 +2062,79 @@ app.get("/api/p/:publicId/ws", async (c) => {
 	return stub.fetch(c.req.raw);
 });
 
+app.get("/api/admin/backups/status", async (c) => {
+	const authError = requireBackupAdmin(c);
+	if (authError) return authError;
+	const state = await c.env.BACKUPS!.get("backup-state.json");
+	return c.json({ automaticBackupsEnabled: isAutoBackupEnabled(c.env), lastRun: state ? await state.json() : null });
+});
+
+// Private export endpoints let an independent machine retain verified copies
+// without relying on continued access to the Cloudflare account.
+app.get("/api/admin/backups/objects", async (c) => {
+	const authError = requireBackupAdmin(c);
+	if (authError) return authError;
+	const page = await c.env.BACKUPS!.list({ limit: 1000, cursor: c.req.query("cursor") });
+	return c.json({ objects: page.objects.map(object => ({ key: object.key, size: object.size })), truncated: page.truncated, cursor: page.truncated ? page.cursor : null }, 200, { "Cache-Control": "private, no-store" });
+});
+app.get("/api/admin/backups/download", async (c) => {
+	const authError = requireBackupAdmin(c);
+	if (authError) return authError;
+	const key = c.req.query("key");
+	if (!key) return c.json({ error: "missing_key" }, 400);
+	const object = await c.env.BACKUPS!.get(key);
+	if (!object) return c.json({ error: "not_found" }, 404);
+	return new Response(object.body, { headers: { "Content-Type": "application/json", "Cache-Control": "private, no-store" } });
+});
+
+// Authenticated manual execution provides a verifiable first backup immediately
+// after a release. It copies data only; scheduled maintenance remains frozen.
+app.post("/api/admin/backups/run", async (c) => {
+	const authError = requireBackupAdmin(c);
+	if (authError) return authError;
+	return c.json(await runScheduledBackups(c.env));
+});
+
+app.post("/api/admin/backups/account", async (c) => {
+	const authError = requireBackupAdmin(c);
+	if (authError) return authError;
+	const body = await validateJsonBody(c, accountAdminBodySchema);
+	if (!body.ok) return body.response;
+	const accountId = normalizeAccountId(body.data.accountId);
+	const inventory = await collectBackupInventory(c.env);
+	const record = await accountRecordStore(c.env).get(`account:${accountId}`);
+	if (!record) return c.json({ error: "account_not_found" }, 404);
+	const parsed = parseAccountRecord(record);
+	const trash = parseDeletedColumnRecords(await accountRecordStore(c.env).get(`trash:${accountId}`));
+	if (!parsed.ok || !trash.ok) return c.json({ error: "account_invalid" }, 400);
+	for (const columnId of new Set([...parsed.value.columnOrder, ...trash.value.map(row => row.columnId), ...(inventory.columnsByOwner.get(accountId) ?? [])])) {
+		const column = await createColumnBackupSnapshot(c.env, columnId);
+		if (column.checksum === "raw-recovery-source") return c.json({ error: "column_corrupt", columnId }, 503);
+	}
+	const snapshot = await createAccountBackup(c.env, accountId, inventory.columnsByOwner.get(accountId));
+	if (!snapshot) return c.json({ error: "account_not_found" }, 404);
+	return c.json({ success: true, key: snapshot.key, columnIds: snapshot.payload.columnIds });
+});
+
 /**
  * Restore all owned columns for an account from latest backups
  */
 app.post("/api/admin/backups/account/restore", async (c) => {
 	const authError = requireBackupAdmin(c);
 	if (authError) return authError;
+	if (!isReadOnlyMode(c.env)) return c.json({ error: "maintenance_mode_required" }, 409);
 	const body = await validateJsonBody(c, accountAdminBodySchema);
 	if (!body.ok) return body.response;
 	const accountId = body.data.accountId;
 
 	const normalizedId = normalizeAccountId(accountId);
+	try {
+		const backup = await readAccountBackup(c.env, normalizedId, body.data.key);
+		if (backup) return c.json(await restoreAccountBackup(c.env, backup,
+			columnId => createPreRestoreColumnBackup(c.env, columnId)));
+	} catch (error) {
+		return c.json({ error: "account_recovery_failed", detail: error instanceof Error ? error.message : "unknown" }, 500);
+	}
 	const accountData = await accountRecordStore(c.env).get(`account:${normalizedId}`);
 	if (!accountData) {
 		return apiErrorResponse("not_found", "Account not found", 404);
@@ -1956,13 +2155,7 @@ app.post("/api/admin/backups/account/restore", async (c) => {
 	for (const columnId of account.columnOrder) {
 		let latestKey = "";
 		try {
-			const listed = await c.env.BACKUPS!.list({
-				prefix: `columns/${columnId}/`,
-				limit: 100,
-			});
-			latestKey = listed.objects
-				.map((obj) => obj.key)
-				.sort((a, b) => b.localeCompare(a))[0] ?? "";
+			latestKey = (await latestColumnBackupKey(c.env.BACKUPS!, columnId)) ?? "";
 
 			if (!latestKey) {
 				missingBackups.push(columnId);
@@ -2031,14 +2224,9 @@ app.get("/api/admin/backups/column/:id", async (c) => {
 	if (authError) return authError;
 	const columnId = path.data.id;
 	const limit = query.data.limit;
-	const prefix = `columns/${columnId}/`;
+	const listed = await listColumnBackups(c.env.BACKUPS!, columnId);
 
-	const listed = await c.env.BACKUPS!.list({
-		prefix,
-		limit,
-	});
-
-	const objects = listed.objects
+	const objects = listed.slice(0, limit)
 		.map((obj) => ({
 			key: obj.key,
 			size: obj.size,
@@ -2049,7 +2237,7 @@ app.get("/api/admin/backups/column/:id", async (c) => {
 	return c.json({
 		columnId,
 		objects,
-		truncated: listed.truncated,
+		truncated: listed.length > limit,
 	});
 });
 
@@ -2094,16 +2282,11 @@ app.post("/api/admin/backups/column/:id/restore", async (c) => {
 	if (authError) return authError;
 	const columnId = path.data.id;
 	const mode = body.data.mode ?? "clone";
+	if (mode === "in_place" && !isReadOnlyMode(c.env)) return c.json({ error: "maintenance_mode_required" }, 409);
 
 	let key = body.data.key;
 	if (!key) {
-		const listed = await c.env.BACKUPS!.list({
-			prefix: `columns/${columnId}/`,
-			limit: 100,
-		});
-		const latest = listed.objects
-			.map((obj) => obj.key)
-			.sort((a, b) => b.localeCompare(a))[0];
+		const latest = await latestColumnBackupKey(c.env.BACKUPS!, columnId);
 		if (!latest) {
 			return c.json({ error: "backup_not_found" }, 404);
 		}
@@ -2154,7 +2337,7 @@ app.post("/api/admin/backups/column/:id/restore", async (c) => {
 		env: c.env,
 		columnId,
 		payload: parsed,
-		createPreRestoreBackup: () => createColumnBackupSnapshot(c.env, columnId),
+		createPreRestoreBackup: () => createPreRestoreColumnBackup(c.env, columnId),
 	});
 	if (!restored.ok) {
 		const status =
@@ -2191,14 +2374,18 @@ app.get("/api/clock", (c) => {
 });
 
 export default {
-	fetch: app.fetch,
+	fetch: (request: Request, env: Bindings, ctx: ExecutionContext) => app.fetch(request, env, ctx),
 	scheduled: async (
 		controller: ScheduledController,
 		env: Bindings,
 		executionCtx: ExecutionContext,
 	) => {
-		executionCtx.waitUntil(
+			executionCtx.waitUntil(
 			(async () => {
+				// Emergency read-only mode freezes scheduled maintenance as well as
+				// user writes. Backups remain available while incidents are investigated.
+				if (isReadOnlyMode(env)) return;
+				await cleanupAbandonedProvisionalUsers(env);
 				const reconciliationResult = await reconcileColumnLifecycle(env);
 				env.LIFECYCLE_METRICS?.writeDataPoint({
 					indexes: ["scheduled-reconciliation"],
@@ -2227,7 +2414,10 @@ export default {
 						...reconciliationResult,
 					}),
 				);
-				const purgeResult = await purgeExpiredTrashedColumns({ env });
+				const backupResult = isAutoBackupEnabled(env) ? await runScheduledBackups(env) : null;
+				const purgeResult = await purgeExpiredTrashedColumns({
+					env, beforeDelete: async (columnId) => { await createColumnBackupSnapshot(env, columnId); },
+				});
 				console.log(
 					JSON.stringify({
 						event: "scheduled_trash_purge_run",
@@ -2236,8 +2426,7 @@ export default {
 					}),
 				);
 
-				if (!isAutoBackupEnabled(env)) return;
-				const backupResult = await runScheduledBackups(env);
+				if (!backupResult) return;
 				console.log(
 					JSON.stringify({
 						event: "scheduled_backup_run",

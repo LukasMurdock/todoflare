@@ -131,8 +131,7 @@ describe("account command executor", () => {
 		expect(
 			requests.every(
 				({ init }) =>
-					new Headers(init?.headers).get("Authorization") ===
-					"Bearer 1111111111111111",
+					new Headers(init?.headers).get("Authorization") === null,
 			),
 		).toBe(true);
 		expect(requests[5]?.init?.body).toBe(

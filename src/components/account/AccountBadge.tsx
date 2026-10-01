@@ -33,6 +33,7 @@ import {
 import { useAccount } from "@/hooks/useAccount";
 import { truncateAccountId, displayAccountId } from "@/lib/account";
 import { cn } from "@/lib/utils";
+import { CredentialManager } from "./CredentialManager";
 
 export function AccountBadge() {
 	const {
@@ -55,6 +56,7 @@ export function AccountBadge() {
 	const [downloadedSyncDebug, setDownloadedSyncDebug] = useState(false);
 	const [redactSyncDebugIds, setRedactSyncDebugIds] = useState(true);
 	const [showGarbageCan, setShowGarbageCan] = useState(false);
+	const [showCredentials, setShowCredentials] = useState(false);
 	const fileInputRef = useRef<HTMLInputElement | null>(null);
 	const handleDownloadStorageRecovery = async () => {
 		try {
@@ -281,6 +283,7 @@ export function AccountBadge() {
 
 	return (
 		<>
+			<CredentialManager open={showCredentials} onOpenChange={setShowCredentials} />
 			<Dialog open={showGarbageCan} onOpenChange={setShowGarbageCan}>
 				<DialogContent>
 					<DialogHeader>
@@ -423,7 +426,7 @@ export function AccountBadge() {
 
 				<DropdownMenuContent align="end" className="w-56">
 				<div className="px-2 py-1.5">
-					<p className="text-xs text-muted-foreground">Account ID</p>
+					<p className="text-xs text-muted-foreground">Account ID — safe to share</p>
 					<p className="font-mono text-sm">{displayAccountId(accountId)}</p>
 				</div>
 
@@ -436,6 +439,9 @@ export function AccountBadge() {
 						<Copy className="mr-2 h-4 w-4" />
 					)}
 					{copied ? "Copied!" : "Copy Account ID"}
+				</DropdownMenuItem>
+				<DropdownMenuItem onClick={() => setShowCredentials(true)}>
+					Passkeys and recovery
 				</DropdownMenuItem>
 
 				<DropdownMenuItem onClick={handleCopySyncDebugSnapshot}>

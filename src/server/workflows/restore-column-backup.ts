@@ -12,6 +12,7 @@ import {
 	parseAccountRecord,
 	parseColumnMetaRecord,
 	parseSharedColumnIndex,
+	parseDeletedColumnRecords,
 } from "../persistence-records";
 
 export type { ColumnBackupPayload } from "../column-backup-payload";
@@ -20,6 +21,7 @@ export type RestoreColumnBackupWriteBoundary =
 	| "pre-restore-backup"
 	| "column-import"
 	| "owner-account"
+	| "trash"
 	| `shared-account:${string}`
 	| "old-public-mapping"
 	| "public-mapping";
@@ -48,14 +50,15 @@ export interface RestoreColumnBackupInput<TColumnRoomId> {
 	env: RestoreColumnBackupBindings<TColumnRoomId>;
 	columnId: string;
 	payload: ColumnBackupPayload;
-	createPreRestoreBackup: () => Promise<{ key: string }>;
+	createPreRestoreBackup: () => Promise<{ key: string | null }>;
+	trashedAt?: number;
 	afterWrite?: (
 		boundary: RestoreColumnBackupWriteBoundary,
 	) => void | Promise<void>;
 }
 
 export type RestoreColumnBackupResult =
-	| { ok: true; meta: ColumnMeta; preRestoreBackupKey: string }
+	| { ok: true; meta: ColumnMeta; preRestoreBackupKey: string | null }
 	| {
 			ok: false;
 			code:
@@ -86,7 +89,12 @@ export async function restoreColumnBackup<TColumnRoomId>(
 	if (!parsedBackupMeta.ok) return { ok: false, code: "column_meta_invalid" };
 	const backupMeta = parsedBackupMeta.value;
 
-	let preRestoreBackup: { key: string };
+	const ownerId = normalizeAccountId(backupMeta.ownerId);
+	const trashKey = `trash:${ownerId}`;
+	const trash = parseDeletedColumnRecords(await records.get(trashKey));
+	if (!trash.ok) return { ok: false, code: "account_invalid" };
+
+	let preRestoreBackup: { key: string | null };
 	try {
 		preRestoreBackup = await input.createPreRestoreBackup();
 	} catch {
@@ -97,6 +105,9 @@ export async function restoreColumnBackup<TColumnRoomId>(
 	const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
 	const currentResponse = await stub.fetch(new Request("http://do/meta"));
 	let currentMeta: ColumnMeta | null = null;
+	if (!currentResponse.ok && ![404, 503].includes(currentResponse.status)) {
+		return { ok: false, code: "restore_failed" };
+	}
 	if (currentResponse.ok) {
 		const parsedCurrent = parseColumnMetaRecord(await currentResponse.json());
 		if (!parsedCurrent.ok) return { ok: false, code: "column_meta_invalid" };
@@ -112,7 +123,7 @@ export async function restoreColumnBackup<TColumnRoomId>(
 	const imported = await stub.fetch(
 		new Request("http://do/import", {
 			method: "POST",
-			body: JSON.stringify({ meta: backupMeta, yjs: payload.yjs }),
+			body: JSON.stringify({ meta: backupMeta, yjs: payload.yjs, trashedAt: input.trashedAt }),
 		}),
 	);
 	if (!imported.ok) {
@@ -127,19 +138,25 @@ export async function restoreColumnBackup<TColumnRoomId>(
 	await afterWrite?.("column-import");
 	await registerColumn(env.ACCOUNTS, backupMeta);
 
-	const ownerId = normalizeAccountId(backupMeta.ownerId);
 	const ownerKey = `account:${ownerId}`;
 	const ownerRaw = await records.get(ownerKey);
 	if (ownerRaw) {
 		const parsedOwner = parseAccountRecord(ownerRaw);
 		if (!parsedOwner.ok) return { ok: false, code: "account_invalid" };
-		if (!parsedOwner.value.columnOrder.includes(columnId)) {
+		if (input.trashedAt === undefined && !parsedOwner.value.columnOrder.includes(columnId)) {
 			await mutateAccountRecord(env, ownerKey, {
 				kind: "account-add-column",
 				columnId,
 			});
 			await afterWrite?.("owner-account");
 		}
+	}
+
+	// Remove the deletion commit record after the restored owner membership
+	// exists. Purge also checks active membership to protect interrupted restores.
+	if (input.trashedAt === undefined) {
+		await mutateAccountRecord(env, trashKey, { kind: "trash-remove", columnId });
+		await afterWrite?.("trash");
 	}
 
 	const desiredShared = normalizeAccountIdSet(backupMeta.sharedWith);

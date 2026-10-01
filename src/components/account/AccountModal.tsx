@@ -1,16 +1,15 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
 	Dialog,
 	DialogContent,
 	DialogDescription,
-	DialogFooter,
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useAccount } from "@/hooks/useAccount";
-import { formatAccountId, validateAccountId } from "@/lib/account";
+import { formatAccountId } from "@/lib/account";
 
 interface AccountModalProps {
 	open: boolean;
@@ -18,135 +17,95 @@ interface AccountModalProps {
 }
 
 export function AccountModal({ open, onOpenChange }: AccountModalProps) {
-	const { createAccount, loginWithAccountId, isLoading, error } = useAccount();
-	const [mode, setMode] = useState<"choose" | "enter">("choose");
-	const [accountIdInput, setAccountIdInput] = useState("");
-	const [localError, setLocalError] = useState<string | null>(null);
+	const { createAccount, loginWithPasskey, loginWithRecoveryCode, isLoading, error } = useAccount();
+	const [operation, setOperation] = useState<"create" | "signin" | null>(null);
+	const [showRecovery, setShowRecovery] = useState(false);
+	const [accountId, setAccountId] = useState("");
+	const [recoveryCode, setRecoveryCode] = useState("");
+	const [nextRecoveryCode, setNextRecoveryCode] = useState<string | null>(null);
 
-	const handleGenerateAccount = async () => {
-		setLocalError(null);
-		const account = await createAccount();
-		if (account) {
-			onOpenChange(false);
+	const create = async () => {
+		setOperation("create");
+		try {
+			if (await createAccount()) onOpenChange(false);
+		} finally {
+			setOperation(null);
 		}
 	};
 
-	const handleLogin = async () => {
-		setLocalError(null);
-
-		if (!validateAccountId(accountIdInput)) {
-			setLocalError("Please enter a valid 16-digit account ID");
-			return;
-		}
-
-		const success = await loginWithAccountId(accountIdInput);
-		if (success) {
-			onOpenChange(false);
+	const recover = async () => {
+		setOperation("signin");
+		try {
+			const rotated = await loginWithRecoveryCode(accountId, recoveryCode.trim());
+			if (rotated) setNextRecoveryCode(rotated);
+		} finally {
+			setOperation(null);
 		}
 	};
 
-	const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-		const formatted = formatAccountId(e.target.value);
-		setAccountIdInput(formatted);
-		setLocalError(null);
-	};
-
-	const handleKeyDown = (e: React.KeyboardEvent) => {
-		if (e.key === "Enter" && mode === "enter") {
-			handleLogin();
+	const signIn = async () => {
+		setOperation("signin");
+		try {
+			if (await loginWithPasskey()) onOpenChange(false);
+		} finally {
+			setOperation(null);
 		}
 	};
 
-	const displayError = localError || error;
+	const busy = isLoading || operation !== null;
+	useEffect(() => {
+		if (!open || typeof PublicKeyCredential === "undefined") return;
+		const conditional = PublicKeyCredential.isConditionalMediationAvailable;
+		if (!conditional) return;
+		void conditional.call(PublicKeyCredential).then((available) => {
+			if (!available) return;
+			void loginWithPasskey(true).then((success) => {
+				if (success) onOpenChange(false);
+			});
+		});
+	}, [loginWithPasskey, onOpenChange, open]);
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent showCloseButton={false}>
 				<DialogHeader>
-					<DialogTitle>
-						{mode === "choose" ? "Welcome to Todoflare" : "Enter Account ID"}
-					</DialogTitle>
+					<DialogTitle>Sync with a passkey</DialogTitle>
 					<DialogDescription>
-						{mode === "choose"
-							? "Generate a new account or enter an existing one to sync your data across devices."
-							: "Enter your 16-digit account ID to access your data."}
+						Passkeys protect your synced data. Your Account ID is only a public
+						sharing identity and cannot sign in.
 					</DialogDescription>
 				</DialogHeader>
-
-				{mode === "choose" ? (
-					<div className="flex flex-col gap-4">
-						<Button
-							onClick={handleGenerateAccount}
-							disabled={isLoading}
-							className="w-full"
-						>
-							{isLoading ? "Creating..." : "Generate New Account"}
-						</Button>
-
-						<div className="relative">
-							<div className="absolute inset-0 flex items-center">
-								<span className="w-full border-t" />
-							</div>
-							<div className="relative flex justify-center text-xs uppercase">
-								<span className="bg-background px-2 text-muted-foreground">
-									or
-								</span>
-							</div>
-						</div>
-
-						<Button
-							variant="outline"
-							onClick={() => setMode("enter")}
-							disabled={isLoading}
-							className="w-full"
-						>
-							Enter Existing Account
-						</Button>
-					</div>
-				) : (
-					<div className="flex flex-col gap-4">
+				<div className="flex flex-col gap-4">
+					<input
+						className="sr-only"
+						autoComplete="username webauthn"
+						aria-label="Passkey account"
+					/>
+					<Button onClick={create} disabled={busy} className="w-full">
+						{operation === "create" ? "Creating passkey..." : "Create synced account"}
+					</Button>
+					<Button variant="outline" onClick={signIn} disabled={busy} className="w-full">
+						{operation === "signin" ? "Signing in..." : "Sign in with a passkey"}
+					</Button>
+					<Button variant="ghost" onClick={() => setShowRecovery((value) => !value)} disabled={busy}>
+						Use a recovery code
+					</Button>
+					{showRecovery && !nextRecoveryCode && (
 						<div className="space-y-2">
-							<Input
-								aria-label="Account ID"
-								placeholder="0000 0000 0000 0000"
-								value={accountIdInput}
-								onChange={handleInputChange}
-								onKeyDown={handleKeyDown}
-								disabled={isLoading}
-								className="font-mono text-center text-lg tracking-wider"
-								maxLength={19} // 16 digits + 3 spaces
-								autoFocus
-							/>
-							{displayError && (
-								<p className="text-sm text-destructive">{displayError}</p>
-							)}
+							<Input aria-label="Account ID" value={accountId} onChange={(event) => setAccountId(formatAccountId(event.target.value))} placeholder="0000 0000 0000 0000" />
+							<Input aria-label="Recovery code" value={recoveryCode} onChange={(event) => setRecoveryCode(event.target.value)} placeholder="Recovery code" />
+							<Button className="w-full" onClick={recover} disabled={busy || accountId.replace(/\D/g, "").length !== 16 || recoveryCode.length < 40}>Recover account</Button>
 						</div>
-
-						<DialogFooter className="gap-2 sm:gap-0">
-							<Button
-								variant="outline"
-								onClick={() => {
-									setMode("choose");
-									setAccountIdInput("");
-									setLocalError(null);
-								}}
-								disabled={isLoading}
-							>
-								Back
-							</Button>
-							<Button
-								onClick={handleLogin}
-								disabled={isLoading || !validateAccountId(accountIdInput)}
-							>
-								{isLoading ? "Connecting..." : "Continue"}
-							</Button>
-						</DialogFooter>
-					</div>
-				)}
-
-				{displayError && mode === "choose" && (
-					<p className="text-sm text-destructive text-center">{displayError}</p>
-				)}
+					)}
+					{nextRecoveryCode && (
+						<div className="space-y-2 rounded border border-amber-500/50 bg-amber-500/10 p-3">
+							<p className="text-xs">Your recovery code was rotated. Save the new code now.</p>
+							<code className="block break-all text-xs">{nextRecoveryCode}</code>
+							<Button className="w-full" onClick={() => onOpenChange(false)}>I saved it</Button>
+						</div>
+					)}
+					{error && <p className="text-sm text-destructive text-center">{error}</p>}
+				</div>
 			</DialogContent>
 		</Dialog>
 	);

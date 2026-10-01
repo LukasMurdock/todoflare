@@ -13,7 +13,7 @@ import {
 	type LocalFirstDatabase,
 } from "../local-first/database";
 import { parseQueuedMutation } from "./account-command-parser";
-import { readVersionedLocalStorageArray } from "../local-first/local-storage-quarantine";
+import { createOutboxJournal } from "../local-first/outbox-journal";
 
 const DEFAULT_STORAGE_KEY = "todoflare-mutation-outbox-v1";
 const BASE_BACKOFF_MS = 750;
@@ -32,6 +32,7 @@ export type MutationReplayResult =
 export interface MutationQueueStorage {
 	read(): QueuedMutation[];
 	write(mutations: QueuedMutation[]): void;
+	flush?(): Promise<void>;
 }
 
 export type MutationExecutor = (
@@ -85,15 +86,20 @@ export class LocalMutationQueueService implements MutationQueueService {
 	private queue: QueuedMutation[];
 	private readonly subscribers = new Set<(value: QueuedMutation[]) => void>();
 	private storage: MutationQueueStorage;
+	private readonly journal: MutationQueueStorage;
 	private readonly executeMutation: MutationExecutor;
+	private readonly onPersistenceError?: (error: unknown) => void;
 
 	constructor(options: {
 		executor: MutationExecutor;
 		storage?: MutationQueueStorage;
+		onPersistenceError?: (error: unknown) => void;
 	}) {
 		this.executeMutation = options.executor;
+		this.onPersistenceError = options.onPersistenceError;
 		this.storage =
 			options.storage ?? createLocalStorageMutationQueueStorage(DEFAULT_STORAGE_KEY);
+		this.journal = this.storage;
 		this.queue = this.storage.read().sort(byCreatedAt);
 	}
 
@@ -106,24 +112,25 @@ export class LocalMutationQueueService implements MutationQueueService {
 			queueId,
 		};
 		this.queue = [...this.queue, queued].sort(byCreatedAt);
-		this.persistAndPublish();
+		await this.persistAndPublish();
 		return queueId;
 	}
 
-	swapStorage(storage: MutationQueueStorage) {
-		const synchronousMirror = this.storage;
+	async swapStorage(storage: MutationQueueStorage) {
+		const synchronousMirror = this.journal;
 		const persistedMutations = storage.read().sort(byCreatedAt);
 		this.storage = {
 			read: () => storage.read(),
+			flush: () => storage.flush?.() ?? Promise.resolve(),
 			write: (mutations) => {
-				synchronousMirror.write(mutations);
 				storage.write(mutations);
+				synchronousMirror.write(mutations);
 			},
 		};
 		this.queue = mergeMutationsByQueueId(persistedMutations, this.queue).sort(
 			byCreatedAt,
 		);
-		this.persistAndPublish();
+		await this.persistAndPublish();
 	}
 
 	async replay(options: {
@@ -201,7 +208,7 @@ export class LocalMutationQueueService implements MutationQueueService {
 		}
 
 		this.queue.sort(byCreatedAt);
-		this.persistAndPublish();
+		await this.persistAndPublish();
 		return report;
 	}
 
@@ -213,7 +220,7 @@ export class LocalMutationQueueService implements MutationQueueService {
 		this.queue = this.queue.filter((mutation) => !predicate(mutation));
 		const dropped = before - this.queue.length;
 		if (dropped > 0) {
-			this.persistAndPublish();
+			await this.persistAndPublish();
 		}
 		return dropped;
 	}
@@ -248,8 +255,13 @@ export class LocalMutationQueueService implements MutationQueueService {
 		return Math.min(...pending.map((mutation) => mutation.nextRetryAt));
 	}
 
-	private persistAndPublish() {
-		this.storage.write(this.queue);
+	async retryPersistence() { await this.persistAndPublish(); }
+
+	private async persistAndPublish() {
+		try {
+			this.storage.write(this.queue);
+			await this.storage.flush?.();
+		} catch (error) { this.onPersistenceError?.(error); throw error; }
 		const snapshot = cloneMutations(this.queue);
 		for (const subscriber of this.subscribers) {
 			subscriber(snapshot);
@@ -257,32 +269,13 @@ export class LocalMutationQueueService implements MutationQueueService {
 	}
 }
 
-export function createLocalStorageMutationQueueStorage(
-	storageKey: string,
-): MutationQueueStorage {
-	let writeBlocked = false;
-	return {
-		read() {
-			const result = readVersionedLocalStorageArray({
-				storageKey,
-				collection: "mutationOutbox",
-				parse: parseQueuedMutation,
-			});
-			writeBlocked ||= result.writeBlocked;
-			return result.records;
-		},
-		write(mutations) {
-			if (typeof window === "undefined" || writeBlocked) return;
-			try {
-				window.localStorage.setItem(
-					storageKey,
-					JSON.stringify(mutations.map((mutation) => ({ ...mutation, schemaVersion: 1 }))),
-				);
-			} catch {
-				return;
-			}
-		},
-	};
+export function createLocalStorageMutationQueueStorage(storageKey: string): MutationQueueStorage {
+	return createOutboxJournal({
+		storageKey,
+		collection: "mutationOutbox",
+		parse: parseQueuedMutation,
+		id: (entry) => entry.queueId,
+	});
 }
 
 export function createMemoryMutationQueueStorage(
@@ -306,6 +299,7 @@ export function createLocalFirstMutationQueueStorage(
 	const collection = db.collections.mutationOutbox;
 
 	return {
+		flush: () => db.flush(),
 		read() {
 			return Array.from(collection.values())
 				.map((doc) => parseQueuedMutation(doc))

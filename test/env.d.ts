@@ -1,11 +1,10 @@
-declare module "cloudflare:test" {
-	interface ProvidedEnv {
-		ACCOUNTS: KVNamespace;
-		ACCOUNT_COORDINATOR: DurableObjectNamespace;
-		PUBLIC_ID_COORDINATOR: DurableObjectNamespace;
-		COLUMN_ROOM: DurableObjectNamespace;
-		IDEMPOTENCY_COORDINATOR: DurableObjectNamespace;
-		RATE_LIMIT_COORDINATOR: DurableObjectNamespace;
-		READ_ONLY_MODE?: string;
+import type { Bindings } from "../src/index";
+
+declare global {
+	namespace Cloudflare {
+		interface Env extends Bindings {
+			BACKUPS: R2Bucket;
+			TEST_AUTH_MIGRATIONS: Array<{ name: string; queries: string[] }>;
+		}
 	}
 }

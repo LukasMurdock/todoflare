@@ -33,6 +33,7 @@ export const columnBackupPayloadSchema = columnBackupBaseSchema
 
 export const columnSnapshotImportSchema = z
 	.object({
+		trashedAt: z.number().int().nonnegative().nullable().optional(),
 		meta: columnMetaContractSchema,
 		yjs: yjsBytesSchema,
 	})

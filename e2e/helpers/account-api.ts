@@ -1,7 +1,7 @@
 import type { APIRequestContext } from "@playwright/test";
 
 function accountHeaders(accountId: string): Record<string, string> {
-	return { Authorization: `Bearer ${accountId.replace(/\D/g, "")}` };
+	return { "X-Todoflare-Test-Account": accountId.replace(/\D/g, "") };
 }
 
 export async function createAccount(

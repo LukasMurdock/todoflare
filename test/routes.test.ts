@@ -12,7 +12,7 @@ function normalizeAccountId(id: string): string {
 }
 
 function accountHeaders(accountId: string): Record<string, string> {
-	return { Authorization: `Bearer ${normalizeAccountId(accountId)}` };
+	return { "X-Todoflare-Test-Account": normalizeAccountId(accountId) };
 }
 
 function toHex(bytes: ArrayBuffer): string {
@@ -935,6 +935,7 @@ describe("Worker routes", () => {
 describe("Backup restore validation", () => {
 	it("rejects corrupt Yjs for clone and in-place restores without replacing state", async () => {
 		const previousToken = env.BACKUP_ADMIN_TOKEN;
+		const previousReadOnly = env.READ_ONLY_MODE;
 		env.BACKUP_ADMIN_TOKEN = "test-token";
 		try {
 			const accountId = await createAccount();
@@ -959,6 +960,7 @@ describe("Backup restore validation", () => {
 				"9999999999999",
 			);
 			for (const mode of ["clone", "in_place"] as const) {
+				env.READ_ONLY_MODE = mode === "in_place" ? "true" : "false";
 				const response = await SELF.fetch(
 					`http://example.com/api/admin/backups/column/${columnId}/restore`,
 					{
@@ -990,11 +992,13 @@ describe("Backup restore validation", () => {
 			expect(accountResponse.account.columnOrder).toEqual([columnId]);
 		} finally {
 			env.BACKUP_ADMIN_TOKEN = previousToken;
+			env.READ_ONLY_MODE = previousReadOnly;
 		}
 	});
 
 	it("continues an account restore after malformed and corrupt backup objects", async () => {
 		const previousToken = env.BACKUP_ADMIN_TOKEN;
+		const previousReadOnly = env.READ_ONLY_MODE;
 		env.BACKUP_ADMIN_TOKEN = "test-token";
 		try {
 			const accountId = await createAccount();
@@ -1029,6 +1033,7 @@ describe("Backup restore validation", () => {
 				"9999999999999",
 			);
 
+			env.READ_ONLY_MODE = "true";
 			const response = await SELF.fetch(
 				"http://example.com/api/admin/backups/account/restore",
 				{
@@ -1052,15 +1057,18 @@ describe("Backup restore validation", () => {
 			});
 		} finally {
 			env.BACKUP_ADMIN_TOKEN = previousToken;
+			env.READ_ONLY_MODE = previousReadOnly;
 		}
 	});
 
 	it("reports account restore failure when an expected backup is missing", async () => {
 		const previousToken = env.BACKUP_ADMIN_TOKEN;
+		const previousReadOnly = env.READ_ONLY_MODE;
 		env.BACKUP_ADMIN_TOKEN = "test-token";
 		try {
 			const accountId = await createAccount();
 			const columnId = await createColumn(accountId);
+			env.READ_ONLY_MODE = "true";
 			const response = await SELF.fetch(
 				"http://example.com/api/admin/backups/account/restore",
 				{
@@ -1081,6 +1089,7 @@ describe("Backup restore validation", () => {
 			});
 		} finally {
 			env.BACKUP_ADMIN_TOKEN = previousToken;
+			env.READ_ONLY_MODE = previousReadOnly;
 		}
 		});
 });

@@ -65,7 +65,7 @@ describe("localStorage outbox quarantine", () => {
 		const outboxStorage = createLocalStorageYjsOutboxStorage(key);
 
 		expect(outboxStorage.read()).toEqual([]);
-		outboxStorage.write([]);
+		expect(() => outboxStorage.write([])).toThrow("unsupported records");
 		expect(JSON.parse(storage.getItem(key) ?? "[]")).toEqual([future]);
 	});
 });

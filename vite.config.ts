@@ -6,6 +6,9 @@ import tailwindcss from "@tailwindcss/vite";
 const isE2e = process.env.TODOFLARE_E2E === "true";
 
 export default defineConfig({
+	define: {
+		__TODOFLARE_E2E__: JSON.stringify(isE2e),
+	},
 	plugins: [
 		tailwindcss(),
 		cloudflare({

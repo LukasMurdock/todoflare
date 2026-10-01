@@ -1,7 +1,6 @@
-import { useCallback, useState, useMemo, useEffect } from "react";
+import { useCallback, useState, useMemo, useRef } from "react";
 import type { Value } from "platejs";
 import { EMPTY_COLUMN_VALUE, type Column, createEmptyColumn } from "@/types/column";
-import { useDebouncedEffect } from "./useDebouncedEffect";
 import { useSyncContext } from "@/contexts/sync-context";
 import type { ColumnMeta } from "@/types/account";
 import { isColumnOwner as accountOwnsColumn } from "@/lib/column-access";
@@ -58,13 +57,9 @@ function loadLocalColumns(): Column[] {
 }
 
 function saveLocalColumns(columns: Column[]): void {
-	try {
-		const serialized = JSON.stringify(columns);
-		localStorage.setItem(LOCAL_COLUMNS_STORAGE_KEY, serialized);
-		persistLocalCheckpoint(columns);
-	} catch (e) {
-		console.error("Failed to save columns to localStorage:", e);
-	}
+	const serialized = JSON.stringify(columns);
+	localStorage.setItem(LOCAL_COLUMNS_STORAGE_KEY, serialized);
+	persistLocalCheckpoint(columns);
 }
 
 export function clearLocalColumns(): void {
@@ -94,6 +89,8 @@ export function useColumns() {
 		sharedWithByColumn,
 		publicLinksByColumn,
 		syncMode,
+		browserStorageError,
+		reportBrowserStorageError,
 		createColumn,
 		deleteColumn,
 		updateColumnOrder,
@@ -104,9 +101,19 @@ export function useColumns() {
 		!!accountId && !!account && syncMode !== "guest_local";
 
 	// Local columns (for offline/unauthenticated mode)
-	const [localColumns, setLocalColumns] = useState<Column[]>(() =>
+	const [localColumns, setLocalColumnsState] = useState<Column[]>(() =>
 		loadLocalColumns(),
 	);
+	const localColumnsRef = useRef(localColumns);
+	const setLocalColumns = useCallback((update: (previous: Column[]) => Column[]) => {
+		if (browserStorageError) return;
+		const next = update(localColumnsRef.current);
+		localColumnsRef.current = next;
+		try { saveLocalColumns(next); }
+		catch (error) { reportBrowserStorageError(error, next); }
+		// Retain the attempted value for export; editing is paused after a failure.
+		setLocalColumnsState(next);
+	}, [browserStorageError, reportBrowserStorageError]);
 	const [collapsedById, setCollapsedById] = useState<Record<string, boolean>>({});
 
 	// When authenticated, derive columns from account metadata + shared columns
@@ -134,16 +141,6 @@ export function useColumns() {
 		return map;
 	}, [sharedColumns]);
 
-	// Persist local columns to localStorage
-	useDebouncedEffect(
-		() => {
-			if (!accountId) {
-				saveLocalColumns(localColumns);
-			}
-		},
-		[localColumns, accountId],
-		500
-	);
 
 	// Add column
 	const addColumn = useCallback(async () => {
@@ -154,7 +151,7 @@ export function useColumns() {
 			// Local-only mode
 			setLocalColumns((prev) => [...prev, createEmptyColumn()]);
 		}
-	}, [usesSyncedMode, createColumn]);
+	}, [usesSyncedMode, createColumn, setLocalColumns]);
 
 	// Remove column
 	const removeColumn = useCallback(
@@ -190,6 +187,7 @@ export function useColumns() {
 			columnMetaMap,
 			deleteColumn,
 			updateHiddenSharedColumns,
+			setLocalColumns,
 		],
 	);
 
@@ -203,7 +201,7 @@ export function useColumns() {
 			}
 			// In synced mode, updates go through Yjs collaboration
 		},
-		[usesSyncedMode],
+		[usesSyncedMode, setLocalColumns],
 	);
 
 	// Reorder columns
@@ -242,7 +240,7 @@ export function useColumns() {
 				});
 			}
 		},
-		[usesSyncedMode, syncedColumnIds, columnMetaMap, updateColumnOrder],
+		[usesSyncedMode, syncedColumnIds, columnMetaMap, updateColumnOrder, setLocalColumns],
 	);
 
 	// Toggle column collapsed
@@ -262,7 +260,7 @@ export function useColumns() {
 				[id]: !prev[id],
 			}));
 		},
-		[usesSyncedMode],
+		[usesSyncedMode, setLocalColumns],
 	);
 
 	// Get columns based on mode

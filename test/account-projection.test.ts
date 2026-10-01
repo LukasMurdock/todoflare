@@ -102,7 +102,7 @@ describe("account projection", () => {
 		}
 	});
 
-	it("carries the account credential in Authorization, never in the URL", async () => {
+	it("keeps the public account ID out of credentials and URLs", async () => {
 		const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
 			new Response(null, { status: 401 }),
 		);
@@ -115,9 +115,7 @@ describe("account projection", () => {
 			const [url, init] = fetchMock.mock.calls[0] ?? [];
 			expect(url).toBe("/api/account");
 			expect(String(url)).not.toContain("1111111111111111");
-			expect(new Headers(init?.headers).get("Authorization")).toBe(
-				"Bearer 1111111111111111",
-			);
+			expect(new Headers(init?.headers).get("Authorization")).toBeNull();
 		} finally {
 			fetchMock.mockRestore();
 		}

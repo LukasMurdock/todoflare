@@ -1,0 +1,11 @@
+import { writeFile, mkdir } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { captureProductionSnapshot } from './production-snapshot.mjs';
+const root = '.wrangler/production-preflight';
+await mkdir(root, { recursive: true, mode: 0o700 });
+const snapshot = await captureProductionSnapshot();
+const serialized = JSON.stringify(snapshot);
+await writeFile(`${root}/snapshot.json`, serialized, { mode: 0o600 });
+const summary = { accountCount: Object.keys(snapshot.accounts).length, columnCount: Object.keys(snapshot.columns).length, sha256: createHash('sha256').update(serialized).digest('hex') };
+await writeFile(`${root}/summary.json`, JSON.stringify(summary, null, 2));
+console.log(summary);

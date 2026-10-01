@@ -27,7 +27,7 @@ import {
 import type { Account, ColumnMeta } from "../src/types/account";
 
 function accountHeaders(accountId: string): Record<string, string> {
-	return { Authorization: `Bearer ${accountId.replace(/\D/g, "")}` };
+	return { "X-Todoflare-Test-Account": accountId.replace(/\D/g, "") };
 }
 
 function normalizeAccountId(id: string): string {
@@ -49,7 +49,7 @@ async function createColumn(accountId: string): Promise<string> {
 		method: "POST",
 		headers: {
 			"Content-Type": "application/json",
-			Authorization: `Bearer ${accountId.replace(/\D/g, "")}`,
+			"X-Todoflare-Test-Account": accountId.replace(/\D/g, ""),
 		},
 		body: JSON.stringify({}),
 	});

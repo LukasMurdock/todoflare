@@ -8,25 +8,22 @@ read-only public links, and recover deleted data.
 
 - **Guest-local mode:** columns are stored in `localStorage`. Hourly rolling
   checkpoints provide local recovery.
-- **Account mode:** the generated 16-digit account number is a bearer credential:
-  it is both the account identifier and the secret that authenticates access.
-  Anyone who has it can access the account, so store it as carefully as a
-  password. This model is inspired by
-  [Mullvad's account numbers](https://mullvad.net/en/blog/mullvads-account-numbers-get-longer-and-safer).
+- **Account mode:** passkeys authenticate access through an HttpOnly Better Auth
+  session cookie. The generated 16-digit Account ID is a public sharing identity;
+  it cannot authenticate and is safe to give to collaborators.
   Account snapshots, queued metadata commands, pending Yjs updates, and sync
   telemetry are persisted in IndexedDB so the app can start and accept edits
   offline.
-  Private HTTP requests carry this credential only in the `Authorization`
-  header; account credentials are never placed in paths or query strings.
   Authenticated WebSockets use a per-column, single-use ticket that expires
-  after 45 seconds, so the account credential never enters the upgrade URL.
+  after 45 seconds, so neither session cookies nor credentials enter the upgrade URL.
 - **Metadata sync:** creates, ordering, sharing, public-link, delete, and restore
   operations use one durable client queue. The Worker applies replayable writes
   idempotently.
 - **Collaborative content:** Plate edits are represented by Yjs. A Durable Object
   per column stores the shared document and relays content and presence over
   WebSockets.
-- **Server storage:** Cloudflare KV stores accounts and indexes, SQLite-backed
+- **Server storage:** Cloudflare D1 stores Better Auth users, passkeys, sessions,
+  and recovery-code hashes. Cloudflare KV stores domain accounts and indexes, SQLite-backed
   Durable Objects store column state, and R2 stores administrative backups.
   Durable Object metadata is authoritative for column ownership, sharing, and
   public-link identity. Account KV owns account order, hidden columns, and trash;
@@ -37,17 +34,11 @@ read-only public links, and recover deleted data.
 The browser persistence layer is a project-owned IndexedDB-backed `PersistedMap`.
 The project does not currently use RxDB or TanStack DB.
 
-> **Authentication direction:** We are exploring passkeys as a future
-> phishing-resistant authentication and recovery option because
-> [we don't want your password](https://tailscale.com/blog/passkeys). The current
-> 16-digit account number remains Todoflare's authentication credential; passkeys
-> are exploratory, not an implemented login method or committed migration.
-
 ## Stack
 
 - **Frontend:** React 19, Tailwind CSS, Plate, Yjs, and dnd-kit
 - **Backend:** Hono on Cloudflare Workers
-- **Storage:** KV, SQLite-backed Durable Objects, R2, IndexedDB, and localStorage
+- **Storage:** D1, KV, SQLite-backed Durable Objects, R2, IndexedDB, and localStorage
 - **Build:** Vite with `@cloudflare/vite-plugin`
 - **Tests:** Vitest in the Workers runtime and Playwright in Chromium
 
@@ -99,7 +90,7 @@ The standalone E2E command performs its own E2E-enabled build.
 Build for production:
 
 ```bash
-pnpm build
+pnpm build:production
 ```
 
 Output is written to `dist/`:
@@ -117,18 +108,34 @@ pnpm preview
 
 This serves the built application through the local Workers runtime.
 
+## Staging
+
+The isolated staging environment is available at
+[staging.todo.tamesystems.org](https://staging.todo.tamesystems.org). Run
+`pnpm deploy:staging` to build and deploy it, and `pnpm test:staging` for the
+remote passkey and account recovery drill. See [the staging runbook](docs/staging.md)
+for resource isolation, write freeze/thaw commands and the verified production rollout.
+
 ## Deployment
 
-Deploy to Cloudflare Workers:
+Production at [todo.tamesystems.org](https://todo.tamesystems.org) uses its own
+auth database and signing/admin secrets. Auth migrations are already applied.
+Apply any new migrations before deploying code that depends on them:
 
 ```bash
-pnpm deploy
+pnpm auth:migrate:remote
 ```
 
-This builds and deploys the Worker to the routes configured in `wrangler.jsonc`.
-The current production custom domain is `https://todo.tamesystems.org`;
-`workers.dev` and preview URLs are disabled. Wrangler prompts for Cloudflare
-credentials when needed.
+For local development, run `pnpm auth:migrate:local` after creating or resetting
+local D1 state. Do not recreate the existing production database or rotate its
+signing secret just to deploy.
+
+Production builds select the production bindings and disable E2E auth controls.
+The deployment guard checks resources and artifact hashes. A writable deployment
+requires a fresh verified checkpoint for the exact frozen build; `pnpm deploy`
+refuses to open writes without it. Follow [the release procedure](docs/staging.md#release-procedure)
+for a fresh admin snapshot, frozen verification and guarded thaw. The custom domain is `todo.tamesystems.org`; preview and
+`workers.dev` URLs are disabled.
 
 ## Project Structure
 
@@ -161,7 +168,9 @@ Authenticated users can self-serve export/import from the account menu
 
 ### 1) Enable read-only mode (freeze writes)
 
-Set `READ_ONLY_MODE=true` in your deployed Worker vars, then redeploy.
+Build with `pnpm build:production`, then run
+`node scripts/deploy-production.mjs --freeze`. Verify data and backups before
+reopening writes with the same guarded build.
 
 Use a full deployment rather than a gradual rollout. Wait for the deployment to
 finish before starting a backup or in-place restore. The deployment closes
@@ -241,3 +250,62 @@ BACKUP_API_ORIGIN="https://todo.tamesystems.org" \
 BACKUP_ADMIN_TOKEN="<token>" \
 pnpm backup:restore-account -- <accountId>
 ```
+
+Automatic backups are enabled in the checked-in configuration. Each hourly run
+copies account order, hidden columns, sharing, trash, and D1 users, passkeys and
+provider credentials to private R2 objects under `accounts/`. Column selection
+includes active, trashed and registered orphan columns and rotates across the
+configured cap. For N columns and a cap of C, a successful sweep needs
+`ceil(N/C)` hourly runs. Backups are separate snapshots across objects, not an
+atomic database checkpoint. An account snapshot can reference a column that has
+not been copied yet; recovery refuses incomplete inventories before writing.
+
+Read-only mode also freezes cron work, including automatic backups, so scheduled
+snapshots cannot race a recovery. Manual backup endpoints remain available.
+
+Before a planned migration, freeze writes and take a complete account copy:
+`node scripts/backup-admin.mjs create-account <accountId>`. Check
+`node scripts/backup-admin.mjs status` after deployment and after each expected
+cron run. Treat a missing/stale `lastRun`, `failed > 0`, `invalidAccounts > 0`, or
+`rawCopies > 0` as an operational failure. The local Codex monitor checks health and mirrors backups every 15 minutes; it
+notifies this chat on actionable failure and requires this host to be running
+and awake. Run `node scripts/backup-health.mjs production` and
+`node scripts/mirror-backups.mjs production` manually when needed.
+A raw copy preserves forensic bytes but does not establish a usable backup.
+
+Account restore accepts an optional `accounts/<id>/<timestamp>-<uuid>.json` key
+and recovers account records and credentials even if their originals are gone.
+It uses the latest validated column copies and restores the saved trash state.
+In-place column and account restore require a completed read-only deployment.
+Pre-restore copies live under `pre-restore/` and do not become the latest recovery
+snapshot. Cross-object restoration is retryable, not atomic: keep writes frozen
+if it fails and inspect the failure before retrying. Legacy account recovery
+without an account snapshot still needs the original account record.
+
+For a recovery drill, use an isolated Worker with the same migrations and a
+private copy of the backup bucket. Remove that test account's coordinator/KV
+records, D1 user and column state; restore; verify order, content, sharing, trash,
+and passkey authentication from a browser; then lift the freeze. The automated
+regressions cover missing account/column/passkey recovery, but production
+credentials need this operational drill. Save the D1 schema/migrations,
+Worker bindings and secrets (including `BETTER_AUTH_SECRET`) independently;
+sessions and one-time challenges are deliberately not restored.
+
+Independent verified snapshots are retained under
+`/Users/lukasmurdock/Documents/Todoflare Recovery/production`; the dated release
+folder also preserves original exports, configuration, secrets and source.
+Hourly snapshots can lose changes since the last successful copy if live storage
+is catastrophically lost. Keep the workstation copies protected and preserve a
+second location if workstation loss must also be covered.
+
+R2 backups contain private content and credential material. Restrict bucket and
+admin-token access and maintain an independent off-account copy. No retention
+rule is installed by this change: do not add an R2 lifecycle deletion rule until
+you have chosen a recovery window and verified that complete inventories survive
+it. Cloudflare account loss also removes backups in that account.
+
+If browser persistence fails, editing pauses and offers a recovery download and
+retry. Keep the tab open until one succeeds. The recovery JSON preserves pending
+commands/Yjs updates and guest content; pending Yjs updates may need their server
+base state for manual recovery. Guest checkpoints remain on the same device and
+are lost when browser storage is cleared; export guest data independently.

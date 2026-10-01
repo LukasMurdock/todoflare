@@ -207,7 +207,7 @@ test.describe("collaborative editing", () => {
 			{
 				headers: {
 					"Content-Type": "application/json",
-					Authorization: `Bearer ${ownerId.replace(/\D/g, "")}`,
+					"X-Todoflare-Test-Account": ownerId.replace(/\D/g, ""),
 				},
 				data: { targetAccountId: collaboratorId },
 			},
@@ -304,7 +304,7 @@ test.describe("collaborative editing", () => {
 			{
 				headers: {
 					"Content-Type": "application/json",
-					Authorization: `Bearer ${ownerId.replace(/\D/g, "")}`,
+					"X-Todoflare-Test-Account": ownerId.replace(/\D/g, ""),
 				},
 				data: { targetAccountId: collaboratorId },
 			},

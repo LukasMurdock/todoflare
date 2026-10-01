@@ -2,7 +2,7 @@
 
 const [, , action, columnId, arg3, arg4] = process.argv;
 
-if (!action || !columnId) {
+if (!action || (action !== "status" && !columnId)) {
 	printUsage();
 	process.exit(1);
 }
@@ -15,18 +15,29 @@ if (!origin || !token) {
 	process.exit(1);
 }
 
+let responseIndicatesFailure = false;
 const baseHeaders = {
 	Authorization: `Bearer ${token}`,
 };
 
 try {
+	if (action === "status") {
+		const res = await fetch(`${origin}/api/admin/backups/status`, { headers: baseHeaders });
+		await printResponse(res);
+		process.exit(res.ok && !responseIndicatesFailure ? 0 : 1);
+	}
+	if (action === "create-account") {
+		const res = await fetch(`${origin}/api/admin/backups/account`, { method: "POST", headers: { ...baseHeaders, "Content-Type": "application/json" }, body: JSON.stringify({ accountId: columnId, ...(arg3 ? { key: arg3 } : {}) }) });
+		await printResponse(res);
+		process.exit(res.ok && !responseIndicatesFailure ? 0 : 1);
+	}
 	if (action === "list") {
 		const res = await fetch(
 			`${origin}/api/admin/backups/column/${encodeURIComponent(columnId)}`,
 			{ headers: baseHeaders },
 		);
 		await printResponse(res);
-		process.exit(res.ok ? 0 : 1);
+		process.exit(res.ok && !responseIndicatesFailure ? 0 : 1);
 	}
 
 	if (action === "create") {
@@ -35,7 +46,7 @@ try {
 			{ method: "POST", headers: baseHeaders },
 		);
 		await printResponse(res);
-		process.exit(res.ok ? 0 : 1);
+		process.exit(res.ok && !responseIndicatesFailure ? 0 : 1);
 	}
 
 	if (action === "restore") {
@@ -57,17 +68,17 @@ try {
 			},
 		);
 		await printResponse(res);
-		process.exit(res.ok ? 0 : 1);
+		process.exit(res.ok && !responseIndicatesFailure ? 0 : 1);
 	}
 
 	if (action === "restore-account") {
 		const res = await fetch(`${origin}/api/admin/backups/account/restore`, {
 			method: "POST",
 			headers: { ...baseHeaders, "Content-Type": "application/json" },
-			body: JSON.stringify({ accountId: columnId }),
+			body: JSON.stringify({ accountId: columnId, ...(arg3 ? { key: arg3 } : {}) }),
 		});
 		await printResponse(res);
-		process.exit(res.ok ? 0 : 1);
+		process.exit(res.ok && !responseIndicatesFailure ? 0 : 1);
 	}
 
 	printUsage();
@@ -84,7 +95,9 @@ function printUsage() {
 			"  BACKUP_API_ORIGIN=https://... BACKUP_ADMIN_TOKEN=... node scripts/backup-admin.mjs list <columnId>",
 			"  BACKUP_API_ORIGIN=https://... BACKUP_ADMIN_TOKEN=... node scripts/backup-admin.mjs create <columnId>",
 			"  BACKUP_API_ORIGIN=https://... BACKUP_ADMIN_TOKEN=... node scripts/backup-admin.mjs restore <columnId> [key] [clone|in_place]",
-			"  BACKUP_API_ORIGIN=https://... BACKUP_ADMIN_TOKEN=... node scripts/backup-admin.mjs restore-account <accountId>",
+			"  BACKUP_API_ORIGIN=https://... BACKUP_ADMIN_TOKEN=... node scripts/backup-admin.mjs restore-account <accountId> [accountBackupKey]",
+			"  node scripts/backup-admin.mjs create-account <accountId>",
+			"  node scripts/backup-admin.mjs status",
 			"  Default restore mode is clone",
 		].join("\n"),
 	);
@@ -100,5 +113,6 @@ async function printResponse(res) {
 		parsed = text;
 	}
 
+	responseIndicatesFailure = parsed !== null && typeof parsed === "object" && parsed.success === false;
 	console.log(JSON.stringify({ status: res.status, body: parsed }, null, 2));
 }

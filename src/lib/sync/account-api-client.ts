@@ -2,6 +2,8 @@ import {
 	normalizeAccountId,
 	validateAccountId,
 } from "../account";
+import { authClient, fetchAuthStatus } from "../auth-client";
+import { e2eAccountHeaders, usingE2EAuthFixture } from "../e2e-auth";
 import {
 	createAccountResponseSchema,
 	getAccountResponseSchema,
@@ -15,7 +17,6 @@ import {
 	type AccountConvergenceError,
 } from "./account-convergence-machine";
 import { projectionFromServer, type AccountProjection } from "./account-projection";
-import { accountAuthorizationHeader } from "../http-account-auth";
 
 function malformedResponse(message: string): AccountConvergenceFailure {
 	return new AccountConvergenceFailure(
@@ -83,8 +84,16 @@ export async function fetchAccountProjection(
 	}
 	const response = await fetch("/api/account", {
 		signal,
-		headers: { Authorization: accountAuthorizationHeader(id) },
+		credentials: "same-origin",
+		headers: e2eAccountHeaders(id),
 	});
+	if (response.status === 401) {
+		await throwResponseFailure(
+			response,
+			{ scope: "auth", kind: "reauth_required" },
+			"Sign in with a passkey to resume syncing",
+		);
+	}
 	if (response.status === 404) {
 		await throwResponseFailure(
 			response,
@@ -115,7 +124,33 @@ export async function fetchAccountProjection(
 export async function createAccountProjection(
 	signal: AbortSignal,
 ): Promise<AccountProjection> {
-	const response = await fetch("/api/account", { method: "POST", signal });
+	let response: Response;
+	if (usingE2EAuthFixture()) {
+		response = await fetch("/api/account", { method: "POST", signal });
+	} else {
+		let status = await fetchAuthStatus(signal);
+		if (status.state === "signed_out") {
+			const anonymousResult = await authClient.signIn.anonymous();
+			if (anonymousResult.error) {
+				throw malformedResponse(anonymousResult.error.message ?? "Failed to start account creation");
+			}
+			status = await fetchAuthStatus(signal);
+		}
+		if (status.state === "provisional") {
+			const passkeyResult = await authClient.passkey.addPasskey({
+				name: "Primary passkey",
+			});
+			if (passkeyResult.error) {
+				throw malformedResponse(passkeyResult.error.message ?? "Passkey registration failed");
+			}
+		}
+
+		response = await fetch("/api/account", {
+			method: "POST",
+			signal,
+			credentials: "same-origin",
+		});
+	}
 	if (response.status === 429) {
 		await throwResponseFailure(
 			response,
@@ -137,4 +172,23 @@ export async function createAccountProjection(
 		sharedColumns: [],
 		deletedColumns: [],
 	});
+}
+
+export async function signInWithPasskey(autoFill = false): Promise<string> {
+	const result = await authClient.signIn.passkey({ autoFill });
+	if (result.error) {
+		throw malformedResponse(result.error.message ?? "Passkey sign-in failed");
+	}
+	const status = await fetchAuthStatus();
+	if (!status.accountId || !["passkey", "provisioning"].includes(status.state)) {
+		throw malformedResponse("Passkey session did not resolve an account");
+	}
+	if (status.state === "provisioning") {
+		const response = await fetch("/api/account", {
+			method: "POST",
+			credentials: "same-origin",
+		});
+		if (!response.ok) throw malformedResponse("Account provisioning failed");
+	}
+	return normalizeAccountId(status.accountId);
 }
