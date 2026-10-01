@@ -267,9 +267,8 @@ Before a planned migration, freeze writes and take a complete account copy:
 `node scripts/backup-admin.mjs create-account <accountId>`. Check
 `node scripts/backup-admin.mjs status` after deployment and after each expected
 cron run. Treat a missing/stale `lastRun`, `failed > 0`, `invalidAccounts > 0`, or
-`rawCopies > 0` as an operational failure. The local Codex monitor checks health and mirrors backups every 15 minutes; it
-notifies this chat on actionable failure and requires this host to be running
-and awake. Run `node scripts/backup-health.mjs production` and
+`rawCopies > 0` as an operational failure. The temporary Codex rollout monitor is paused. Automatic off-account mirroring
+and chat alerts are no longer running; hourly Cloudflare backups continue. Run `node scripts/backup-health.mjs production` and
 `node scripts/mirror-backups.mjs production` manually when needed.
 A raw copy preserves forensic bytes but does not establish a usable backup.
 

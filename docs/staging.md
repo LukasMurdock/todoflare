@@ -176,9 +176,10 @@ losing this machine also loses those independent copies. No deletion policy is
 installed. Keep complete inventories when choosing retention or moving these
 copies to another protected location.
 
-The local backup monitor/mirror runs every 15 minutes and stays quiet while healthy.
-It needs the Codex host to be running and awake; hourly Cloudflare backups continue
-independently. A missing run or failed mirror needs attention. Hourly snapshots
+The temporary local Codex rollout monitor/mirror was paused at the user's request
+after the production rollout. Existing independent copies are retained. Hourly
+Cloudflare backups continue, while health checks and off-account mirroring are
+now manual; no recurring chat alerts are active. Hourly snapshots
 are not a zero-loss guarantee: catastrophic live-storage loss can lose changes
 since the last successful copy. Cross-object recovery is retryable, not atomic.
 

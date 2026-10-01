@@ -62,8 +62,8 @@ document snapshots were created and the backup pipeline completed with no failed
 raw or invalid copies. All six canonical snapshots were independently copied to
 the workstation and verified by checksum and complete account inventory. The
 same build was thawed and the original data and legacy session access checked
-again. Automatic hourly backups are enabled; health and independent mirroring
-are checked every 15 minutes by a quiet local Codex monitor.
+again. Automatic hourly backups are enabled; a temporary local Codex monitor checked health and independent mirroring every
+15 minutes during rollout. That monitor is now paused at the user's request.
 
 Staging separately passed original passkey recovery after account/auth loss,
 sharing/order/trash/public checks, actual scheduled-handler execution, legacy
@@ -78,7 +78,7 @@ versions, commands, independent storage and recovery boundaries.
 - Hourly backups can lose edits since the last successful snapshot during a
   catastrophic live-storage loss. Same-account R2 copies alone do not cover
   Cloudflare account loss. Independent copies currently live on this workstation;
-  the local monitor/mirror requires the host to be running and awake.
+  the rollout monitor is paused, so new off-account copies require a manual mirror run.
 - Backups and restores span multiple objects and are not atomic. Keep writes
   frozen on restore failure and inspect before retrying. Recovery validates a
   complete inventory before writes. A cap of C for N columns takes `ceil(N/C)`
