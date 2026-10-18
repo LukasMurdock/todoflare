@@ -17,9 +17,16 @@ import { routePath } from "./routes";
  * The single declaration of every offline-capable account command.
  *
  * Each entry states the persisted payload, the HTTP route that applies it and
- * the wire contract on both sides. The command type list, payload types, the
- * persisted-outbox parser, the client executor's request plumbing and the
- * server route registration are all derived from this table.
+ * the wire contract on both sides. Derived from this table:
+ * - the command type list and payload types (re-exported by lib/sync/contracts)
+ * - the persisted-outbox parser (lib/sync/account-command-parser)
+ * - the client executor's request plumbing (lib/sync/account-command-executor)
+ * - which column a command touches, for access-loss cleanup
+ *   (lib/sync/account-command-reconciliation)
+ * - server route registration (server/routes/account-commands)
+ *
+ * Command routes are declared here rather than in ./routes.ts. ID formats are
+ * defined in ./account-contract.
  */
 
 type CommandMethod = "POST" | "PUT" | "DELETE";
@@ -68,8 +75,8 @@ export const ACCOUNT_COMMANDS = {
 		method: "POST",
 		path: "/api/column",
 		payload: columnPayload,
-		// Scripts may omit columnId and let the server allocate one.
 		affectedColumnId: ({ columnId }) => columnId,
+		// Admin and staging scripts may omit columnId and let the server allocate one.
 		body: z.object({ columnId: columnIdContractSchema.optional() }).strict(),
 		request: ({ columnId }) => ({ body: { columnId } }),
 		response: createColumnResponseSchema,
