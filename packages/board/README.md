@@ -258,14 +258,15 @@ for tests of your embed.
 - Its reset applies only inside the board, and it overrides a host's
   universal and element rules (`* { font-family: serif }`,
   `button { all: unset }`), so the board looks the same on any page.
-- Theme colors are CSS variables on `[data-todo-board]`: `--background` and
-  `--foreground` (board surface and text), `--muted` / `--muted-foreground`
-  (column headers, placeholders, secondary text), `--primary` /
-  `--primary-foreground` (checked todos, link underline while Cmd/Ctrl is
-  held, dialog buttons), `--border`, `--input` (unchecked todo boxes),
-  `--ring` (focus rings), `--destructive`, `--accent`, `--secondary`,
-  `--popover`, `--card` (dialogs), `--brand` and `--highlight`. Override any
-  of them:
+- Theme colors are CSS variables on `[data-todo-board]`. The board uses
+  `--background` and `--foreground` (surface and text), `--muted` and
+  `--muted-foreground` (column headers, placeholders, secondary text),
+  `--primary` and `--primary-foreground` (checked todos, the link underline
+  while Cmd/Ctrl is held), `--border`, `--input` (unchecked todo boxes),
+  `--ring` (focus rings), `--accent` (hover backgrounds), `--brand` (text
+  selection) and `--destructive` (invalid states). The palette also defines
+  `--card`, `--popover`, `--secondary` and `--highlight` for hosts that opt in
+  page-wide with `<html data-todo-theme>`. Override any of them:
 
   ```css
   [data-todo-board] { --primary: oklch(0.55 0.2 260); --border: #ddd; }
