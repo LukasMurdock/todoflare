@@ -77,6 +77,11 @@ export interface TodoBoardProps {
 	renderTopBar?(): ReactNode;
 
 	className?: string;
+	/**
+	 * Stable identity for generated ids. Pass one when the server and client
+	 * render the board from different React roots (islands), so ids match.
+	 */
+	id?: string;
 	ref?: Ref<TodoBoardApi>;
 }
 

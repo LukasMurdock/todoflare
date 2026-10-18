@@ -6,7 +6,7 @@ import { Plate, usePlateEditor } from "platejs/react";
 import { YjsPlugin } from "@platejs/yjs/react";
 
 import { cn } from "./ui/cn";
-import { Editor, EditorContainer } from "./ui/editor";
+import { Editor, EditorContainer, editorContainerVariants } from "./ui/editor";
 import { RemoteCursorOverlay } from "./ui/remote-cursor-overlay";
 import { columnEditorPlugins, findUrlAtOffset, normalizeUrl } from "./column-editor-plugins";
 import { ColumnSnapshot } from "./ColumnSnapshot";
@@ -16,6 +16,7 @@ import { useBoardContext } from "./board-context";
 import { useColumnDocument, type OpenColumnDocument } from "./use-column-document";
 
 const PLACEHOLDER = "Start typing...";
+const UNBOUND_CONTAINER_CLASS = cn("ignore-click-outside/toolbar", editorContainerVariants());
 
 export interface ColumnEditorProps {
 	columnId: string;
@@ -171,16 +172,18 @@ export function ColumnEditor({ columnId, snapshot, readOnly, identity, onContent
 			</EditorContainer>
 		);
 	} else if (snapshot) {
+		// Same classes as EditorContainer, without PlateContainer's useId-based id,
+		// so server-rendered snapshots hydrate without attribute mismatches.
 		content = (
-			<EditorContainer className="h-full">
+			<div className={cn(UNBOUND_CONTAINER_CLASS, "h-full")}>
 				<ColumnSnapshot value={snapshot} placeholder={PLACEHOLDER} />
-			</EditorContainer>
+			</div>
 		);
 	} else {
 		content = (
-			<EditorContainer className="h-full px-4 py-3 text-sm text-muted-foreground">
+			<div className={cn(UNBOUND_CONTAINER_CLASS, "h-full px-4 py-3 text-sm text-muted-foreground")}>
 				Preparing collaborative editor...
-			</EditorContainer>
+			</div>
 		);
 	}
 

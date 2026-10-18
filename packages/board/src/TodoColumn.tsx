@@ -18,7 +18,6 @@ import {
 	AlertDialogFooter,
 	AlertDialogHeader,
 	AlertDialogTitle,
-	AlertDialogTrigger,
 } from "./ui/confirm-dialog";
 
 export interface TodoColumnProps {
@@ -58,6 +57,9 @@ export function TodoColumn({
 	const handleRemove = () => {
 		onRemove?.(column);
 	};
+	// Controlled rather than a Radix Trigger: the trigger's useId-based
+	// aria-controls would differ between a server render and island hydration.
+	const [confirmOpen, setConfirmOpen] = React.useState(false);
 
 	const handleToggleCollapse = () => {
 		onToggleCollapse?.(column);
@@ -150,34 +152,32 @@ export function TodoColumn({
 									<XIcon className="h-4 w-4 text-muted-foreground" />
 								</button>
 							) : (
-								<AlertDialog>
-									<AlertDialogTrigger asChild>
-										<button className="rounded p-1 hover:bg-muted">
-											<XIcon className="h-4 w-4 text-muted-foreground" />
-										</button>
-									</AlertDialogTrigger>
-									<AlertDialogContent>
-										<AlertDialogHeader>
-											<AlertDialogTitle>
-												Delete column?
-											</AlertDialogTitle>
-											<AlertDialogDescription>
-												This column has content. This action
-												cannot be undone.
-											</AlertDialogDescription>
-										</AlertDialogHeader>
-										<AlertDialogFooter>
-											<AlertDialogCancel>
-												Cancel
-											</AlertDialogCancel>
-											<AlertDialogAction
-												onClick={handleRemove}
-											>
-												Delete
-											</AlertDialogAction>
-										</AlertDialogFooter>
-									</AlertDialogContent>
-								</AlertDialog>
+								<>
+									<button
+										type="button"
+										aria-label="Delete column"
+										aria-haspopup="dialog"
+										aria-expanded={confirmOpen}
+										onClick={() => setConfirmOpen(true)}
+										className="rounded p-1 hover:bg-muted"
+									>
+										<XIcon className="h-4 w-4 text-muted-foreground" />
+									</button>
+									<AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+										<AlertDialogContent>
+											<AlertDialogHeader>
+												<AlertDialogTitle>Delete column?</AlertDialogTitle>
+												<AlertDialogDescription>
+													This column has content. This action cannot be undone.
+												</AlertDialogDescription>
+											</AlertDialogHeader>
+											<AlertDialogFooter>
+												<AlertDialogCancel>Cancel</AlertDialogCancel>
+												<AlertDialogAction onClick={handleRemove}>Delete</AlertDialogAction>
+											</AlertDialogFooter>
+										</AlertDialogContent>
+									</AlertDialog>
+								</>
 							)}
 						</>
 					)}

@@ -50,8 +50,11 @@ export function TodoBoard({
 	renderColumnActions,
 	renderTopBar,
 	className,
+	id,
 	ref,
 }: TodoBoardProps) {
+	const generatedId = React.useId();
+	const boardId = id ?? generatedId;
 	const [root, setRoot] = React.useState<HTMLDivElement | null>(null);
 	const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
 	const { value: boardContext, editors } = useBoardContextValue({ onOpenLink, onError, editorPlugins });
@@ -138,7 +141,7 @@ export function TodoBoard({
 					<DocumentAdapterProvider value={documents}>
 						<ModifierKeyProvider>
 							{renderTopBar?.()}
-							<DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+							<DndContext id={`${boardId}-dnd`} sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
 								<SortableContext items={columns.map((column) => column.id)} strategy={horizontalListSortingStrategy}>
 									<ColumnLayout
 										status={status}

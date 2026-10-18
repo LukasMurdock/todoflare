@@ -1,0 +1,8 @@
+# examples/void is its own pnpm project, outside the todoflare workspace, so
+# Void's dependencies (database drivers, a newer better-auth) never change how
+# the app's dependencies resolve. The board is installed as a package copy
+# (file:), so it shares this project's React; `pnpm dev` refreshes the copy.
+allowBuilds:
+  esbuild: true
+  workerd: true
+  better-sqlite3: false

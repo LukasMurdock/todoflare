@@ -26,7 +26,8 @@ const SLATE_PLACEHOLDER_STYLE: React.CSSProperties = {
  */
 export function ColumnSnapshot({ value, placeholder }: { value: Value; placeholder?: string }) {
 	const editor = React.useMemo(
-		() => createSlateEditor({ plugins: columnSnapshotPlugins, value }),
+		// No generated node ids: they are random, so server and client markup would differ.
+		() => createSlateEditor({ plugins: columnSnapshotPlugins, value, nodeId: false }),
 		[value],
 	);
 

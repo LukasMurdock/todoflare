@@ -5,6 +5,7 @@
 	"description": "The embeddable todo board used by todoflare.",
 	"type": "module",
 	"sideEffects": ["*.css"],
+	"files": ["src", "dist"],
 	"exports": {
 		".": "./src/index.ts",
 		"./tailwind.css": "./src/styles/tailwind.css",
