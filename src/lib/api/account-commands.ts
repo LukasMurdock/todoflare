@@ -35,6 +35,8 @@ interface AccountCommandDefinition<
 	payload: TPayload;
 	/** Request body the server validates, or null for bodiless requests. */
 	body: TBody;
+	/** The column a command acts on, used to discard it when access is lost. */
+	affectedColumnId(payload: z.output<TPayload>): string | null;
 	/** Maps a persisted payload onto the route's path parameter and body. */
 	request(
 		payload: z.output<TPayload>,
@@ -66,6 +68,7 @@ export const ACCOUNT_COMMANDS = {
 		path: "/api/column",
 		payload: columnPayload,
 		// Scripts may omit columnId and let the server allocate one.
+		affectedColumnId: ({ columnId }) => columnId,
 		body: z.object({ columnId: columnIdContractSchema.optional() }).strict(),
 		request: ({ columnId }) => ({ body: { columnId } }),
 		response: createColumnResponseSchema,
@@ -74,6 +77,7 @@ export const ACCOUNT_COMMANDS = {
 		method: "DELETE",
 		path: "/api/column/:id",
 		payload: columnPayload,
+		affectedColumnId: ({ columnId }) => columnId,
 		body: null,
 		request: ({ columnId }) => ({ id: columnId }),
 		response: deleteColumnResponseSchema,
@@ -82,6 +86,7 @@ export const ACCOUNT_COMMANDS = {
 		method: "POST",
 		path: "/api/column/:id/restore",
 		payload: columnPayload,
+		affectedColumnId: ({ columnId }) => columnId,
 		body: null,
 		request: ({ columnId }) => ({ id: columnId }),
 		response: restoreColumnResponseSchema,
@@ -90,6 +95,7 @@ export const ACCOUNT_COMMANDS = {
 		method: "PUT",
 		path: "/api/account/columns",
 		payload: z.object({ columnOrder: columnIdList }),
+		affectedColumnId: () => null,
 		body: z.object({ columnOrder: columnIdList }).strict(),
 		request: ({ columnOrder }) => ({ body: { columnOrder } }),
 		response: updateAccountColumnsResponseSchema,
@@ -98,6 +104,7 @@ export const ACCOUNT_COMMANDS = {
 		method: "POST",
 		path: "/api/column/:id/share",
 		payload: sharePayload,
+		affectedColumnId: ({ columnId }) => columnId,
 		body: shareBody,
 		request: ({ columnId, targetAccountId }) => ({
 			id: columnId,
@@ -109,6 +116,7 @@ export const ACCOUNT_COMMANDS = {
 		method: "DELETE",
 		path: "/api/column/:id/share",
 		payload: sharePayload,
+		affectedColumnId: ({ columnId }) => columnId,
 		body: shareBody,
 		request: ({ columnId, targetAccountId }) => ({
 			id: columnId,
@@ -120,6 +128,7 @@ export const ACCOUNT_COMMANDS = {
 		method: "POST",
 		path: "/api/column/:id/public",
 		payload: columnPayload,
+		affectedColumnId: ({ columnId }) => columnId,
 		body: null,
 		request: ({ columnId }) => ({ id: columnId }),
 		response: enablePublicColumnResponseSchema,
@@ -128,6 +137,7 @@ export const ACCOUNT_COMMANDS = {
 		method: "DELETE",
 		path: "/api/column/:id/public",
 		payload: columnPayload,
+		affectedColumnId: ({ columnId }) => columnId,
 		body: null,
 		request: ({ columnId }) => ({ id: columnId }),
 		response: disablePublicColumnResponseSchema,
@@ -136,6 +146,7 @@ export const ACCOUNT_COMMANDS = {
 		method: "PUT",
 		path: "/api/account/hidden",
 		payload: z.object({ hiddenSharedColumns: columnIdList }),
+		affectedColumnId: () => null,
 		body: z.object({ hiddenSharedColumns: columnIdList }).strict(),
 		request: ({ hiddenSharedColumns }) => ({ body: { hiddenSharedColumns } }),
 		response: updateHiddenColumnsResponseSchema,
