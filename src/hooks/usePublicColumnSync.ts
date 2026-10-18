@@ -8,6 +8,7 @@ import {
 	WS_PROTOCOL_V1,
 } from "@/lib/collaboration/websocket-protocol";
 import { EMPTY_COLUMN_VALUE } from "@/types/column";
+import { API_ROUTES, routePath } from "@/lib/api/routes";
 
 /**
  * Hook for read-only public column viewing
@@ -43,7 +44,7 @@ export function usePublicColumnSync(publicId: string) {
 
 		// Connect to public WebSocket
 		const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-		const wsUrl = `${wsProtocol}//${window.location.host}/api/p/${publicId}/ws`;
+		const wsUrl = `${wsProtocol}//${window.location.host}${routePath(API_ROUTES.publicColumnWs.path, { publicId })}`;
 
 		const ws = new WebSocket(wsUrl, [WS_PROTOCOL_V1]);
 		ws.binaryType = "arraybuffer";

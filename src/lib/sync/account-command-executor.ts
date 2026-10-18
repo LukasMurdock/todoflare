@@ -12,6 +12,7 @@ import type {
 import type { MutationReplayResult } from "./mutation-queue-service";
 import { mutationResultFromResponse } from "./replay-response";
 import { accountRequestHeaders } from "../account-request-headers";
+import { PUBLIC_PAGE_PATH, routePath } from "../api/routes";
 
 export type AccountCommandExecutionResult = MutationReplayResult & {
 	effects?: AccountCommandEffect[];
@@ -173,7 +174,7 @@ export function createAccountCommandExecutor(
 					const sent = await send(mutation, signal);
 					if (!sent.ok) return sent.result;
 					const { publicId, url } = sent.data;
-					if (new URL(url).pathname !== `/p/${publicId}`) {
+					if (new URL(url).pathname !== routePath(PUBLIC_PAGE_PATH, { publicId })) {
 						return invalidSuccessfulResponse(mutation.opType);
 					}
 					return {

@@ -11,6 +11,7 @@ import { AccountModal } from "./components/account/AccountModal";
 import { ClaimDataModal } from "./components/account/ClaimDataModal";
 import { PublicView } from "./components/public/PublicView";
 import { useFirstVisit } from "./hooks/useFirstVisit";
+import { matchPublicPagePath } from "./lib/api/routes";
 
 /**
  * Simple router based on pathname
@@ -25,10 +26,9 @@ function useRoute() {
 	}, []);
 
 	return useMemo(() => {
-		// Match /p/:publicId for public view
-		const publicMatch = pathname.match(/^\/p\/([a-zA-Z0-9]+)$/);
-		if (publicMatch) {
-			return { type: "public" as const, publicId: publicMatch[1] };
+		const publicId = matchPublicPagePath(pathname);
+		if (publicId) {
+			return { type: "public" as const, publicId };
 		}
 
 		// Default to main app

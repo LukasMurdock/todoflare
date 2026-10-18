@@ -18,6 +18,7 @@ import {
 	type AccountConvergenceError,
 } from "./account-convergence-machine";
 import { projectionFromServer, type AccountProjection } from "./account-projection";
+import { API_ROUTES } from "../api/routes";
 
 function malformedResponse(message: string): AccountConvergenceFailure {
 	return new AccountConvergenceFailure(
@@ -83,7 +84,8 @@ export async function fetchAccountProjection(
 			"Invalid account ID format",
 		);
 	}
-	const response = await fetch("/api/account", {
+	const response = await fetch(API_ROUTES.getAccount.path, {
+		method: API_ROUTES.getAccount.method,
 		signal,
 		credentials: "same-origin",
 		headers: accountRequestHeaders(id),
@@ -134,7 +136,7 @@ export async function createAccountProjection(
 ): Promise<AccountProjection> {
 	let response: Response;
 	if (usingE2EAuthFixture()) {
-		response = await fetch("/api/account", { method: "POST", signal });
+		response = await fetch(API_ROUTES.createAccount.path, { method: API_ROUTES.createAccount.method, signal });
 	} else {
 		let status = await fetchAuthStatus(signal);
 		if (status.state === "signed_out") {
@@ -153,8 +155,8 @@ export async function createAccountProjection(
 			}
 		}
 
-		response = await fetch("/api/account", {
-			method: "POST",
+		response = await fetch(API_ROUTES.createAccount.path, {
+			method: API_ROUTES.createAccount.method,
 			signal,
 			credentials: "same-origin",
 		});
@@ -192,8 +194,8 @@ export async function signInWithPasskey(autoFill = false): Promise<string> {
 		throw malformedResponse("Passkey session did not resolve an account");
 	}
 	if (status.state === "provisioning") {
-		const response = await fetch("/api/account", {
-			method: "POST",
+		const response = await fetch(API_ROUTES.createAccount.path, {
+			method: API_ROUTES.createAccount.method,
 			credentials: "same-origin",
 		});
 		if (!response.ok) throw malformedResponse("Account provisioning failed");

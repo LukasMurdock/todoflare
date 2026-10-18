@@ -1,9 +1,10 @@
 import { createAuthClient } from "better-auth/client";
 import { anonymousClient } from "better-auth/client/plugins";
 import { passkeyClient } from "@better-auth/passkey/client";
+import { API_ROUTES, AUTH_BASE_PATH } from "./api/routes";
 
 export const authClient = createAuthClient({
-	basePath: "/api/auth",
+	basePath: AUTH_BASE_PATH,
 	plugins: [anonymousClient(), passkeyClient()],
 });
 
@@ -13,7 +14,8 @@ export interface AuthStatus {
 }
 
 export async function fetchAuthStatus(signal?: AbortSignal): Promise<AuthStatus> {
-	const response = await fetch("/api/auth-status", {
+	const response = await fetch(API_ROUTES.authStatus.path, {
+		method: API_ROUTES.authStatus.method,
 		signal,
 		credentials: "same-origin",
 		headers: { Accept: "application/json" },
@@ -26,7 +28,7 @@ export async function recoverAccount(
 	accountId: string,
 	recoveryCode: string,
 ): Promise<{ accountId: string; recoveryCode: string }> {
-	const response = await fetch("/api/auth/recovery-code/recover", {
+	const response = await fetch(`${AUTH_BASE_PATH}/recovery-code/recover`, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ accountId: accountId.replace(/\D/g, ""), recoveryCode }),

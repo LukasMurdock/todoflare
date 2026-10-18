@@ -5,6 +5,7 @@ import { APIError, createAuthEndpoint, sensitiveSessionMiddleware } from "better
 import { setSessionCookie } from "better-auth/cookies";
 import { z } from "zod";
 import { generateAccountId } from "../lib/account";
+import { AUTH_BASE_PATH } from "../lib/api/routes";
 
 export type AuthState = "provisional" | "passkey";
 
@@ -129,7 +130,7 @@ export function createAuth(env: AuthBindings, requestOrigin: string) {
 	return betterAuth({
 		appName: "Todoflare",
 		baseURL: origin,
-		basePath: "/api/auth",
+		basePath: AUTH_BASE_PATH,
 		secret: env.BETTER_AUTH_SECRET ?? DEVELOPMENT_SECRET,
 		database: env.AUTH_DB,
 		trustedOrigins: [origin],

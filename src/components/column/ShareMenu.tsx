@@ -15,6 +15,7 @@ import {
 	truncateAccountId,
 } from "@/lib/account";
 import type { ColumnMeta } from "@/types/account";
+import { publicPageUrl } from "@/lib/api/routes";
 
 interface ShareMenuProps {
 	columnId: string;
@@ -36,7 +37,7 @@ export function ShareMenu({ columnId, columnMeta }: ShareMenuProps) {
 	const sharedWith = columnMeta?.sharedWith ?? [];
 	const publicId = columnMeta?.publicId ?? null;
 	const publicUrl = publicId
-		? `${window.location.origin}/p/${publicId}`
+		? publicPageUrl(window.location.origin, publicId)
 		: null;
 
 	const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {

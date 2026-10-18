@@ -11,6 +11,7 @@ import {
 	updateColumnSharingResponseSchema,
 	updateHiddenColumnsResponseSchema,
 } from "./account-contract";
+import { routePath } from "./routes";
 
 /**
  * The single declaration of every offline-capable account command.
@@ -172,7 +173,7 @@ export function isAccountCommandType(value: unknown): value is AccountCommandTyp
 	return typeof value === "string" && Object.hasOwn(ACCOUNT_COMMANDS, value);
 }
 
-/** Fills a route pattern's `:id` parameter. */
+/** Fills a command route's `:id` parameter. */
 export function accountCommandUrl(path: string, id: string | undefined): string {
-	return id === undefined ? path : path.replace(":id", encodeURIComponent(id));
+	return routePath(path, (id === undefined ? {} : { id }) as never);
 }

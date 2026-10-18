@@ -81,6 +81,7 @@ import {
 	normalizeAccountId,
 	displayAccountId,
 } from "@/lib/account";
+import { API_ROUTES, routePath } from "@/lib/api/routes";
 
 const ACCOUNT_STORAGE_KEY = "todoflare-account";
 const E2E_REPLAY_WAKE_EVENT = "todoflare:e2e:replay-wake";
@@ -597,8 +598,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 				createSocket: (url, protocols) =>
 					new WebSocket(url, protocols) as unknown as ColumnSocketLike,
 				getSocketUrl: async (activeAccountId, columnId, signal) => {
-					const response = await fetch(`/api/column/${columnId}/ws-ticket`, {
-						method: "POST",
+					const response = await fetch(routePath(API_ROUTES.columnWsTicket.path, { id: columnId }), {
+						method: API_ROUTES.columnWsTicket.method,
 						signal,
 						headers: accountRequestHeaders(activeAccountId),
 					});
@@ -621,7 +622,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 						throw new Error("WebSocket ticket response is invalid");
 					}
 					const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-					return `${protocol}//${window.location.host}/api/column/${columnId}/ws?ticket=${encodeURIComponent(payload.ticket)}`;
+					return `${protocol}//${window.location.host}${routePath(API_ROUTES.columnWs.path, { id: columnId })}?ticket=${encodeURIComponent(payload.ticket)}`;
 				},
 				persistUpdate: (activeAccountId, columnId, kind, update) => {
 					const outboxId = yjsOutbox.enqueue({
@@ -1146,7 +1147,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		if (!accountId) return null;
 
 		try {
-			const response = await fetch("/api/account/export", {
+			const response = await fetch(API_ROUTES.exportAccount.path, {
+				method: API_ROUTES.exportAccount.method,
 				headers: accountRequestHeaders(accountId),
 			});
 
@@ -1168,9 +1170,9 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 
 			try {
 				const response = await fetch(
-					"/api/account/import",
+					API_ROUTES.importAccount.path,
 					{
-						method: "POST",
+						method: API_ROUTES.importAccount.method,
 							headers: {
 								...accountRequestHeaders(accountId),
 								"Content-Type": "application/json",

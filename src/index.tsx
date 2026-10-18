@@ -43,6 +43,7 @@ import {
 	ACCOUNT_COMMANDS,
 	type AccountCommandType,
 } from "./lib/api/account-commands";
+import { API_ROUTES, AUTH_BASE_PATH, publicPageUrl } from "./lib/api/routes";
 import {
 	ACCOUNT_SCHEMA_VERSION,
 	COLUMN_META_SCHEMA_VERSION,
@@ -155,7 +156,7 @@ const frozenAuthRoutes = new Set([
 	"POST /api/auth/sign-out",
 ]);
 
-app.on(["GET", "POST"], "/api/auth/*", async (c) => {
+app.on(["GET", "POST"], `${AUTH_BASE_PATH}/*`, async (c) => {
 	if (isReadOnlyMode(c.env) && !frozenAuthRoutes.has(`${c.req.method} ${new URL(c.req.url).pathname}`)) {
 		return readOnlyModeResponse();
 	}
@@ -1015,7 +1016,7 @@ export async function runScheduledBackups(env: Bindings) {
 // Account Routes
 // ============================================
 
-app.get("/api/auth-status", async (c) => {
+app.on(API_ROUTES.authStatus.method, API_ROUTES.authStatus.path, async (c) => {
 	c.header("Cache-Control", "private, no-store");
 	const session = await getRequestSession(c.req.raw, c.env);
 	if (!session || !validateAccountId(session.user.id)) {
@@ -1042,7 +1043,7 @@ app.get("/api/auth-status", async (c) => {
  * Create a new account
  * Rate limited: 5 per IP per hour
  */
-app.post("/api/account", async (c) => {
+app.on(API_ROUTES.createAccount.method, API_ROUTES.createAccount.path, async (c) => {
 	const readOnlyResponse = blockWritesIfReadOnly(c);
 	if (readOnlyResponse) return readOnlyResponse;
 	const compiledE2E =
@@ -1105,7 +1106,7 @@ app.post("/api/account", async (c) => {
  * Get account metadata
  * Rate limited: 20 per IP per minute
  */
-app.get("/api/account", async (c) => {
+app.on(API_ROUTES.getAccount.method, API_ROUTES.getAccount.path, async (c) => {
 	const auth = await requireAccountCredential(c.req.raw, c.env);
 	if (!auth.ok) return auth.response;
 	const accountId = auth.accountId;
@@ -1748,7 +1749,7 @@ const accountCommandHandlers: {
 				}
 
 				const url = new URL(c.req.url);
-				const publicUrl = `${url.origin}/p/${result.value.publicId}`;
+				const publicUrl = publicPageUrl(url.origin, result.value.publicId);
 
 				return c.json({ publicId: result.value.publicId, url: publicUrl });
 			},
@@ -1804,7 +1805,7 @@ for (const type of ACCOUNT_COMMAND_TYPES) {
 /**
  * Export account-owned columns as JSON (self-serve)
  */
-app.get("/api/account/export", async (c) => {
+app.on(API_ROUTES.exportAccount.method, API_ROUTES.exportAccount.path, async (c) => {
 	const auth = await requireAccountCredential(c.req.raw, c.env);
 	if (!auth.ok) return auth.response;
 	const accountId = auth.accountId;
@@ -1857,7 +1858,7 @@ app.get("/api/account/export", async (c) => {
 /**
  * Import account data from self-serve export JSON
  */
-app.post("/api/account/import", async (c) => {
+app.on(API_ROUTES.importAccount.method, API_ROUTES.importAccount.path, async (c) => {
 	const readOnlyResponse = blockWritesIfReadOnly(c);
 	if (readOnlyResponse) return readOnlyResponse;
 
@@ -1908,7 +1909,7 @@ app.post("/api/account/import", async (c) => {
 /**
  * Get column metadata
  */
-app.get("/api/column/:id", async (c) => {
+app.on(API_ROUTES.getColumn.method, API_ROUTES.getColumn.path, async (c) => {
 	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
 	if (!path.ok) return path.response;
 	const auth = await requireAccountCredential(c.req.raw, c.env);
@@ -1939,7 +1940,7 @@ app.get("/api/column/:id", async (c) => {
 /**
  * WebSocket connection for column sync
  */
-app.post("/api/column/:id/ws-ticket", async (c) => {
+app.on(API_ROUTES.columnWsTicket.method, API_ROUTES.columnWsTicket.path, async (c) => {
 	const readOnlyResponse = blockWritesIfReadOnly(c);
 	if (readOnlyResponse) return readOnlyResponse;
 
@@ -1955,7 +1956,7 @@ app.post("/api/column/:id/ws-ticket", async (c) => {
 	});
 });
 
-app.get("/api/column/:id/ws", async (c) => {
+app.on(API_ROUTES.columnWs.method, API_ROUTES.columnWs.path, async (c) => {
 	const readOnlyResponse = blockWritesIfReadOnly(c);
 	if (readOnlyResponse) return readOnlyResponse;
 
@@ -1983,7 +1984,7 @@ app.get("/api/column/:id/ws", async (c) => {
 /**
  * Get public column metadata
  */
-app.get("/api/p/:publicId", async (c) => {
+app.on(API_ROUTES.publicColumn.method, API_ROUTES.publicColumn.path, async (c) => {
 	const request = validateRequestInput(c, publicPathSchema, {
 		publicId: c.req.param("publicId"),
 	});
@@ -2034,7 +2035,7 @@ app.get("/api/p/:publicId", async (c) => {
 /**
  * WebSocket connection for public column view
  */
-app.get("/api/p/:publicId/ws", async (c) => {
+app.on(API_ROUTES.publicColumnWs.method, API_ROUTES.publicColumnWs.path, async (c) => {
 	const request = validateRequestInput(c, publicPathSchema, {
 		publicId: c.req.param("publicId"),
 	});
@@ -2351,7 +2352,7 @@ app.post("/api/admin/backups/column/:id/restore", async (c) => {
 });
 
 // Keep the clock endpoint for testing
-app.get("/api/clock", (c) => {
+app.on(API_ROUTES.clock.method, API_ROUTES.clock.path, (c) => {
 	return c.json(
 		{
 			time: new Date().toLocaleTimeString(),
