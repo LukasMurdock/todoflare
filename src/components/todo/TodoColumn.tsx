@@ -1,7 +1,5 @@
 "use client";
 
-import { applyUpdate } from "yjs";
-
 import * as React from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -27,7 +25,6 @@ import { EMPTY_COLUMN_VALUE, isColumnEmpty } from "@/types/column";
 import { cn } from "@/lib/utils";
 import { displayAccountId, getAccountColor, truncateAccountId } from "@/lib/account";
 import { useSyncContext } from "@/contexts/sync-context";
-import "@/lib/collaboration/cloudflare-yjs-provider";
 import { RemoteCursorOverlay } from "@/components/ui/remote-cursor-overlay";
 import { Editor, EditorContainer } from "@/components/ui/editor";
 import { H1Element, H2Element, H3Element } from "@/components/ui/heading-node";
@@ -47,6 +44,8 @@ import { ShareMenu } from "@/components/column/ShareMenu";
 import { PresenceAvatars } from "@/components/column/PresenceAvatars";
 import { useAccount } from "@/hooks/useAccount";
 import { useModifierKeyPressed } from "@/components/board/modifier-key";
+import { hostOwnedProvider } from "@/components/board/documents";
+import { useColumnDocument } from "@/components/board/use-column-document";
 
 export interface TodoColumnProps {
 	column: Column;
@@ -366,17 +365,13 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 	const {
 		accountId,
 		account,
-		loadColumnDocument,
-		subscribeToColumn,
-		onColumnMessage,
-		sendUpdate,
-		sendAwareness,
 		browserStorageError,
 		syncStateSummary,
 	} = useSyncContext();
 
 	const isSyncedMode = !!accountId && !!account;
 	const [isYjsReady, setIsYjsReady] = React.useState(() => !isSyncedMode);
+	const columnDocument = useColumnDocument(column.id, isSyncedMode);
 
 	const plugins = React.useMemo(() => {
 		const base: any[] = [
@@ -417,27 +412,17 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 			UrlDecorationPlugin,
 		];
 
-		if (isSyncedMode && accountId) {
+		if (isSyncedMode && accountId && columnDocument?.awareness) {
+			const awareness = columnDocument.awareness;
 			base.push(
 				(YjsPlugin.configure({
 					render: {
 						afterEditable: RemoteCursorOverlay,
 					},
 					options: {
-						providers: [
-							{
-								type: "cloudflare",
-								options: {
-									columnId: column.id,
-									transport: {
-										subscribeToColumn,
-										onColumnMessage,
-										sendUpdate,
-										sendAwareness,
-									},
-								},
-							},
-						] as any,
+						ydoc: columnDocument.doc,
+						awareness,
+						providers: [hostOwnedProvider({ ...columnDocument, awareness })],
 						cursors: {
 							data: {
 								name: displayAccountId(accountId),
@@ -450,15 +435,7 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 		}
 
 		return base;
-	}, [
-		isSyncedMode,
-		accountId,
-		column.id,
-		subscribeToColumn,
-		onColumnMessage,
-		sendUpdate,
-		sendAwareness,
-	]);
+	}, [isSyncedMode, accountId, columnDocument]);
 
 	const editor = usePlateEditor(
 		isSyncedMode
@@ -476,62 +453,30 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 		[isSyncedMode, accountId, plugins],
 	);
 
-	// Initialize Yjs binding after the editor mounts.
+	// Bind the editor to the opened document. The host's adapter already loaded
+	// and connected it, so Plate only seeds an empty document and connects.
 	React.useEffect(() => {
-		if (!isSyncedMode || !editor) return;
+		if (!isSyncedMode || !editor || !columnDocument) return;
 
 		let cancelled = false;
 		let didInit = false;
-		let didDestroy = false;
 		setIsYjsReady(false);
-		const markReadyIfActive = () => {
-			if (!cancelled) {
-				setIsYjsReady(true);
-			}
-		};
 		const api = editor.getApi(YjsPlugin);
 
 		const initPromise = (async () => {
 			try {
-				const cached = await loadColumnDocument(column.id);
-				if (cancelled) return;
-				if (cached) applyUpdate(editor.getOptions(YjsPlugin).ydoc, cached, "remote");
-				await api.yjs.init({
-					id: column.id,
-					autoConnect: true,
-				});
+				await api.yjs.init({ id: column.id, autoConnect: false });
 				didInit = true;
-
-				if (cancelled) {
-					// If StrictMode unmounted us before init finished, clean up now.
-					try {
-						api.yjs.destroy();
-						didDestroy = true;
-					} catch {
-						// ignore
-					}
-					return;
-				}
-
-				markReadyIfActive();
-
-				// init(autoConnect: true) handles provider connections.
 			} catch (err) {
-				// dev StrictMode can race connect/disconnect; ignore duplicates.
-				if (String(err).includes("already connected")) {
-					markReadyIfActive();
-					return;
-				}
 				console.error(err);
-				markReadyIfActive();
 			}
+			if (!cancelled) setIsYjsReady(true);
 		})();
 
 		return () => {
 			cancelled = true;
 			void initPromise.finally(() => {
 				if (!didInit) return;
-				if (didDestroy) return;
 				try {
 					api.yjs.destroy();
 				} catch {
@@ -539,7 +484,7 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 				}
 			});
 		};
-	}, [isSyncedMode, editor, column.id, loadColumnDocument]);
+	}, [isSyncedMode, editor, column.id, columnDocument]);
 
 	// For local-only mode, keep Plate in sync with `column.value`.
 	const isApplyingExternalValueRef = React.useRef(false);

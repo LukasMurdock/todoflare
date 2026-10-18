@@ -25,6 +25,9 @@ import { AccountBadge } from "@/components/account/AccountBadge";
 import { ModifierKeyProvider } from "@/components/board/modifier-key";
 import { PortalContainerProvider } from "@/components/board/portal-container";
 import { KeyboardShortcuts } from "@/components/keyboard-shortcuts";
+import { DocumentAdapterProvider } from "@/components/board/use-column-document";
+import { createCloudflareDocuments } from "@/lib/collaboration/cloudflare-yjs-provider";
+import { useSyncContext } from "@/contexts/sync-context";
 
 export function TodoApp() {
 	const {
@@ -38,6 +41,16 @@ export function TodoApp() {
 		isColumnOwner,
 		getColumnOwner,
 	} = useColumns();
+
+	const { loadColumnDocument, subscribeToColumn, onColumnMessage, sendUpdate, sendAwareness } = useSyncContext();
+	const documents = React.useMemo(
+		() =>
+			createCloudflareDocuments({
+				loadColumnDocument,
+				transport: { subscribeToColumn, onColumnMessage, sendUpdate, sendAwareness },
+			}),
+		[loadColumnDocument, subscribeToColumn, onColumnMessage, sendUpdate, sendAwareness],
+	);
 
 	// Dialogs, popovers and menus portal into the board root, not document.body.
 	const [root, setRoot] = React.useState<HTMLDivElement | null>(null);
@@ -64,6 +77,7 @@ export function TodoApp() {
 	return (
 		<div ref={setRoot} data-todo-board="" className="relative min-h-screen">
 			<PortalContainerProvider container={root}>
+			<DocumentAdapterProvider value={documents}>
 			<StorageRecoveryBanner />
 			<ReconnectBanner />
 			{/* Account badge in top-right corner */}
@@ -95,6 +109,7 @@ export function TodoApp() {
 			</DndContext>
 			<KeyboardShortcuts />
 			</ModifierKeyProvider>
+			</DocumentAdapterProvider>
 			</PortalContainerProvider>
 		</div>
 	);
