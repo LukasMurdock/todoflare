@@ -49,17 +49,19 @@ function siblingFiles(family, member) {
 	return entry.sites.map((site) => site.file);
 }
 
-function insertAfter(anchor, addition) {
-	return (text) => {
-		if (!text.includes(anchor)) throw new Error(`Seed anchor not found: ${anchor}`);
-		return text.replace(anchor, anchor + addition);
-	};
-}
-
-/** Seeds that differ between code revisions: the first one whose file exists wins. */
-function firstExisting(worktree, alternatives) {
+/**
+ * A seed is a list of alternatives, one per code revision, each mapping a file
+ * to [anchor, insertion] pairs. The first alternative whose files and anchors
+ * all exist in the measured revision is applied.
+ */
+function applicableSeed(worktree, alternatives) {
 	return alternatives.find((seed) =>
-		Object.keys(seed).every((file) => existsSync(path.join(worktree, file))),
+		Object.entries(seed).every(([file, edits]) => {
+			const absolute = path.join(worktree, file);
+			if (!existsSync(absolute)) return false;
+			const text = readFileSync(absolute, "utf8");
+			return edits.every(([anchor]) => text.includes(anchor));
+		}),
 	);
 }
 
@@ -70,26 +72,27 @@ const scenarios = [
 		seed: [
 			{
 				"src/lib/api/account-commands.ts": [
-					insertAfter(
+					[
 						"export const ACCOUNT_COMMANDS = {\n",
 						`\t"column.rename": defineCommand({
 \t\tmethod: "PUT",
 \t\tpath: "/api/column/:id/title",
 \t\tpayload: z.object({ columnId: columnIdContractSchema, title: z.string() }),
+\t\taffectedColumnId: ({ columnId }) => columnId,
 \t\tbody: z.object({ title: z.string() }).strict(),
 \t\trequest: ({ columnId, title }) => ({ id: columnId, body: { title } }),
 \t\tresponse: z.object({ success: z.literal(true) }),
 \t}),\n`,
-					),
+					],
 				],
 			},
 			{
 				"src/lib/sync/contracts.ts": [
-					insertAfter('\t"column.hide_shared",\n', '\t"column.rename",\n'),
-					insertAfter(
+					['\t"column.hide_shared",\n', '\t"column.rename",\n'],
+					[
 						'\t"column.hide_shared": { hiddenSharedColumns: string[] };\n',
 						'\t"column.rename": { columnId: string; title: string };\n',
-					),
+					],
 				],
 			},
 		],
@@ -101,38 +104,48 @@ const scenarios = [
 	{
 		id: "add-column-meta-field",
 		description: "Add field color: string | null to ColumnMeta",
-		seed: {
-			"src/types/account.ts": [
-				insertAfter(
-					'\tpublicId: string | null; // Short ID for public read-only link (e.g., "x7Km9p2N")\n',
-					"\tcolor: string | null;\n",
-				),
-			],
-		},
+		seed: [
+			{
+				"src/lib/api/account-contract.ts": [
+					["\t\tpublicId: publicIdContractSchema.nullable(),\n", "\t\tcolor: z.string().nullable(),\n"],
+				],
+			},
+			{
+				"src/types/account.ts": [
+					[
+						'\tpublicId: string | null; // Short ID for public read-only link (e.g., "x7Km9p2N")\n',
+						"\tcolor: string | null;\n",
+					],
+				],
+			},
+		],
 		siblings: () => siblingFiles("record-shape", "ColumnMeta"),
 	},
 	{
 		id: "add-terminal-replay-reason",
 		description: 'Add terminal replay reason "quota_exceeded"',
-		seed: {
-			"src/lib/sync/contracts.ts": [insertAfter('\t| "validation_failed"', '\n\t| "quota_exceeded"')],
-		},
+		seed: [
+			{ "src/lib/sync/contracts.ts": [["export const TERMINAL_REPLAY_REASONS = [\n", '\t"quota_exceeded",\n']] },
+			{ "src/lib/sync/contracts.ts": [['\t| "validation_failed"', '\n\t| "quota_exceeded"']] },
+		],
 		siblings: () => siblingFiles("terminal-replay-reason", "validation_failed"),
 	},
 	{
 		id: "add-api-error-code",
 		description: 'Add API error code "quota_exceeded"',
-		seed: {
-			"src/lib/api/errors.ts": [insertAfter('\t"idempotency_in_progress",\n', '\t"quota_exceeded",\n')],
-		},
+		seed: [{ "src/lib/api/errors.ts": [['\t"idempotency_in_progress",\n', '\t"quota_exceeded",\n']] }],
 		siblings: () => siblingFiles("api-error-code", "account_export_incomplete"),
 	},
 	{
 		id: "add-sync-message",
 		description: 'Add websocket message { type: "column-renamed" }',
-		seed: {
-			"src/types/account.ts": [insertAfter('\t| { type: "access-revoked" }', '\n\t| { type: "column-renamed"; title: string }')],
-		},
+		seed: [
+			{
+				"src/types/account.ts": [
+					['\t| { type: "access-revoked" }', '\n\t| { type: "column-renamed"; title: string }'],
+				],
+			},
+		],
 		siblings: () => [
 			...siblingFiles("sync-message", "column-deleted"),
 			// The server emits the frame by opcode, not by message type.
@@ -142,7 +155,7 @@ const scenarios = [
 	{
 		id: "add-http-route",
 		description: "Add an authenticated column mutation route (no single seed exists)",
-		seed: {},
+		seed: [{}],
 		siblings: () => siblingFiles("http-route", "DELETE /api/column/:id/public"),
 	},
 ];
@@ -172,12 +185,13 @@ const area = (file) => (file.startsWith("src/") ? "src" : "other");
 
 function measure(worktree, scenario) {
 	execFileSync("git", ["checkout", "--quiet", "--", "."], { cwd: worktree });
-	const seed = Array.isArray(scenario.seed) ? firstExisting(worktree, scenario.seed) : scenario.seed;
+	const seed = applicableSeed(worktree, scenario.seed);
+	if (!seed) throw new Error(`No seed for ${scenario.id} applies to this revision`);
 	const seedFiles = Object.keys(seed);
 	for (const [file, edits] of Object.entries(seed)) {
 		const absolute = path.join(worktree, file);
 		let text = readFileSync(absolute, "utf8");
-		for (const edit of edits) text = edit(text);
+		for (const [anchor, addition] of edits) text = text.replace(anchor, anchor + addition);
 		writeFileSync(absolute, text);
 	}
 	const flagged = seedFiles.length ? typecheck(worktree) : new Map();

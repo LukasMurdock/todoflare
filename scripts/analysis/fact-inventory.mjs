@@ -248,8 +248,10 @@ const families = [
 	},
 	{
 		name: "terminal-replay-reason",
-		declaredIn: "src/lib/sync/contracts.ts#TerminalReplayReason",
-		members: unionMembers("src/lib/sync/contracts.ts", "TerminalReplayReason"),
+		...firstDeclared(
+			["src/lib/sync/contracts.ts", (file) => constArrayMembers(file, "TERMINAL_REPLAY_REASONS")],
+			["src/lib/sync/contracts.ts", (file) => unionMembers(file, "TerminalReplayReason")],
+		),
 		sites: exactSites,
 	},
 	{
