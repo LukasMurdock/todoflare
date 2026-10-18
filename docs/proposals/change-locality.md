@@ -1,6 +1,6 @@
 # Change locality: baseline, shortlist and results
 
-Shortlist items 1-5 were implemented on `refactor/change-locality`; see
+Shortlist items 1-5 and both deferred items were implemented on `refactor/change-locality`; see
 [Results](#results) at the end.
 
 Baseline commit: `ad9b078f`. Everything here is reproducible:
@@ -162,10 +162,10 @@ rules.
 
 | Scenario | Required src files | Silent | What remains silent |
 | --- | ---: | ---: | --- |
-| Add account command | 7 → **5** | 3 → **1** | The UI caller in `sync-context.tsx`; a new command always needs a trigger. |
+| Add account command | 7 → **5** | 3 → **1** | The UI entry point, now in `hooks/use-account-column-commands.ts` with the other eight; a new command always needs a trigger. |
 | Add `ColumnMeta` field | 10 → **4** | 2 → **0** | |
 | Add terminal replay reason | 4 → **3** | 3 → **2** | Only producers (`replay-response.ts`, executor), which a new reason needs anyway. No consumer rejects it any more. |
-| Add websocket message | 5 → 5 | 4 → 4 | Deferred (see above). |
+| Add websocket message | 5 → 5 | 4 → **3** | The Durable Object that sends it and the two clients that react to it. Opcode, limit and codec are now one table entry the compiler requires. |
 | Add HTTP route | 3 → 2 | 2 → 1 | The table entry itself; `test/route-registration.test.ts` fails if a declared route is not served. |
 | Add API error code | 2 → 2 | 1 → 1 | Producer only. |
 
@@ -176,12 +176,15 @@ Other measures:
   `pnpm check:route-literals` in `verify:checks`. Mutation-tested: restoring
   one literal fails the check.
 - Independent declarations of `Account` / `ColumnMeta`: **4 → 1** each.
-- `src/index.tsx`: **2,451 → 145 lines**. The largest file in `src` is now
-  `sync-context.tsx` (1,295).
+- `src/index.tsx`: **2,451 → 145 lines**. `sync-context.tsx`: **1,295 → 1,003**
+  (column commands, account export/import and the socket ticket request moved
+  out). Largest file in `src` went from 2,451 to 1,003 lines.
+- Server websocket frames now go through the typed `encodeServerMessage`; a
+  test pins them byte-for-byte to the previous encoding.
 - A no-context reader given only `src/lib/api/account-commands.ts` answered
   5/5 questions about it correctly (rated 4/5; its feedback fixed a misplaced
   comment and added consumer pointers).
-- `pnpm verify`: all checks, 318 unit tests and 27 e2e tests pass.
+- `pnpm verify`: all checks, 322 unit tests and 27 e2e tests pass.
 
 Behavior changes (deliberate):
 
@@ -193,7 +196,12 @@ Behavior changes (deliberate):
   Durable Object data parse exactly as before.
 - Test fixtures that used IDs such as `"column-1"` now use UUIDs.
 
-Not done:
+Not done, deliberately:
 
-- Websocket protocol exhaustiveness and splitting `sync-context.tsx`.
+- Websocket consumers (`column-socket-actor.ts`, `usePublicColumnSync.ts`) are
+  not forced to handle every message type: the actor forwards unknown types to
+  the session machine and the public viewer ignores most messages by design.
+- Column-session and access-loss wiring stays in `SyncProvider`. It shares
+  about eight refs with the provider's other effects; extracting it would add
+  indirection without reducing what a change has to touch.
 
