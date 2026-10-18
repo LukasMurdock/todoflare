@@ -1,7 +1,7 @@
 // Change-cost harness: how far does one conceptual change spread, and how much
 // of that spread does the compiler point you to?
 //
-// Usage: node scripts/analysis/change-cost.mjs [--json] [--only SCENARIO]
+// Usage: node scripts/analysis/change-cost.mjs [--json] [--only SCENARIO] [--rev REV]
 //
 // Each scenario applies a minimal "seed" edit (the one declaration a developer
 // would naturally change first) to a scratch worktree of HEAD, then runs both
@@ -11,10 +11,10 @@
 // sites the compiler does not flag are "silent": a developer must remember
 // them, and forgetting one produces no error.
 //
-// The working tree is never touched; only committed HEAD is measured.
+// The working tree is never touched; a committed revision (default HEAD) is measured.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,11 +23,21 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 const args = process.argv.slice(2);
 const asJson = args.includes("--json");
 const only = args.includes("--only") ? args[args.indexOf("--only") + 1] : null;
+const revision = args.includes("--rev") ? args[args.indexOf("--rev") + 1] : "HEAD";
+
+let measuredRoot = root;
 
 function inventory(family) {
 	const output = execFileSync(
 		process.execPath,
-		[path.join(root, "scripts/analysis/fact-inventory.mjs"), "--json", "--family", family],
+		[
+			path.join(root, "scripts/analysis/fact-inventory.mjs"),
+			"--json",
+			"--family",
+			family,
+			"--root",
+			measuredRoot,
+		],
 		{ cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
 	);
 	return JSON.parse(output)[0];
@@ -46,19 +56,43 @@ function insertAfter(anchor, addition) {
 	};
 }
 
+/** Seeds that differ between code revisions: the first one whose file exists wins. */
+function firstExisting(worktree, alternatives) {
+	return alternatives.find((seed) =>
+		Object.keys(seed).every((file) => existsSync(path.join(worktree, file))),
+	);
+}
+
 const scenarios = [
 	{
 		id: "add-account-command",
 		description: 'Add account command "column.rename" { columnId, title }',
-		seed: {
-			"src/lib/sync/contracts.ts": [
-				insertAfter('\t"column.hide_shared",\n', '\t"column.rename",\n'),
-				insertAfter(
-					'\t"column.hide_shared": { hiddenSharedColumns: string[] };\n',
-					'\t"column.rename": { columnId: string; title: string };\n',
-				),
-			],
-		},
+		seed: [
+			{
+				"src/lib/api/account-commands.ts": [
+					insertAfter(
+						"export const ACCOUNT_COMMANDS = {\n",
+						`\t"column.rename": defineCommand({
+\t\tmethod: "PUT",
+\t\tpath: "/api/column/:id/title",
+\t\tpayload: z.object({ columnId: columnIdContractSchema, title: z.string() }),
+\t\tbody: z.object({ title: z.string() }).strict(),
+\t\trequest: ({ columnId, title }) => ({ id: columnId, body: { title } }),
+\t\tresponse: z.object({ success: z.literal(true) }),
+\t}),\n`,
+					),
+				],
+			},
+			{
+				"src/lib/sync/contracts.ts": [
+					insertAfter('\t"column.hide_shared",\n', '\t"column.rename",\n'),
+					insertAfter(
+						'\t"column.hide_shared": { hiddenSharedColumns: string[] };\n',
+						'\t"column.rename": { columnId: string; title: string };\n',
+					),
+				],
+			},
+		],
 		siblings: () => [
 			...siblingFiles("account-command", "column.public.disable"),
 			...siblingFiles("http-route", "DELETE /api/column/:id/public"),
@@ -138,8 +172,9 @@ const area = (file) => (file.startsWith("src/") ? "src" : "other");
 
 function measure(worktree, scenario) {
 	execFileSync("git", ["checkout", "--quiet", "--", "."], { cwd: worktree });
-	const seedFiles = Object.keys(scenario.seed);
-	for (const [file, edits] of Object.entries(scenario.seed)) {
+	const seed = Array.isArray(scenario.seed) ? firstExisting(worktree, scenario.seed) : scenario.seed;
+	const seedFiles = Object.keys(seed);
+	for (const [file, edits] of Object.entries(seed)) {
 		const absolute = path.join(worktree, file);
 		let text = readFileSync(absolute, "utf8");
 		for (const edit of edits) text = edit(text);
@@ -165,8 +200,9 @@ function measure(worktree, scenario) {
 }
 
 const worktree = mkdtempSync(path.join(tmpdir(), "todoflare-change-cost-"));
-execFileSync("git", ["worktree", "add", "--quiet", "--detach", worktree, "HEAD"], { cwd: root });
+execFileSync("git", ["worktree", "add", "--quiet", "--detach", worktree, revision], { cwd: root });
 symlinkSync(path.join(root, "node_modules"), path.join(worktree, "node_modules"));
+measuredRoot = worktree;
 
 let results;
 try {

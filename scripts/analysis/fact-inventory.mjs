@@ -1,6 +1,6 @@
 // Fact inventory: where is each piece of domain knowledge spelled out?
 //
-// Usage: node scripts/analysis/fact-inventory.mjs [--json] [--family NAME]
+// Usage: node scripts/analysis/fact-inventory.mjs [--json] [--family NAME] [--root DIR]
 //
 // A "fact" is a named piece of knowledge (an account command type, an HTTP
 // route, an error code, a record shape). For each fact this reports every file
@@ -13,8 +13,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const args = process.argv.slice(2);
+const root = args.includes("--root")
+	? path.resolve(args[args.indexOf("--root") + 1])
+	: path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const asJson = args.includes("--json");
 const familyFilter = args.includes("--family") ? args[args.indexOf("--family") + 1] : null;
 
@@ -84,6 +86,33 @@ function unionMembers(file, typeName, property = null) {
 	return [...new Set(members)];
 }
 
+function objectKeys(file, name) {
+	const keys = [];
+	visit(sources.get(file), (node) => {
+		if (
+			ts.isVariableDeclaration(node) &&
+			node.name.getText() === name &&
+			node.initializer &&
+			ts.isObjectLiteralExpression(node.initializer)
+		) {
+			for (const property of node.initializer.properties) {
+				if (property.name && ts.isStringLiteral(property.name)) keys.push(property.name.text);
+			}
+		}
+	});
+	return keys;
+}
+
+/** Tries canonical declarations in order, so older revisions stay measurable. */
+function firstDeclared(...candidates) {
+	for (const [file, read] of candidates) {
+		if (!sources.has(file)) continue;
+		const members = read(file);
+		if (members.length) return { declaredIn: file, members };
+	}
+	return { declaredIn: "(not found)", members: [] };
+}
+
 function interfaceKeys(file, name) {
 	let keys = [];
 	visit(sources.get(file), (node) => {
@@ -94,9 +123,13 @@ function interfaceKeys(file, name) {
 	return keys;
 }
 
-function honoRoutes(file) {
+/**
+ * Server routes: `app.<method>("/path")` calls in the entry file, plus route
+ * declarations anywhere in src written as `{ method: "X", path: "/api/..." }`.
+ */
+function serverRoutes(entryFile) {
 	const routes = [];
-	visit(sources.get(file), (node) => {
+	visit(sources.get(entryFile), (node) => {
 		if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) return;
 		const method = node.expression.name.text;
 		if (node.expression.expression.getText() !== "app") return;
@@ -106,7 +139,22 @@ function honoRoutes(file) {
 			routes.push(`${method.toUpperCase()} ${first.text}`);
 		}
 	});
-	return routes;
+	for (const [file, source] of sources) {
+		if (!file.startsWith("src/")) continue;
+		visit(source, (node) => {
+			if (!ts.isObjectLiteralExpression(node)) return;
+			const value = (name) => {
+				const property = node.properties.find(
+					(p) => ts.isPropertyAssignment(p) && p.name.getText() === name,
+				);
+				return property && ts.isStringLiteral(property.initializer) ? property.initializer.text : null;
+			};
+			const method = value("method");
+			const routePath = value("path") ?? value("pattern");
+			if (method && routePath?.startsWith("/api/")) routes.push(`${method.toUpperCase()} ${routePath}`);
+		});
+	}
+	return [...new Set(routes)];
 }
 
 // ---- occurrence scanning ----------------------------------------------------
@@ -186,8 +234,10 @@ function shapeSites(keys) {
 const families = [
 	{
 		name: "account-command",
-		declaredIn: "src/lib/sync/contracts.ts#ACCOUNT_COMMAND_TYPES",
-		members: constArrayMembers("src/lib/sync/contracts.ts", "ACCOUNT_COMMAND_TYPES"),
+		...firstDeclared(
+			["src/lib/api/account-commands.ts", (file) => objectKeys(file, "ACCOUNT_COMMANDS")],
+			["src/lib/sync/contracts.ts", (file) => constArrayMembers(file, "ACCOUNT_COMMAND_TYPES")],
+		),
 		sites: exactSites,
 	},
 	{
@@ -217,8 +267,8 @@ const families = [
 	},
 	{
 		name: "http-route",
-		declaredIn: "src/index.tsx#app.<method>()",
-		members: honoRoutes("src/index.tsx"),
+		declaredIn: "src/index.tsx#app.<method>() + { method, path } declarations",
+		members: serverRoutes("src/index.tsx"),
 		sites: routeSites,
 	},
 	{

@@ -32,15 +32,14 @@ import { AccountCoordinatorSql } from "./durable-objects/account-coordinator";
 import { PublicIdCoordinatorSql } from "./durable-objects/public-id-coordinator";
 import type { ApiErrorCode } from "./lib/api/errors";
 import {
-	createColumnResponseSchema,
-	deleteColumnResponseSchema,
-	disablePublicColumnResponseSchema,
-	enablePublicColumnResponseSchema,
-	restoreColumnResponseSchema,
-	updateAccountColumnsResponseSchema,
-	updateColumnSharingResponseSchema,
-	updateHiddenColumnsResponseSchema,
+	accountIdContractSchema,
+	columnIdContractSchema,
 } from "./lib/api/account-contract";
+import {
+	ACCOUNT_COMMAND_TYPES,
+	ACCOUNT_COMMANDS,
+	type AccountCommandType,
+} from "./lib/api/account-commands";
 import {
 	ACCOUNT_SCHEMA_VERSION,
 	COLUMN_META_SCHEMA_VERSION,
@@ -196,8 +195,6 @@ app.use("/api/*", async (c, next) => {
 	return next();
 });
 
-const COLUMN_ID_PATTERN =
-	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const IDEMPOTENCY_HEADER = "X-Idempotency-Key";
 const IDEMPOTENCY_KEY_MAX_LENGTH = 128;
 const IDEMPOTENCY_CACHE_TTL_SECONDS = 24 * 60 * 60;
@@ -633,21 +630,15 @@ async function sha256Hex(value: string): Promise<string> {
 	return toHex(digest);
 }
 
-const accountIdValueSchema = z
-	.string()
-	.refine(validateAccountId, "Invalid account ID");
-const columnIdValueSchema = z
-	.string()
-	.regex(COLUMN_ID_PATTERN, "Invalid column ID");
 const publicIdValueSchema = z
 	.string()
 	.regex(/^[0-9A-Za-z]{8}$/, "Invalid public ID");
 const columnMetaInputSchema = z
 	.object({
 		schemaVersion: z.literal(COLUMN_META_SCHEMA_VERSION),
-		id: columnIdValueSchema,
-		ownerId: accountIdValueSchema,
-		sharedWith: z.array(accountIdValueSchema).max(100),
+		id: columnIdContractSchema,
+		ownerId: accountIdContractSchema,
+		sharedWith: z.array(accountIdContractSchema).max(100),
 		publicId: publicIdValueSchema.nullable(),
 		createdAt: z.number().finite().nonnegative(),
 	})
@@ -655,33 +646,19 @@ const columnMetaInputSchema = z
 const accountInputSchema = z
 	.object({
 		schemaVersion: z.literal(ACCOUNT_SCHEMA_VERSION),
-		id: accountIdValueSchema,
-		columnOrder: z.array(columnIdValueSchema).max(100),
-		hiddenSharedColumns: z.array(columnIdValueSchema).max(100),
+		id: accountIdContractSchema,
+		columnOrder: z.array(columnIdContractSchema).max(100),
+		hiddenSharedColumns: z.array(columnIdContractSchema).max(100),
 		createdAt: z.number().finite().nonnegative(),
 	})
 	.strict();
 
-const columnPathSchema = z.object({ id: columnIdValueSchema }).strict();
+const columnPathSchema = z.object({ id: columnIdContractSchema }).strict();
 const publicPathSchema = z.object({ publicId: publicIdValueSchema }).strict();
 const backupListQuerySchema = z
 	.object({ limit: z.coerce.number().int().min(1).max(100).default(20) })
 	.strict();
 
-const columnOrderBodySchema = z
-	.object({ columnOrder: z.array(columnIdValueSchema).max(100) })
-	.strict();
-const hiddenColumnsBodySchema = z
-	.object({ hiddenSharedColumns: z.array(columnIdValueSchema).max(100) })
-	.strict();
-const createColumnBodySchema = z
-	.object({
-		columnId: columnIdValueSchema.optional(),
-	})
-	.strict();
-const shareColumnBodySchema = z
-	.object({ targetAccountId: accountIdValueSchema })
-	.strict();
 const accountExportColumnInputSchema = z
 	.object({
 		meta: columnMetaInputSchema,
@@ -756,7 +733,7 @@ const accountImportV2BodySchema = z
 		schemaVersion: z.literal(2),
 		exportedAt: z.number().finite().nonnegative(),
 		complete: z.literal(true),
-		expectedColumnIds: z.array(columnIdValueSchema).max(100),
+		expectedColumnIds: z.array(columnIdContractSchema).max(100),
 		account: accountInputSchema,
 		ownedColumns: z.array(accountExportColumnInputSchema).max(100),
 	})
@@ -773,7 +750,7 @@ const backupRestoreBodySchema = z
 		mode: z.enum(["clone", "in_place"]).optional(),
 	})
 	.strict();
-const accountAdminBodySchema = z.object({ accountId: accountIdValueSchema, key: z.string().optional() }).strict();
+const accountAdminBodySchema = z.object({ accountId: accountIdContractSchema, key: z.string().optional() }).strict();
 
 type RequestValidationResult<T> =
 	| { ok: true; data: T }
@@ -1303,88 +1280,537 @@ app.get("/api/account", async (c) => {
 });
 
 /**
- * Update column order for an account
+ * Routes for offline-capable account commands. The method, path and body
+ * contract come from ACCOUNT_COMMANDS; the mapped type makes a command without
+ * a server handler a compile error.
  */
-app.put("/api/account/columns", async (c) => {
-	const readOnlyResponse = blockWritesIfReadOnly(c);
-	if (readOnlyResponse) return readOnlyResponse;
+const accountCommandHandlers: {
+	[T in AccountCommandType]: (c: Context<{ Bindings: Bindings }>) => Promise<Response>;
+} = {
+	/**
+	 * Update column order for an account
+	 */
+	"column.reorder": async (c) => {
+		const readOnlyResponse = blockWritesIfReadOnly(c);
+		if (readOnlyResponse) return readOnlyResponse;
 
-	const auth = await requireAccountCredential(c.req.raw, c.env);
-	if (!auth.ok) return auth.response;
-	const body = await validateJsonBody(c, columnOrderBodySchema);
-	if (!body.ok) return body.response;
-	const accountId = auth.accountId;
+		const auth = await requireAccountCredential(c.req.raw, c.env);
+		if (!auth.ok) return auth.response;
+		const body = await validateJsonBody(c, ACCOUNT_COMMANDS["column.reorder"].body);
+		if (!body.ok) return body.response;
+		const accountId = auth.accountId;
 
-	return withIdempotentWrite(
-		c,
-		{
-			scope: `account:${normalizeAccountId(accountId)}:columns`,
-			accountId,
-			successSchema: updateAccountColumnsResponseSchema,
-		},
-		async () => {
-			const normalizedId = normalizeAccountId(accountId);
-			const accountData = await accountRecordStore(c.env).get(`account:${normalizedId}`);
+		return withIdempotentWrite(
+			c,
+			{
+				scope: `account:${normalizeAccountId(accountId)}:columns`,
+				accountId,
+				successSchema: ACCOUNT_COMMANDS["column.reorder"].response,
+			},
+			async () => {
+				const normalizedId = normalizeAccountId(accountId);
+				const accountData = await accountRecordStore(c.env).get(`account:${normalizedId}`);
 
-			if (!accountData) {
-				return apiErrorResponse("not_found", "Account not found", 404);
-			}
+				if (!accountData) {
+					return apiErrorResponse("not_found", "Account not found", 404);
+				}
 
-			const parsedAccount = parseAccountRecord(accountData);
-			if (!parsedAccount.ok) {
-				return schemaErrorResponse("account", parsedAccount);
-			}
-			await mutateAccountRecord(c.env, `account:${normalizedId}`, {
-				kind: "account-reorder",
-				columnOrder: body.data.columnOrder,
-			});
+				const parsedAccount = parseAccountRecord(accountData);
+				if (!parsedAccount.ok) {
+					return schemaErrorResponse("account", parsedAccount);
+				}
+				await mutateAccountRecord(c.env, `account:${normalizedId}`, {
+					kind: "account-reorder",
+					columnOrder: body.data.columnOrder,
+				});
 
-			return c.json({ success: true });
-		},
-	);
-});
+				return c.json({ success: true });
+			},
+		);
+	},
 
-/**
- * Update hidden shared columns for an account
- */
-app.put("/api/account/hidden", async (c) => {
-	const readOnlyResponse = blockWritesIfReadOnly(c);
-	if (readOnlyResponse) return readOnlyResponse;
+	/**
+	 * Update hidden shared columns for an account
+	 */
+	"column.hide_shared": async (c) => {
+		const readOnlyResponse = blockWritesIfReadOnly(c);
+		if (readOnlyResponse) return readOnlyResponse;
 
-	const auth = await requireAccountCredential(c.req.raw, c.env);
-	if (!auth.ok) return auth.response;
-	const body = await validateJsonBody(c, hiddenColumnsBodySchema);
-	if (!body.ok) return body.response;
-	const accountId = auth.accountId;
+		const auth = await requireAccountCredential(c.req.raw, c.env);
+		if (!auth.ok) return auth.response;
+		const body = await validateJsonBody(c, ACCOUNT_COMMANDS["column.hide_shared"].body);
+		if (!body.ok) return body.response;
+		const accountId = auth.accountId;
 
-	return withIdempotentWrite(
-		c,
-		{
-			scope: `account:${normalizeAccountId(accountId)}:hidden`,
-			accountId,
-			successSchema: updateHiddenColumnsResponseSchema,
-		},
-		async () => {
-			const normalizedId = normalizeAccountId(accountId);
-			const accountData = await accountRecordStore(c.env).get(`account:${normalizedId}`);
+		return withIdempotentWrite(
+			c,
+			{
+				scope: `account:${normalizeAccountId(accountId)}:hidden`,
+				accountId,
+				successSchema: ACCOUNT_COMMANDS["column.hide_shared"].response,
+			},
+			async () => {
+				const normalizedId = normalizeAccountId(accountId);
+				const accountData = await accountRecordStore(c.env).get(`account:${normalizedId}`);
 
-			if (!accountData) {
-				return apiErrorResponse("not_found", "Account not found", 404);
-			}
+				if (!accountData) {
+					return apiErrorResponse("not_found", "Account not found", 404);
+				}
 
-			const parsedAccount = parseAccountRecord(accountData);
-			if (!parsedAccount.ok) {
-				return schemaErrorResponse("account", parsedAccount);
-			}
-			await mutateAccountRecord(c.env, `account:${normalizedId}`, {
-				kind: "account-set-hidden",
-				hiddenSharedColumns: body.data.hiddenSharedColumns,
-			});
+				const parsedAccount = parseAccountRecord(accountData);
+				if (!parsedAccount.ok) {
+					return schemaErrorResponse("account", parsedAccount);
+				}
+				await mutateAccountRecord(c.env, `account:${normalizedId}`, {
+					kind: "account-set-hidden",
+					hiddenSharedColumns: body.data.hiddenSharedColumns,
+				});
 
-			return c.json({ success: true });
-		},
-	);
-});
+				return c.json({ success: true });
+			},
+		);
+	},
+
+	/**
+	 * Create a new column
+	 */
+	"column.create": async (c) => {
+		const readOnlyResponse = blockWritesIfReadOnly(c);
+		if (readOnlyResponse) return readOnlyResponse;
+
+		const auth = await requireAccountCredential(c.req.raw, c.env);
+		if (!auth.ok) return auth.response;
+		const body = await validateJsonBody(c, ACCOUNT_COMMANDS["column.create"].body);
+		if (!body.ok) return body.response;
+		const accountId = auth.accountId;
+		const requestedColumnId = body.data.columnId;
+
+		const normalizedAccountId = normalizeAccountId(accountId);
+
+		return withIdempotentWrite(
+			c,
+			{
+				scope: requestedColumnId
+					? `account:${normalizedAccountId}:column:create:${requestedColumnId}`
+					: `account:${normalizedAccountId}:column:create`,
+				accountId,
+				requestFingerprintSource: JSON.stringify(body.data),
+				successSchema: ACCOUNT_COMMANDS["column.create"].response,
+			},
+			async () => {
+				const accountData = await accountRecordStore(c.env).get(
+					`account:${normalizedAccountId}`,
+				);
+
+				if (!accountData) {
+					return apiErrorResponse("not_found", "Account not found", 404);
+				}
+
+				const parsedAccount = parseAccountRecord(accountData);
+				if (!parsedAccount.ok) {
+					return schemaErrorResponse("account", parsedAccount);
+				}
+				const account = parsedAccount.value;
+				const columnId = requestedColumnId ?? crypto.randomUUID();
+				const alreadyInOrder = account.columnOrder.includes(columnId);
+				const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
+
+				let existingMetaResponse: Response;
+				try {
+					existingMetaResponse = await stub.fetch(new Request("http://do/meta"));
+				} catch (err) {
+					if (isDurableObjectDurationError(err)) {
+						console.error("Durable object unavailable during metadata check", {
+							columnId,
+						});
+						return durableObjectUnavailableResponse();
+					}
+					throw err;
+				}
+
+				if (!existingMetaResponse.ok && existingMetaResponse.status >= 500) {
+					console.error("Durable object metadata check failed", {
+						columnId,
+						status: existingMetaResponse.status,
+					});
+					return durableObjectUnavailableResponse();
+				}
+
+				if (existingMetaResponse.ok) {
+					const parsedExisting = parseColumnMetaRecord(await existingMetaResponse.json());
+					if (!parsedExisting.ok) {
+						return schemaErrorResponse("column_meta", parsedExisting);
+					}
+
+					const existingMeta = parsedExisting.value;
+					if (normalizeAccountId(existingMeta.ownerId) !== normalizedAccountId) {
+						return c.json({ error: "Column already exists" }, 409);
+					}
+
+					if (!alreadyInOrder) {
+						try {
+							await mutateAccountRecord(c.env, `account:${normalizedAccountId}`, {
+								kind: "account-add-column",
+								columnId,
+								maxColumns: 100,
+							});
+						} catch (error) {
+							if (error instanceof Error && error.message === "Column limit reached") {
+								return apiErrorResponse(
+									"invalid_request",
+									"Column limit reached (100)",
+									400,
+								);
+							}
+							throw error;
+						}
+					}
+					await registerColumn(c.env.ACCOUNTS, existingMeta);
+
+					return c.json({ column: existingMeta });
+				}
+
+				const meta: ColumnMeta = {
+					schemaVersion: COLUMN_META_SCHEMA_VERSION,
+					id: columnId,
+					ownerId: displayAccountId(accountId),
+					sharedWith: [],
+					publicId: null,
+					createdAt: Date.now(),
+				};
+				const createOperation: LifecycleOperation = {
+					kind: "create",
+					operationId: crypto.randomUUID(),
+					createdAt: Date.now(),
+					meta,
+				};
+				await beginLifecycleOperation(c.env.ACCOUNTS, createOperation);
+				await registerColumn(c.env.ACCOUNTS, meta);
+				if (!alreadyInOrder) {
+					try {
+						await mutateAccountRecord(c.env, `account:${normalizedAccountId}`, {
+							kind: "account-add-column",
+							columnId,
+							maxColumns: 100,
+						});
+					} catch (error) {
+						await completeLifecycleOperation(c.env.ACCOUNTS, createOperation.operationId);
+						await c.env.ACCOUNTS.delete(`column-registry:${columnId}`);
+						if (error instanceof Error && error.message === "Column limit reached") {
+							return apiErrorResponse(
+								"invalid_request",
+								"Column limit reached (100)",
+								400,
+							);
+						}
+						throw error;
+					}
+				}
+
+				// Initialize the Durable Object
+				try {
+					const initResponse = await stub.fetch(
+						new Request("http://do/init", {
+							method: "POST",
+							body: JSON.stringify(meta),
+						}),
+					);
+
+					if (!initResponse.ok) {
+						console.error("Failed to initialize column durable object", {
+							columnId,
+							status: initResponse.status,
+						});
+						return durableObjectUnavailableResponse();
+					}
+				} catch (err) {
+					if (isDurableObjectDurationError(err)) {
+						console.error("Durable object unavailable during column creation", {
+							columnId,
+						});
+						return durableObjectUnavailableResponse();
+					}
+					throw err;
+				}
+
+				await completeLifecycleOperation(c.env.ACCOUNTS, createOperation.operationId);
+
+				return c.json({ column: meta });
+			},
+		);
+	},
+
+	/**
+	 * Delete a column
+	 */
+	"column.delete": async (c) => {
+		const readOnlyResponse = blockWritesIfReadOnly(c);
+		if (readOnlyResponse) return readOnlyResponse;
+
+		const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
+		if (!path.ok) return path.response;
+		const auth = await requireAccountCredential(c.req.raw, c.env);
+		if (!auth.ok) return auth.response;
+		const columnId = path.data.id;
+		const accountId = auth.accountId;
+
+		return withIdempotentWrite(
+			c,
+			{
+				scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:delete`,
+				accountId,
+				successSchema: ACCOUNT_COMMANDS["column.delete"].response,
+			},
+			async () => {
+				const result = await runJournaledLifecycle(
+					c.env,
+					{
+						kind: "delete",
+						operationId: crypto.randomUUID(),
+						createdAt: Date.now(),
+						columnId,
+						accountId,
+					},
+					() => deleteColumn({ env: c.env, columnId, accountId }),
+				);
+				return result.ok
+					? c.json(result.value)
+					: columnLifecycleFailureResponse(result.failure, accountId);
+			},
+		);
+	},
+
+	/**
+	 * Restore a column from owner's garbage can
+	 */
+	"column.restore": async (c) => {
+		const readOnlyResponse = blockWritesIfReadOnly(c);
+		if (readOnlyResponse) return readOnlyResponse;
+
+		const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
+		if (!path.ok) return path.response;
+		const auth = await requireAccountCredential(c.req.raw, c.env);
+		if (!auth.ok) return auth.response;
+		const columnId = path.data.id;
+		const accountId = auth.accountId;
+
+		return withIdempotentWrite(
+			c,
+			{
+				scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:restore`,
+				accountId,
+				successSchema: ACCOUNT_COMMANDS["column.restore"].response,
+			},
+			async () => {
+				const result = await runJournaledLifecycle(
+					c.env,
+					{
+						kind: "restore",
+						operationId: crypto.randomUUID(),
+						createdAt: Date.now(),
+						columnId,
+						accountId,
+					},
+					() => restoreColumn({ env: c.env, columnId, accountId }),
+				);
+				return result.ok
+					? c.json(result.value)
+					: columnLifecycleFailureResponse(result.failure, accountId);
+			},
+		);
+	},
+
+	/**
+	 * Share a column with another account
+	 */
+	"column.share": async (c) => {
+		const readOnlyResponse = blockWritesIfReadOnly(c);
+		if (readOnlyResponse) return readOnlyResponse;
+
+		const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
+		if (!path.ok) return path.response;
+		const auth = await requireAccountCredential(c.req.raw, c.env);
+		if (!auth.ok) return auth.response;
+		const body = await validateJsonBody(c, ACCOUNT_COMMANDS["column.share"].body);
+		if (!body.ok) return body.response;
+		const columnId = path.data.id;
+		const accountId = auth.accountId;
+		const targetAccountId = body.data.targetAccountId;
+
+		return withIdempotentWrite(
+			c,
+			{
+				scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:share:${normalizeAccountId(targetAccountId)}`,
+				accountId,
+				requestFingerprintSource: JSON.stringify({ targetAccountId }),
+				successSchema: ACCOUNT_COMMANDS["column.share"].response,
+			},
+			async () => {
+				const result = await runJournaledLifecycle(
+					c.env,
+					{
+						kind: "share",
+						operationId: crypto.randomUUID(),
+						createdAt: Date.now(),
+						columnId,
+						accountId,
+						targetAccountId,
+					},
+					() =>
+						shareColumn({
+							env: c.env,
+							columnId,
+							accountId,
+							targetAccountId,
+						}),
+				);
+				return result.ok
+					? c.json(result.value)
+					: columnLifecycleFailureResponse(result.failure, accountId);
+			},
+		);
+	},
+
+	/**
+	 * Revoke sharing for a column
+	 */
+	"column.revoke": async (c) => {
+		const readOnlyResponse = blockWritesIfReadOnly(c);
+		if (readOnlyResponse) return readOnlyResponse;
+
+		const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
+		if (!path.ok) return path.response;
+		const auth = await requireAccountCredential(c.req.raw, c.env);
+		if (!auth.ok) return auth.response;
+		const body = await validateJsonBody(c, ACCOUNT_COMMANDS["column.revoke"].body);
+		if (!body.ok) return body.response;
+		const columnId = path.data.id;
+		const targetAccountId = body.data.targetAccountId;
+		const accountId = auth.accountId;
+
+		return withIdempotentWrite(
+			c,
+			{
+				scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:revoke:${normalizeAccountId(targetAccountId)}`,
+				accountId,
+				successSchema: ACCOUNT_COMMANDS["column.revoke"].response,
+			},
+			async () => {
+				const result = await runJournaledLifecycle(
+					c.env,
+					{
+						kind: "revoke",
+						operationId: crypto.randomUUID(),
+						createdAt: Date.now(),
+						columnId,
+						accountId,
+						targetAccountId,
+					},
+					() =>
+						revokeColumnShare({
+							env: c.env,
+							columnId,
+							accountId,
+							targetAccountId,
+						}),
+				);
+				return result.ok
+					? c.json(result.value)
+					: columnLifecycleFailureResponse(result.failure, accountId);
+			},
+		);
+	},
+
+	/**
+	 * Enable public link for a column
+	 */
+	"column.public.enable": async (c) => {
+		const readOnlyResponse = blockWritesIfReadOnly(c);
+		if (readOnlyResponse) return readOnlyResponse;
+
+		const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
+		if (!path.ok) return path.response;
+		const auth = await requireAccountCredential(c.req.raw, c.env);
+		if (!auth.ok) return auth.response;
+		const columnId = path.data.id;
+		const accountId = auth.accountId;
+
+		return withIdempotentWrite(
+			c,
+			{
+				scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:public:enable`,
+				accountId,
+				successSchema: ACCOUNT_COMMANDS["column.public.enable"].response,
+			},
+			async () => {
+				const result = await runJournaledLifecycle(
+					c.env,
+					{
+						kind: "enable-public",
+						operationId: crypto.randomUUID(),
+						createdAt: Date.now(),
+						columnId,
+						accountId,
+					},
+					() => enablePublicColumn({ env: c.env, columnId, accountId }),
+				);
+				if (!result.ok) {
+					return columnLifecycleFailureResponse(result.failure, accountId);
+				}
+
+				const url = new URL(c.req.url);
+				const publicUrl = `${url.origin}/p/${result.value.publicId}`;
+
+				return c.json({ publicId: result.value.publicId, url: publicUrl });
+			},
+		);
+	},
+
+	/**
+	 * Disable public link for a column
+	 */
+	"column.public.disable": async (c) => {
+		const readOnlyResponse = blockWritesIfReadOnly(c);
+		if (readOnlyResponse) return readOnlyResponse;
+
+		const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
+		if (!path.ok) return path.response;
+		const auth = await requireAccountCredential(c.req.raw, c.env);
+		if (!auth.ok) return auth.response;
+		const columnId = path.data.id;
+		const accountId = auth.accountId;
+
+		return withIdempotentWrite(
+			c,
+			{
+				scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:public:disable`,
+				accountId,
+				successSchema: ACCOUNT_COMMANDS["column.public.disable"].response,
+			},
+			async () => {
+				const result = await runJournaledLifecycle(
+					c.env,
+					{
+						kind: "disable-public",
+						operationId: crypto.randomUUID(),
+						createdAt: Date.now(),
+						columnId,
+						accountId,
+					},
+					() => disablePublicColumn({ env: c.env, columnId, accountId }),
+				);
+				return result.ok
+					? c.json(result.value)
+					: columnLifecycleFailureResponse(result.failure, accountId);
+			},
+		);
+	},
+};
+
+for (const type of ACCOUNT_COMMAND_TYPES) {
+	const { method, path } = ACCOUNT_COMMANDS[type];
+	app.on(method, path, accountCommandHandlers[type]);
+}
 
 /**
  * Export account-owned columns as JSON (self-serve)
@@ -1491,255 +1917,6 @@ app.post("/api/account/import", async (c) => {
 // ============================================
 
 /**
- * Create a new column
- */
-app.post("/api/column", async (c) => {
-	const readOnlyResponse = blockWritesIfReadOnly(c);
-	if (readOnlyResponse) return readOnlyResponse;
-
-	const auth = await requireAccountCredential(c.req.raw, c.env);
-	if (!auth.ok) return auth.response;
-	const body = await validateJsonBody(c, createColumnBodySchema);
-	if (!body.ok) return body.response;
-	const accountId = auth.accountId;
-	const requestedColumnId = body.data.columnId;
-
-	const normalizedAccountId = normalizeAccountId(accountId);
-
-	return withIdempotentWrite(
-		c,
-		{
-			scope: requestedColumnId
-				? `account:${normalizedAccountId}:column:create:${requestedColumnId}`
-				: `account:${normalizedAccountId}:column:create`,
-			accountId,
-			requestFingerprintSource: JSON.stringify(body.data),
-			successSchema: createColumnResponseSchema,
-		},
-		async () => {
-			const accountData = await accountRecordStore(c.env).get(
-				`account:${normalizedAccountId}`,
-			);
-
-			if (!accountData) {
-				return apiErrorResponse("not_found", "Account not found", 404);
-			}
-
-			const parsedAccount = parseAccountRecord(accountData);
-			if (!parsedAccount.ok) {
-				return schemaErrorResponse("account", parsedAccount);
-			}
-			const account = parsedAccount.value;
-			const columnId = requestedColumnId ?? crypto.randomUUID();
-			const alreadyInOrder = account.columnOrder.includes(columnId);
-			const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
-
-			let existingMetaResponse: Response;
-			try {
-				existingMetaResponse = await stub.fetch(new Request("http://do/meta"));
-			} catch (err) {
-				if (isDurableObjectDurationError(err)) {
-					console.error("Durable object unavailable during metadata check", {
-						columnId,
-					});
-					return durableObjectUnavailableResponse();
-				}
-				throw err;
-			}
-
-			if (!existingMetaResponse.ok && existingMetaResponse.status >= 500) {
-				console.error("Durable object metadata check failed", {
-					columnId,
-					status: existingMetaResponse.status,
-				});
-				return durableObjectUnavailableResponse();
-			}
-
-			if (existingMetaResponse.ok) {
-				const parsedExisting = parseColumnMetaRecord(await existingMetaResponse.json());
-				if (!parsedExisting.ok) {
-					return schemaErrorResponse("column_meta", parsedExisting);
-				}
-
-				const existingMeta = parsedExisting.value;
-				if (normalizeAccountId(existingMeta.ownerId) !== normalizedAccountId) {
-					return c.json({ error: "Column already exists" }, 409);
-				}
-
-				if (!alreadyInOrder) {
-					try {
-						await mutateAccountRecord(c.env, `account:${normalizedAccountId}`, {
-							kind: "account-add-column",
-							columnId,
-							maxColumns: 100,
-						});
-					} catch (error) {
-						if (error instanceof Error && error.message === "Column limit reached") {
-							return apiErrorResponse(
-								"invalid_request",
-								"Column limit reached (100)",
-								400,
-							);
-						}
-						throw error;
-					}
-				}
-				await registerColumn(c.env.ACCOUNTS, existingMeta);
-
-				return c.json({ column: existingMeta });
-			}
-
-			const meta: ColumnMeta = {
-				schemaVersion: COLUMN_META_SCHEMA_VERSION,
-				id: columnId,
-				ownerId: displayAccountId(accountId),
-				sharedWith: [],
-				publicId: null,
-				createdAt: Date.now(),
-			};
-			const createOperation: LifecycleOperation = {
-				kind: "create",
-				operationId: crypto.randomUUID(),
-				createdAt: Date.now(),
-				meta,
-			};
-			await beginLifecycleOperation(c.env.ACCOUNTS, createOperation);
-			await registerColumn(c.env.ACCOUNTS, meta);
-			if (!alreadyInOrder) {
-				try {
-					await mutateAccountRecord(c.env, `account:${normalizedAccountId}`, {
-						kind: "account-add-column",
-						columnId,
-						maxColumns: 100,
-					});
-				} catch (error) {
-					await completeLifecycleOperation(c.env.ACCOUNTS, createOperation.operationId);
-					await c.env.ACCOUNTS.delete(`column-registry:${columnId}`);
-					if (error instanceof Error && error.message === "Column limit reached") {
-						return apiErrorResponse(
-							"invalid_request",
-							"Column limit reached (100)",
-							400,
-						);
-					}
-					throw error;
-				}
-			}
-
-			// Initialize the Durable Object
-			try {
-				const initResponse = await stub.fetch(
-					new Request("http://do/init", {
-						method: "POST",
-						body: JSON.stringify(meta),
-					}),
-				);
-
-				if (!initResponse.ok) {
-					console.error("Failed to initialize column durable object", {
-						columnId,
-						status: initResponse.status,
-					});
-					return durableObjectUnavailableResponse();
-				}
-			} catch (err) {
-				if (isDurableObjectDurationError(err)) {
-					console.error("Durable object unavailable during column creation", {
-						columnId,
-					});
-					return durableObjectUnavailableResponse();
-				}
-				throw err;
-			}
-
-			await completeLifecycleOperation(c.env.ACCOUNTS, createOperation.operationId);
-
-			return c.json({ column: meta });
-		},
-	);
-});
-
-/**
- * Delete a column
- */
-app.delete("/api/column/:id", async (c) => {
-	const readOnlyResponse = blockWritesIfReadOnly(c);
-	if (readOnlyResponse) return readOnlyResponse;
-
-	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
-	if (!path.ok) return path.response;
-	const auth = await requireAccountCredential(c.req.raw, c.env);
-	if (!auth.ok) return auth.response;
-	const columnId = path.data.id;
-	const accountId = auth.accountId;
-
-	return withIdempotentWrite(
-		c,
-		{
-			scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:delete`,
-			accountId,
-			successSchema: deleteColumnResponseSchema,
-		},
-		async () => {
-			const result = await runJournaledLifecycle(
-				c.env,
-				{
-					kind: "delete",
-					operationId: crypto.randomUUID(),
-					createdAt: Date.now(),
-					columnId,
-					accountId,
-				},
-				() => deleteColumn({ env: c.env, columnId, accountId }),
-			);
-			return result.ok
-				? c.json(result.value)
-				: columnLifecycleFailureResponse(result.failure, accountId);
-		},
-	);
-});
-
-/**
- * Restore a column from owner's garbage can
- */
-app.post("/api/column/:id/restore", async (c) => {
-	const readOnlyResponse = blockWritesIfReadOnly(c);
-	if (readOnlyResponse) return readOnlyResponse;
-
-	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
-	if (!path.ok) return path.response;
-	const auth = await requireAccountCredential(c.req.raw, c.env);
-	if (!auth.ok) return auth.response;
-	const columnId = path.data.id;
-	const accountId = auth.accountId;
-
-	return withIdempotentWrite(
-		c,
-		{
-			scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:restore`,
-			accountId,
-			successSchema: restoreColumnResponseSchema,
-		},
-		async () => {
-			const result = await runJournaledLifecycle(
-				c.env,
-				{
-					kind: "restore",
-					operationId: crypto.randomUUID(),
-					createdAt: Date.now(),
-					columnId,
-					accountId,
-				},
-				() => restoreColumn({ env: c.env, columnId, accountId }),
-			);
-			return result.ok
-				? c.json(result.value)
-				: columnLifecycleFailureResponse(result.failure, accountId);
-		},
-	);
-});
-
-/**
  * Get column metadata
  */
 app.get("/api/column/:id", async (c) => {
@@ -1810,195 +1987,9 @@ app.get("/api/column/:id/ws", async (c) => {
 // Sharing Routes
 // ============================================
 
-/**
- * Share a column with another account
- */
-app.post("/api/column/:id/share", async (c) => {
-	const readOnlyResponse = blockWritesIfReadOnly(c);
-	if (readOnlyResponse) return readOnlyResponse;
-
-	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
-	if (!path.ok) return path.response;
-	const auth = await requireAccountCredential(c.req.raw, c.env);
-	if (!auth.ok) return auth.response;
-	const body = await validateJsonBody(c, shareColumnBodySchema);
-	if (!body.ok) return body.response;
-	const columnId = path.data.id;
-	const accountId = auth.accountId;
-	const targetAccountId = body.data.targetAccountId;
-
-	return withIdempotentWrite(
-		c,
-		{
-			scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:share:${normalizeAccountId(targetAccountId)}`,
-			accountId,
-			requestFingerprintSource: JSON.stringify({ targetAccountId }),
-			successSchema: updateColumnSharingResponseSchema,
-		},
-		async () => {
-			const result = await runJournaledLifecycle(
-				c.env,
-				{
-					kind: "share",
-					operationId: crypto.randomUUID(),
-					createdAt: Date.now(),
-					columnId,
-					accountId,
-					targetAccountId,
-				},
-				() =>
-					shareColumn({
-						env: c.env,
-						columnId,
-						accountId,
-						targetAccountId,
-					}),
-			);
-			return result.ok
-				? c.json(result.value)
-				: columnLifecycleFailureResponse(result.failure, accountId);
-		},
-	);
-});
-
-/**
- * Revoke sharing for a column
- */
-app.delete("/api/column/:id/share", async (c) => {
-	const readOnlyResponse = blockWritesIfReadOnly(c);
-	if (readOnlyResponse) return readOnlyResponse;
-
-	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
-	if (!path.ok) return path.response;
-	const auth = await requireAccountCredential(c.req.raw, c.env);
-	if (!auth.ok) return auth.response;
-	const body = await validateJsonBody(c, shareColumnBodySchema);
-	if (!body.ok) return body.response;
-	const columnId = path.data.id;
-	const targetAccountId = body.data.targetAccountId;
-	const accountId = auth.accountId;
-
-	return withIdempotentWrite(
-		c,
-		{
-			scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:revoke:${normalizeAccountId(targetAccountId)}`,
-			accountId,
-			successSchema: updateColumnSharingResponseSchema,
-		},
-		async () => {
-			const result = await runJournaledLifecycle(
-				c.env,
-				{
-					kind: "revoke",
-					operationId: crypto.randomUUID(),
-					createdAt: Date.now(),
-					columnId,
-					accountId,
-					targetAccountId,
-				},
-				() =>
-					revokeColumnShare({
-						env: c.env,
-						columnId,
-						accountId,
-						targetAccountId,
-					}),
-			);
-			return result.ok
-				? c.json(result.value)
-				: columnLifecycleFailureResponse(result.failure, accountId);
-		},
-	);
-});
-
 // ============================================
 // Public Link Routes
 // ============================================
-
-/**
- * Enable public link for a column
- */
-app.post("/api/column/:id/public", async (c) => {
-	const readOnlyResponse = blockWritesIfReadOnly(c);
-	if (readOnlyResponse) return readOnlyResponse;
-
-	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
-	if (!path.ok) return path.response;
-	const auth = await requireAccountCredential(c.req.raw, c.env);
-	if (!auth.ok) return auth.response;
-	const columnId = path.data.id;
-	const accountId = auth.accountId;
-
-	return withIdempotentWrite(
-		c,
-		{
-			scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:public:enable`,
-			accountId,
-			successSchema: enablePublicColumnResponseSchema,
-		},
-		async () => {
-			const result = await runJournaledLifecycle(
-				c.env,
-				{
-					kind: "enable-public",
-					operationId: crypto.randomUUID(),
-					createdAt: Date.now(),
-					columnId,
-					accountId,
-				},
-				() => enablePublicColumn({ env: c.env, columnId, accountId }),
-			);
-			if (!result.ok) {
-				return columnLifecycleFailureResponse(result.failure, accountId);
-			}
-
-			const url = new URL(c.req.url);
-			const publicUrl = `${url.origin}/p/${result.value.publicId}`;
-
-			return c.json({ publicId: result.value.publicId, url: publicUrl });
-		},
-	);
-});
-
-/**
- * Disable public link for a column
- */
-app.delete("/api/column/:id/public", async (c) => {
-	const readOnlyResponse = blockWritesIfReadOnly(c);
-	if (readOnlyResponse) return readOnlyResponse;
-
-	const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
-	if (!path.ok) return path.response;
-	const auth = await requireAccountCredential(c.req.raw, c.env);
-	if (!auth.ok) return auth.response;
-	const columnId = path.data.id;
-	const accountId = auth.accountId;
-
-	return withIdempotentWrite(
-		c,
-		{
-			scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:public:disable`,
-			accountId,
-			successSchema: disablePublicColumnResponseSchema,
-		},
-		async () => {
-			const result = await runJournaledLifecycle(
-				c.env,
-				{
-					kind: "disable-public",
-					operationId: crypto.randomUUID(),
-					createdAt: Date.now(),
-					columnId,
-					accountId,
-				},
-				() => disablePublicColumn({ env: c.env, columnId, accountId }),
-			);
-			return result.ok
-				? c.json(result.value)
-				: columnLifecycleFailureResponse(result.failure, accountId);
-		},
-	);
-});
 
 /**
  * Get public column metadata

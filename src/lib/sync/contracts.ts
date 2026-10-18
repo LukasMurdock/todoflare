@@ -1,3 +1,9 @@
+import type { ColumnMeta, PublicLinkResponse } from "../../types/account";
+import type {
+	AccountCommandPayloadMap,
+	AccountCommandType,
+} from "../api/account-commands";
+
 export interface ObservableLike<T> {
 	subscribe(next: (value: T) => void): { unsubscribe(): void };
 }
@@ -10,31 +16,11 @@ export type TerminalReplayReason =
 	| "not_found"
 	| "validation_failed";
 
-export const ACCOUNT_COMMAND_TYPES = [
-	"column.create",
-	"column.delete",
-	"column.restore",
-	"column.reorder",
-	"column.share",
-	"column.revoke",
-	"column.public.enable",
-	"column.public.disable",
-	"column.hide_shared",
-] as const;
-
-export type AccountCommandType = (typeof ACCOUNT_COMMAND_TYPES)[number];
-
-export interface AccountCommandPayloadMap {
-	"column.create": { columnId: string };
-	"column.delete": { columnId: string };
-	"column.restore": { columnId: string };
-	"column.reorder": { columnOrder: string[] };
-	"column.share": { columnId: string; targetAccountId: string };
-	"column.revoke": { columnId: string; targetAccountId: string };
-	"column.public.enable": { columnId: string };
-	"column.public.disable": { columnId: string };
-	"column.hide_shared": { hiddenSharedColumns: string[] };
-}
+export {
+	ACCOUNT_COMMAND_TYPES,
+	type AccountCommandPayloadMap,
+	type AccountCommandType,
+} from "../api/account-commands";
 
 export type AccountCommandDescriptor<
 	T extends AccountCommandType = AccountCommandType,
@@ -126,4 +112,3 @@ export interface MutationQueueService {
 	getPending(accountId: string): QueuedMutation[];
 	getNextRetryAt(accountId: string): number | null;
 }
-import type { ColumnMeta, PublicLinkResponse } from "../../types/account";

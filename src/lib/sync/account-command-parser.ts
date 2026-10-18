@@ -1,9 +1,5 @@
-import { validateAccountId } from "../account";
-import type {
-	AccountCommandPayloadMap,
-	AccountCommandType,
-	QueuedMutation,
-} from "./contracts";
+import { ACCOUNT_COMMANDS, isAccountCommandType } from "../api/account-commands";
+import type { QueuedMutation } from "./contracts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
@@ -11,10 +7,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonEmptyString(value: unknown): value is string {
 	return typeof value === "string" && value.length > 0;
-}
-
-function isStringArray(value: unknown): value is string[] {
-	return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 interface ParsedQueueFields {
@@ -61,58 +53,17 @@ function parseQueueFields(value: Record<string, unknown>): ParsedQueueFields | n
 	};
 }
 
-function queuedMutation<T extends AccountCommandType>(
-	fields: ParsedQueueFields,
-	opType: T,
-	payload: AccountCommandPayloadMap[T],
-): QueuedMutation<T> {
-	return { ...fields, opType, payload } as unknown as QueuedMutation<T>;
-}
-
 /** Parse the only untyped command boundary: data loaded from persisted outboxes. */
 export function parseQueuedMutation(value: unknown): QueuedMutation | null {
-	if (!isRecord(value) || !isRecord(value.payload)) return null;
+	if (!isRecord(value) || !isAccountCommandType(value.opType)) return null;
 	const fields = parseQueueFields(value);
 	if (!fields) return null;
 
-	switch (value.opType) {
-		case "column.create":
-		case "column.delete":
-		case "column.restore":
-		case "column.public.enable":
-		case "column.public.disable":
-			return isNonEmptyString(value.payload.columnId)
-				? queuedMutation(fields, value.opType, {
-						columnId: value.payload.columnId,
-					})
-				: null;
-
-		case "column.reorder":
-			return isStringArray(value.payload.columnOrder)
-				? queuedMutation(fields, value.opType, {
-						columnOrder: [...value.payload.columnOrder],
-					})
-				: null;
-
-		case "column.hide_shared":
-			return isStringArray(value.payload.hiddenSharedColumns)
-				? queuedMutation(fields, value.opType, {
-						hiddenSharedColumns: [...value.payload.hiddenSharedColumns],
-					})
-				: null;
-
-		case "column.share":
-		case "column.revoke":
-			return isNonEmptyString(value.payload.columnId) &&
-				isNonEmptyString(value.payload.targetAccountId) &&
-				validateAccountId(value.payload.targetAccountId)
-				? queuedMutation(fields, value.opType, {
-						columnId: value.payload.columnId,
-						targetAccountId: value.payload.targetAccountId,
-					})
-				: null;
-
-		default:
-			return null;
-	}
+	const payload = ACCOUNT_COMMANDS[value.opType].payload.safeParse(value.payload);
+	if (!payload.success) return null;
+	return {
+		...fields,
+		opType: value.opType,
+		payload: payload.data,
+	} as QueuedMutation;
 }

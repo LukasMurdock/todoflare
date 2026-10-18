@@ -15,7 +15,7 @@ function assertCompileTimePayloadCorrelation() {
 		attemptCount: 0,
 		nextRetryAt: 1,
 	};
-	createAccountEditCommand("column.create", { columnId: "column-1" }, fields);
+	createAccountEditCommand("column.create", { columnId: "00000000-0000-4000-8000-000000000001" }, fields);
 	// @ts-expect-error column.create cannot be paired with a reorder payload.
 	createAccountEditCommand("column.create", { columnOrder: [] }, fields);
 }
@@ -23,21 +23,21 @@ function assertCompileTimePayloadCorrelation() {
 void assertCompileTimePayloadCorrelation;
 
 const validPayloads = {
-	"column.create": { columnId: "column-1" },
-	"column.delete": { columnId: "column-1" },
-	"column.restore": { columnId: "column-1" },
-	"column.reorder": { columnOrder: ["column-1"] },
+	"column.create": { columnId: "00000000-0000-4000-8000-000000000001" },
+	"column.delete": { columnId: "00000000-0000-4000-8000-000000000001" },
+	"column.restore": { columnId: "00000000-0000-4000-8000-000000000001" },
+	"column.reorder": { columnOrder: ["00000000-0000-4000-8000-000000000001"] },
 	"column.share": {
-		columnId: "column-1",
+		columnId: "00000000-0000-4000-8000-000000000001",
 		targetAccountId: "2222 2222 2222 2222",
 	},
 	"column.revoke": {
-		columnId: "column-1",
+		columnId: "00000000-0000-4000-8000-000000000001",
 		targetAccountId: "2222 2222 2222 2222",
 	},
-	"column.public.enable": { columnId: "column-1" },
-	"column.public.disable": { columnId: "column-1" },
-	"column.hide_shared": { hiddenSharedColumns: ["column-1"] },
+	"column.public.enable": { columnId: "00000000-0000-4000-8000-000000000001" },
+	"column.public.disable": { columnId: "00000000-0000-4000-8000-000000000001" },
+	"column.hide_shared": { hiddenSharedColumns: ["00000000-0000-4000-8000-000000000001"] },
 } satisfies AccountCommandPayloadMap;
 
 function storedCommand<T extends AccountCommandType>(
@@ -71,11 +71,14 @@ describe("persisted account command parsing", () => {
 		["column.delete", { columnId: 42 }],
 		["column.restore", { columnId: "" }],
 		["column.reorder", { columnOrder: [42] }],
-		["column.share", { columnId: "column-1", targetAccountId: "invalid" }],
-		["column.revoke", { columnId: "column-1" }],
+		["column.share", { columnId: "00000000-0000-4000-8000-000000000001", targetAccountId: "invalid" }],
+		["column.revoke", { columnId: "00000000-0000-4000-8000-000000000001" }],
 		["column.public.enable", { columnId: null }],
 		["column.public.disable", { columnId: [] }],
-		["column.hide_shared", { hiddenSharedColumns: "column-1" }],
+		["column.hide_shared", { hiddenSharedColumns: "00000000-0000-4000-8000-000000000001" }],
+		// Persisted payloads follow the server's ID contract, not just "non-empty".
+		["column.delete", { columnId: "column-1" }],
+		["column.reorder", { columnOrder: ["column-1"] }],
 	] as const)("rejects a malformed %s payload", (opType, payload) => {
 		expect(
 			parseQueuedMutation({
@@ -122,9 +125,9 @@ describe("persisted account command parsing", () => {
 				effects: [],
 			}),
 		).toEqual({
-			ackedCreatedColumnIds: ["column-1"],
+			ackedCreatedColumnIds: ["00000000-0000-4000-8000-000000000001"],
 			failedCreatedColumnIds: [],
-			accessLostColumnIds: ["column-1"],
+			accessLostColumnIds: ["00000000-0000-4000-8000-000000000001"],
 			nonAccessLossFailureCount: 0,
 		});
 	});

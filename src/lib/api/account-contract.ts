@@ -1,7 +1,15 @@
 import { z } from "zod";
 import { normalizeAccountId, validateAccountId } from "../account";
 
-export const accountIdContractSchema = z.string().refine(validateAccountId);
+export const COLUMN_ID_PATTERN =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export const accountIdContractSchema = z
+	.string()
+	.refine(validateAccountId, "Invalid account ID");
+export const columnIdContractSchema = z
+	.string()
+	.regex(COLUMN_ID_PATTERN, "Invalid column ID");
 export const recordIdContractSchema = z.string().min(1).max(128);
 export const timestampContractSchema = z.number().finite().nonnegative();
 
