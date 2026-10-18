@@ -23,6 +23,8 @@ import { useColumns } from "@/hooks/useColumns";
 import { ColumnLayout } from "./ColumnLayout";
 import { AccountBadge } from "@/components/account/AccountBadge";
 import { ModifierKeyProvider } from "@/components/board/modifier-key";
+import { PortalContainerProvider } from "@/components/board/portal-container";
+import { KeyboardShortcuts } from "@/components/keyboard-shortcuts";
 
 export function TodoApp() {
 	const {
@@ -36,6 +38,9 @@ export function TodoApp() {
 		isColumnOwner,
 		getColumnOwner,
 	} = useColumns();
+
+	// Dialogs, popovers and menus portal into the board root, not document.body.
+	const [root, setRoot] = React.useState<HTMLDivElement | null>(null);
 
 	const sensors = useSensors(
 		useSensor(PointerSensor, {
@@ -57,7 +62,8 @@ export function TodoApp() {
 	};
 
 	return (
-		<div className="relative min-h-screen">
+		<div ref={setRoot} data-todo-board="" className="relative min-h-screen">
+			<PortalContainerProvider container={root}>
 			<StorageRecoveryBanner />
 			<ReconnectBanner />
 			{/* Account badge in top-right corner */}
@@ -87,7 +93,9 @@ export function TodoApp() {
 					/>
 				</SortableContext>
 			</DndContext>
+			<KeyboardShortcuts />
 			</ModifierKeyProvider>
+			</PortalContainerProvider>
 		</div>
 	);
 }
