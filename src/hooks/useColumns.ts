@@ -85,6 +85,7 @@ export function useColumns() {
 	const {
 		accountId,
 		account,
+		isLoading,
 		sharedColumns,
 		sharedWithByColumn,
 		publicLinksByColumn,
@@ -99,6 +100,10 @@ export function useColumns() {
 
 	const usesSyncedMode =
 		!!accountId && !!account && syncMode !== "guest_local";
+	// A signed-in account whose columns are not known yet. Showing guest columns
+	// here would let edits land in guest storage and then vanish.
+	const status: "loading" | "ready" =
+		!!accountId && !account && isLoading ? "loading" : "ready";
 
 	// Local columns (for offline/unauthenticated mode)
 	const [localColumns, setLocalColumnsState] = useState<Column[]>(() =>
@@ -265,6 +270,7 @@ export function useColumns() {
 
 	// Get columns based on mode
 	const columns = useMemo(() => {
+		if (status === "loading") return [];
 		if (usesSyncedMode) {
 			// Synced mode: return column IDs with metadata
 			return syncedColumnIds.map((id) => {
@@ -292,6 +298,7 @@ export function useColumns() {
 		localColumns,
 		collapsedById,
 		accountId,
+		status,
 	]);
 
 	// Check if a column is owned by the current user
@@ -319,6 +326,7 @@ export function useColumns() {
 	);
 
 	return {
+		status,
 		columns,
 		addColumn,
 		removeColumn,

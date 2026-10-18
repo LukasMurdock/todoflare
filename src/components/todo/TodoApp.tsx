@@ -25,6 +25,7 @@ import { AccountBadge } from "@/components/account/AccountBadge";
 
 export function TodoApp() {
 	const {
+		status,
 		columns,
 		addColumn,
 		removeColumn,
@@ -73,6 +74,7 @@ export function TodoApp() {
 					strategy={horizontalListSortingStrategy}
 				>
 					<ColumnLayout
+						status={status}
 						columns={columns}
 						onAdd={addColumn}
 						onUpdate={updateColumnValue}

@@ -9,6 +9,8 @@ import { cn } from "@/lib/utils";
 import { useWelcomeRefsOptional } from "@/contexts/welcome-refs-context";
 
 interface ColumnLayoutProps {
+	/** "loading" renders no columns and no add button until the host knows which columns exist. */
+	status?: "loading" | "ready";
 	columns: Column[];
 	onAdd: () => void;
 	onUpdate: (id: string, value: Value) => void;
@@ -19,6 +21,7 @@ interface ColumnLayoutProps {
 }
 
 export function ColumnLayout({
+	status = "ready",
 	columns,
 	onAdd,
 	onUpdate,
@@ -36,7 +39,11 @@ export function ColumnLayout({
 	useEffect(() => {
 		registerRef("add-column-button", addButtonRef.current);
 		registerRef("first-column", firstColumnRef.current);
-	}, [registerRef]);
+	}, [registerRef, status]);
+
+	if (status === "loading") {
+		return <div className="flex h-full" aria-busy="true" />;
+	}
 
 	return (
 		<div className="flex h-full overflow-x-auto pr-28 scrollbar-hide scroll-pr-28">
