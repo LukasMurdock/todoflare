@@ -185,6 +185,8 @@ const area = (file) => (file.startsWith("src/") ? "src" : "other");
 
 function measure(worktree, scenario) {
 	execFileSync("git", ["checkout", "--quiet", "--", "."], { cwd: worktree });
+	// Footprint of the existing sibling, measured before the seed changes anything.
+	const siblings = scenario.siblings();
 	const seed = applicableSeed(worktree, scenario.seed);
 	if (!seed) throw new Error(`No seed for ${scenario.id} applies to this revision`);
 	const seedFiles = Object.keys(seed);
@@ -196,7 +198,7 @@ function measure(worktree, scenario) {
 	}
 	const flagged = seedFiles.length ? typecheck(worktree) : new Map();
 	const guided = new Set([...flagged.keys()].filter((file) => !seedFiles.includes(file)));
-	const required = new Set([...scenario.siblings(), ...guided].filter((file) => !seedFiles.includes(file)));
+	const required = new Set([...siblings, ...guided].filter((file) => !seedFiles.includes(file)));
 	const silent = [...required].filter((file) => !guided.has(file)).sort();
 	const count = (set, where) => [...set].filter((file) => area(file) === where).length;
 	return {
