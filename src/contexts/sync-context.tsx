@@ -1,3 +1,4 @@
+import { cacheColumnUpdate, readColumnDocument, columnDocumentKey } from "@/lib/collaboration/column-document-cache";
 import type { QueuedMutation } from "@/lib/sync/contracts";
 import type { YjsOutboxEntry } from "@/lib/sync/yjs-update-outbox";
 import { isColumnEmpty, type Column } from "@/types/column";
@@ -63,7 +64,7 @@ import {
 	signInWithPasskey,
 } from "@/lib/sync/account-api-client";
 import { authClient, recoverAccount } from "@/lib/auth-client";
-import { e2eAccountHeaders } from "@/lib/e2e-auth";
+import { accountRequestHeaders } from "@/lib/account-request-headers";
 import type { LocalFirstDatabase } from "@/lib/local-first/database";
 import type {
 	Account,
@@ -136,6 +137,8 @@ interface SyncContextValue {
 	accountId: string | null;
 	account: Account | null;
 	isLoading: boolean;
+	authenticationStatus: "unknown" | "authenticated" | "required";
+	isReconnecting: boolean;
 	error: string | null;
 
 	// Connection status
@@ -161,6 +164,7 @@ interface SyncContextValue {
 	publicLinksByColumn: Record<string, PublicLinkResponse | null>;
 
 	// Column connections
+	loadColumnDocument: (columnId: string) => Promise<Uint8Array | null>;
 	subscribeToColumn: (columnId: string) => () => void;
 	getColumnPresence: (columnId: string) => PresenceUser[];
 
@@ -391,6 +395,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 	});
 	const accountConvergenceActor = accountConvergence.actor;
 	const accountId = accountConvergence.accountId;
+	const authenticationStatus = accountConvergence.authenticationStatus;
+	const isReconnecting = accountConvergence.isReconnecting;
 	const projection = accountConvergence.projection;
 	const {
 		account,
@@ -411,7 +417,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 	const mutationQueueDepth = accountConvergence.queueDepth;
 	const isLoading = accountConvergence.isLoading;
 	const error =
-		accountConvergenceErrorMessage(accountConvergence.error) ?? operationError;
+		operationError ?? accountConvergenceErrorMessage(accountConvergence.error);
 	const { submitAccountCommand, waitForStableConvergence } =
 		useAccountCommandSubmission(accountConvergenceActor, mutationQueue);
 
@@ -433,6 +439,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 
 	const syncMode = deriveSyncMode({
 		hasAccountSession: !!accountId,
+		authenticationRequired: authenticationStatus === "required",
 		isPublicReadonly: false,
 		isNetworkOnline,
 		connectionStatus,
@@ -519,6 +526,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			source: "websocket" | "replay",
 		) => {
 			if (!columnId) return;
+			if (accountId) localFirstDbRef.current?.collections.columnDocument.delete(columnDocumentKey(accountId, columnId));
 
 			const droppedMutationCount = await mutationQueue.dropWhere(
 				(mutation) => columnIdForAccountCommand(mutation) === columnId,
@@ -582,16 +590,17 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		const manager = new ColumnSessionManager({
 			accountId,
 			networkOnline: isNetworkOnline,
-			realtimeEnabled: true,
+			realtimeEnabled: accountConvergenceActor.getSnapshot().context.authenticationStatus === "authenticated",
 			onStatusChange: setConnectionStatus,
 			dependencies: {
+				onAuthenticationRequired: () => accountConvergenceActor.send({ type: "AUTHENTICATION_REQUIRED" }),
 				createSocket: (url, protocols) =>
 					new WebSocket(url, protocols) as unknown as ColumnSocketLike,
 				getSocketUrl: async (activeAccountId, columnId, signal) => {
 					const response = await fetch(`/api/column/${columnId}/ws-ticket`, {
 						method: "POST",
 						signal,
-						headers: e2eAccountHeaders(activeAccountId),
+						headers: accountRequestHeaders(activeAccountId),
 					});
 					const hasPendingCreate = mutationQueue
 						.getPending(activeAccountId)
@@ -651,6 +660,9 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 					refreshYjsOutboxSummary();
 				},
 				onMessage: (columnId, message) => {
+					if (message.type === "sync" && localFirstDbRef.current) {
+						cacheColumnUpdate(localFirstDbRef.current, accountId, columnId, message.data);
+					}
 					if (message.type === "error") {
 						toast.error(message.message);
 					}
@@ -671,12 +683,36 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		return manager;
 	}, [
 		accountId,
+		accountConvergenceActor,
 		applyColumnAccessLossPolicy,
 		isNetworkOnline,
 		mutationQueue,
 		refreshYjsOutboxSummary,
 		yjsOutbox,
 	]);
+
+	useEffect(() => {
+		columnSessionManagerRef.current?.manager.setRealtimeEnabled(authenticationStatus === "authenticated");
+	}, [authenticationStatus]);
+
+	// HTTP traffic refreshes the browser cookie even when editing only uses an
+	// already-open WebSocket. Focus also detects expiry and sign-in in another tab.
+	useEffect(() => {
+		if (!accountId) return;
+		const refresh = () => {
+			if (navigator.onLine && document.visibilityState === "visible") {
+				accountConvergenceActor.send({ type: "REFRESH_REQUESTED" });
+			}
+		};
+		const timer = window.setInterval(refresh, 5 * 60 * 1000);
+		window.addEventListener("focus", refresh);
+		document.addEventListener("visibilitychange", refresh);
+		return () => {
+			window.clearInterval(timer);
+			window.removeEventListener("focus", refresh);
+			document.removeEventListener("visibilitychange", refresh);
+		};
+	}, [accountId, accountConvergenceActor]);
 
 	const fetchAccount = useCallback(
 		async (id: string) => {
@@ -748,17 +784,23 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 				}
 				return false;
 			}
+			const existingAccountId = accountConvergenceActor.getSnapshot().context.accountId;
+			if (existingAccountId && normalizeAccountId(existingAccountId) !== normalizeAccountId(formattedId)) {
+				setError("That passkey belongs to a different account. Use the passkey for the account open here. Your local edits are unchanged.");
+				return false;
+			}
+			if (existingAccountId) accountConvergenceActor.send({ type: "AUTHENTICATION_REQUIRED" });
 			accountConvergenceActor.send({ type: "LOGIN", accountId: formattedId });
 			const snapshot = await waitFor(
 				accountConvergenceActor,
 				(state) =>
-					(state.context.accountId !== null &&
-						normalizeAccountId(state.context.accountId) ===
-							normalizeAccountId(formattedId)) ||
+					(state.context.authenticationStatus === "authenticated" && state.context.accountId !== null &&
+						normalizeAccountId(state.context.accountId) === normalizeAccountId(formattedId)) ||
+					state.matches("authenticationRequired") ||
 					(state.matches("signedOut") && state.context.error !== null),
 			);
 			const success =
-				snapshot.context.accountId !== null &&
+				snapshot.context.authenticationStatus === "authenticated" && snapshot.context.accountId !== null &&
 				normalizeAccountId(snapshot.context.accountId) ===
 					normalizeAccountId(formattedId);
 			if (success) toast.success("Logged in successfully!");
@@ -773,6 +815,10 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			let formattedId: string;
 			let nextRecoveryCode: string;
 			try {
+				const existing = accountConvergenceActor.getSnapshot().context.accountId;
+				if (existing && normalizeAccountId(existing) !== normalizeAccountId(accountIdInput)) {
+					throw new Error("Use the recovery code for the account open here");
+				}
 				const recovered = await recoverAccount(accountIdInput, recoveryCode);
 				formattedId = displayAccountId(recovered.accountId);
 				nextRecoveryCode = recovered.recoveryCode;
@@ -780,15 +826,19 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 				setError(error instanceof Error ? error.message : "Recovery failed");
 				return null;
 			}
+			if (accountConvergenceActor.getSnapshot().context.accountId) {
+				accountConvergenceActor.send({ type: "AUTHENTICATION_REQUIRED" });
+			}
 			accountConvergenceActor.send({ type: "LOGIN", accountId: formattedId });
 			const snapshot = await waitFor(
 				accountConvergenceActor,
 				(state) =>
-					(state.context.accountId !== null &&
+					(state.context.authenticationStatus === "authenticated" && state.context.accountId !== null &&
 						normalizeAccountId(state.context.accountId) === normalizeAccountId(formattedId)) ||
+					state.matches("authenticationRequired") ||
 					(state.matches("signedOut") && state.context.error !== null),
 			);
-			return snapshot.context.accountId !== null ? nextRecoveryCode : null;
+			return snapshot.context.authenticationStatus === "authenticated" ? nextRecoveryCode : null;
 		},
 		[accountConvergenceActor],
 	);
@@ -819,11 +869,23 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		);
 	}, []);
 
+	const loadColumnDocument = useCallback(async (columnId: string) => {
+		if (!accountId) return null;
+		const db = await ensureDurableQueueStorage();
+		const pending = yjsOutbox.getAllEntries()
+			.filter(entry => normalizeAccountId(entry.accountId) === normalizeAccountId(accountId) && entry.columnId === columnId && entry.kind === "sync")
+			.map(entry => new Uint8Array(entry.updateBytes));
+		return readColumnDocument(db, accountId, columnId, pending);
+	}, [accountId, ensureDurableQueueStorage, yjsOutbox]);
+
 	const sendUpdate = useCallback(
 		(columnId: string, update: Uint8Array) => {
+			if (accountId && localFirstDbRef.current) {
+				cacheColumnUpdate(localFirstDbRef.current, accountId, columnId, update);
+			}
 			ensureColumnSessionManager()?.sendSync(columnId, update);
 		},
-		[ensureColumnSessionManager],
+		[accountId, ensureColumnSessionManager],
 	);
 
 	const sendAwareness = useCallback(
@@ -1085,7 +1147,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 
 		try {
 			const response = await fetch("/api/account/export", {
-				headers: e2eAccountHeaders(accountId),
+				headers: accountRequestHeaders(accountId),
 			});
 
 			if (!response.ok) {
@@ -1110,7 +1172,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 					{
 						method: "POST",
 							headers: {
-								...e2eAccountHeaders(accountId),
+								...accountRequestHeaders(accountId),
 								"Content-Type": "application/json",
 						},
 						body: JSON.stringify(payload),
@@ -1173,6 +1235,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			schemaVersion: 1 as const,
 			exportedAt: Date.now(),
 			pendingYjs: yjsOutbox.getAllEntries(),
+			columnDocuments: Array.from(db.collections.columnDocument.values()),
 			pendingCommands: accountId ? mutationQueue.getPending(accountId) : [],
 			guestColumns,
 			records: [
@@ -1186,6 +1249,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		accountId,
 		account,
 		isLoading,
+		authenticationStatus,
+		isReconnecting,
 		error,
 		connectionStatus,
 		syncMode,
@@ -1203,6 +1268,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		deletedColumns,
 		sharedWithByColumn,
 		publicLinksByColumn,
+		loadColumnDocument,
 		subscribeToColumn,
 		getColumnPresence,
 		createColumn,

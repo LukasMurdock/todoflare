@@ -34,6 +34,7 @@ function isStableConvergenceSnapshot(
 		snapshot.matches("ready") ||
 		snapshot.matches("readyOffline") ||
 		snapshot.matches("retryScheduled") ||
+		snapshot.matches("authenticationRequired") ||
 		snapshot.matches("signedOut")
 	);
 }
@@ -183,6 +184,8 @@ export function useAccountConvergence(
 		(snapshot) => snapshot.context.lastReplayDurationMs,
 	);
 	const error = useSelector(actor, (snapshot) => snapshot.context.error);
+	const authenticationStatus = useSelector(actor, (snapshot) => snapshot.context.authenticationStatus);
+	const isReconnecting = useSelector(actor, (snapshot) => snapshot.matches("reconnecting"));
 	const isLoading = useSelector(
 		actor,
 		(snapshot) =>
@@ -203,6 +206,8 @@ export function useAccountConvergence(
 		lastReplayReport,
 		lastReplayDurationMs,
 		error,
+		authenticationStatus,
+		isReconnecting,
 		isLoading,
 	};
 }

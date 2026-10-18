@@ -101,6 +101,7 @@ export type AccountCommandEffect =
 	| { type: "column.public.disabled"; columnId: string };
 
 export interface ReplayReport {
+	authenticationRequired?: boolean;
 	attempted: number;
 	acked: number;
 	retried: number;

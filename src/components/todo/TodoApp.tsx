@@ -1,5 +1,6 @@
 "use client";
 
+import { ReconnectBanner } from "@/components/account/ReconnectBanner";
 import { StorageRecoveryBanner } from "@/components/account/StorageRecoveryBanner";
 
 import * as React from "react";
@@ -56,6 +57,7 @@ export function TodoApp() {
 	return (
 		<div className="relative min-h-screen">
 			<StorageRecoveryBanner />
+			<ReconnectBanner />
 			{/* Account badge in top-right corner */}
 			<div className="fixed top-2 right-2 z-50">
 				<AccountBadge />

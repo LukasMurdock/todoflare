@@ -1,3 +1,4 @@
+import { applyUpdate } from "yjs";
 "use client";
 
 import * as React from "react";
@@ -416,6 +417,7 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 	const {
 		accountId,
 		account,
+		loadColumnDocument,
 		subscribeToColumn,
 		onColumnMessage,
 		sendUpdate,
@@ -542,6 +544,9 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 
 		const initPromise = (async () => {
 			try {
+				const cached = await loadColumnDocument(column.id);
+				if (cancelled) return;
+				if (cached) applyUpdate(editor.getOptions(YjsPlugin).ydoc, cached, "remote");
 				await api.yjs.init({
 					id: column.id,
 					autoConnect: true,
@@ -585,7 +590,7 @@ function TodoEditor({ column, onUpdate }: TodoEditorProps) {
 				}
 			});
 		};
-	}, [isSyncedMode, editor, column.id]);
+	}, [isSyncedMode, editor, column.id, loadColumnDocument]);
 
 	// For local-only mode, keep Plate in sync with `column.value`.
 	const isApplyingExternalValueRef = React.useRef(false);

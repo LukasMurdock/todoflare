@@ -144,6 +144,31 @@ async function flushSocketAuthorization(): Promise<void> {
 }
 
 describe("column session machine", () => {
+	it("pauses on 401 without access-loss cleanup and replays edits after authentication resumes", async () => {
+		let authenticated = false;
+		let authRequests = 0;
+		const harness = createHarness({ getSocketUrl: async () => {
+			authRequests++;
+			if (!authenticated) throw new ColumnSocketAuthorizationError(401);
+			return "ws://test/column";
+		} });
+		harness.actor.send({ type: "SUBSCRIBE", leaseId: "editor" });
+		await flushSocketAuthorization();
+		expect(harness.actor.getSnapshot().matches("paused")).toBe(true);
+		harness.actor.send({ type: "SEND_SYNC", update: new Uint8Array([5]) });
+		harness.clock.increment(120_000);
+		expect(authRequests).toBe(1);
+		expect(harness.pending.size).toBe(1);
+		expect(harness.log).not.toContain("cleanup.start");
+		authenticated = true;
+		harness.actor.send({ type: "REALTIME_ENABLED" });
+		await flushSocketAuthorization();
+		harness.sockets[0].open();
+		expect(harness.sockets[0].sent).toHaveLength(1);
+		expect(harness.pending.size).toBe(1); // delivery still requires server acknowledgement
+		harness.actor.stop();
+	});
+
 	it("owns one socket and reaches connected only after ordered replay", async () => {
 		const replayFrames = [
 			{ data: new Uint8Array([1]).buffer, outboxId: "first", requiresAck: true },

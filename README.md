@@ -11,7 +11,7 @@ read-only public links, and recover deleted data.
 - **Account mode:** passkeys authenticate access through an HttpOnly Better Auth
   session cookie. The generated 16-digit Account ID is a public sharing identity;
   it cannot authenticate and is safe to give to collaborators.
-  Account snapshots, queued metadata commands, pending Yjs updates, and sync
+  Account snapshots, merged Yjs document caches, queued metadata commands, pending Yjs updates, and sync
   telemetry are persisted in IndexedDB so the app can start and accept edits
   offline.
   Authenticated WebSockets use a per-column, single-use ticket that expires
@@ -30,6 +30,13 @@ read-only public links, and recover deleted data.
   shared/public KV keys are repairable discovery projections.
 - **Access loss:** when access is revoked, queued metadata and Yjs changes for
   that column are discarded and the local editor detaches.
+
+Sessions renew through API responses, with a periodic check while the app is
+visible and another check when it regains focus. If authentication expires,
+sync pauses and a reconnect banner offers passkey authentication for the same
+account. Cached documents remain editable, and metadata commands and Yjs edits
+stay queued across reloads until reconnection. Account IDs in request headers
+only bind queued work to the expected cookie identity; they cannot authenticate.
 
 The browser persistence layer is a project-owned IndexedDB-backed `PersistedMap`.
 The project does not currently use RxDB or TanStack DB.

@@ -29,6 +29,7 @@ function errorMessage(payload: ErrorPayload | null, fallback: string): string {
 export async function mutationResultFromResponse(
 	response: Response,
 ): Promise<MutationReplayResult> {
+	if (response.status === 401) return { kind: "authentication_required" };
 	if (response.ok) {
 		return { kind: "ack" };
 	}

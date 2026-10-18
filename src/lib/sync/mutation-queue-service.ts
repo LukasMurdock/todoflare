@@ -22,6 +22,7 @@ const JITTER_RATIO = 0.2;
 
 export type MutationReplayResult =
 	| { kind: "ack" }
+	| { kind: "authentication_required" }
 	| { kind: "retry"; error?: string }
 	| {
 		kind: "drop";
@@ -177,6 +178,11 @@ export class LocalMutationQueueService implements MutationQueueService {
 
 			const index = this.queue.findIndex((entry) => entry.queueId === mutation.queueId);
 			if (index < 0) continue;
+
+			if (result.kind === "authentication_required") {
+				report.authenticationRequired = true;
+				break;
+			}
 
 			if (result.kind === "ack") {
 				this.queue.splice(index, 1);

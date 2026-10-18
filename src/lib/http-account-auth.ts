@@ -1,5 +1,6 @@
 import { normalizeAccountId, validateAccountId } from "./account";
-import { createAuth, type AuthBindings } from "../server/auth";
+import type { AuthBindings } from "../server/auth";
+import { getRequestSession } from "../server/session";
 
 export type AccountCredentialResult =
 	| { ok: true; accountId: string }
@@ -31,9 +32,13 @@ export async function requireAccountCredential(
 			return { ok: true, accountId: normalizeAccountId(credential) };
 		}
 	}
-	const auth = createAuth(env, new URL(request.url).origin);
-	const session = await auth.api.getSession({ headers: request.headers });
+	const session = await getRequestSession(request, env);
 	if (!session || !validateAccountId(session.user.id)) {
+		return unauthorized();
+	}
+
+	const expected = request.headers.get("X-Todoflare-Expected-Account");
+	if (expected !== null && (!validateAccountId(expected) || normalizeAccountId(expected) !== normalizeAccountId(session.user.id))) {
 		return unauthorized();
 	}
 

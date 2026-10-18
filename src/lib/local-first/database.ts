@@ -1,6 +1,8 @@
+import { mergeUpdates } from "yjs";
 /** IndexedDB-backed local-first collections with validated, versioned records. */
 import type {
 	AccountSnapshotDoc,
+	ColumnDocumentDoc,
 	DurableCollectionName,
 	MutationOutboxDoc,
 	QuarantinedRecord,
@@ -11,6 +13,7 @@ import { migrateCollectionEntries } from "./persistence-contract";
 
 export interface LocalFirstCollections {
 	accountSnapshot: Map<string, AccountSnapshotDoc>;
+	columnDocument: Map<string, ColumnDocumentDoc>;
 	mutationOutbox: Map<string, MutationOutboxDoc>;
 	yjsUpdateOutbox: Map<string, YjsUpdateOutboxDoc>;
 	syncState: Map<string, SyncStateDoc>;
@@ -44,6 +47,7 @@ const COLLECTION_LAYOUT_VERSION = 1;
 
 const DURABLE_COLLECTION_KEYS = [
 	"accountSnapshot",
+	"columnDocument",
 	"mutationOutbox",
 	"yjsUpdateOutbox",
 	"syncState",
@@ -233,7 +237,13 @@ function patchCollections(
 					}
 					for (const [key, value] of patch.sets) {
 						// A receipt/removal always wins over a stale tab's retry state.
-						if (!isOutbox || !deleted.has(key)) entries.set(key, value);
+						if (name === "columnDocument" && entries.has(key)) {
+							try {
+								const previous = entries.get(key) as ColumnDocumentDoc;
+								const next = value as ColumnDocumentDoc;
+								entries.set(key, { ...next, updateBytes: Array.from(mergeUpdates([new Uint8Array(previous.updateBytes), new Uint8Array(next.updateBytes)])) });
+							} catch (error) { reject(error); tx.abort(); return; }
+						} else if (!isOutbox || !deleted.has(key)) entries.set(key, value);
 					}
 					store.put({ name, layoutVersion: COLLECTION_LAYOUT_VERSION, entries: Array.from(entries), deletedKeys: Array.from(deleted) });
 				};
@@ -260,7 +270,7 @@ function createInMemoryDb(issue: StorageIssue): LocalFirstDatabase {
 	let durable: LocalFirstDatabase | null = null;
 	let unsubscribe: (() => void) | null = null;
 	const fallback: LocalFirstDatabase = {
-		collections: { accountSnapshot: new Map(), mutationOutbox: new Map(), yjsUpdateOutbox: new Map(), syncState: new Map(), quarantine: new Map() },
+		collections: { columnDocument: new Map(), accountSnapshot: new Map(), mutationOutbox: new Map(), yjsUpdateOutbox: new Map(), syncState: new Map(), quarantine: new Map() },
 		getStorageHealth: health.get,
 		subscribeStorageHealth: health.subscribe,
 		async flush() { if (durable) return durable.flush(); throw new Error(issue.message); },
@@ -386,6 +396,8 @@ export async function createIndexedDbBackedDb(): Promise<LocalFirstDatabase> {
 	const entriesFor = <T>(name: DurableCollectionName): Array<[string, T]> =>
 		(migrated.get(name)?.entries ?? []) as Array<[string, T]>;
 	const collections: LocalFirstCollections = {
+		columnDocument: new PersistedMap(entriesFor<ColumnDocumentDoc>("columnDocument"),
+			(entries) => persistCollection("columnDocument", entries)),
 		accountSnapshot: new PersistedMap(entriesFor<AccountSnapshotDoc>("accountSnapshot"),
 			(entries) => persistCollection("accountSnapshot", entries)),
 		mutationOutbox: new PersistedMap(entriesFor<MutationOutboxDoc>("mutationOutbox"),

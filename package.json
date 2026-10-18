@@ -33,6 +33,7 @@
     "deploy:staging": "pnpm check:sensitive-url-observability && pnpm build:staging && node scripts/deploy-staging.mjs",
     "auth:migrate:staging": "wrangler d1 migrations apply AUTH_DB --remote --env staging",
     "test:staging": "node scripts/staging-drill.mjs",
+    "test:staging:auth": "TODOFLARE_PASSKEY_ORIGIN=https://staging.todo.tamesystems.org playwright test --config playwright.staging.config.ts",
     "build:production": "node scripts/build-production.mjs"
   },
   "dependencies": {

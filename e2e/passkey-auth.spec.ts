@@ -1,6 +1,13 @@
 import { expect, test } from "@playwright/test";
+import { addColumnAndGetId } from "./helpers/ui-session";
+import { getSyncStateSnapshot, getYjsOutboxCountForColumn } from "./helpers/local-first-readers";
 
-test("registers and signs back in with a discoverable passkey", async ({ page, context }) => {
+test("reconnects with a real passkey after expiry and preserves queued metadata and Yjs across reload", async ({ page, context, browser }) => {
+	test.setTimeout(90_000);
+	const origin = process.env.TODOFLARE_PASSKEY_ORIGIN ?? "http://localhost:4173";
+	// Exercise real session authentication, including during app requests that
+	// carry fixture headers in the isolated E2E build.
+	await context.setExtraHTTPHeaders({ "X-Test-Disable-Auth-Bypass": "1" });
 	const cdp = await context.newCDPSession(page);
 	await cdp.send("WebAuthn.enable");
 	await cdp.send("WebAuthn.addVirtualAuthenticator", {
@@ -22,7 +29,7 @@ test("registers and signs back in with a discoverable passkey", async ({ page, c
 			{ id: "passkey-guest", value: [{ type: "p", children: [{ text: "Guest draft" }] }] },
 		]));
 	});
-	await page.goto("http://localhost:4173/");
+	await page.goto(origin);
 	const accountId = await page.evaluate(async () => {
 		const encode = (value: ArrayBuffer): string => {
 			const bytes = new Uint8Array(value);
@@ -92,6 +99,61 @@ test("registers and signs back in with a discoverable passkey", async ({ page, c
 	await expect(page.getByRole("heading", { name: "You have local data" })).toBeVisible();
 	await page.getByRole("button", { name: "Sign in with a passkey" }).click();
 	await expect(page.getByText(accountId.slice(0, 4), { exact: false }).first()).toBeVisible();
+	await expect.poll(async () => (await getSyncStateSnapshot(page, accountId))?.mode).toBe("account_syncing");
+	const columnId = await addColumnAndGetId(page);
+	const editor = page.getByRole("textbox", { name: "Todo editor" }).first();
+	await editor.click();
+	await page.keyboard.type("Before expiry");
+	await expect.poll(() => getYjsOutboxCountForColumn(page, accountId, columnId)).toBe(0);
+
+	await context.setOffline(true);
+	await page.evaluate(() => window.dispatchEvent(new Event("offline")));
+	await editor.click();
+	await page.keyboard.press("ControlOrMeta+End");
+	await page.keyboard.type(" - queued while offline");
+	await page.getByRole("button", { name: "Add column" }).click();
+	await expect.poll(async () => (await getSyncStateSnapshot(page, accountId))?.queueDepth).toBeGreaterThan(0);
+	await expect.poll(() => getYjsOutboxCountForColumn(page, accountId, columnId)).toBeGreaterThan(0);
+
+	await context.clearCookies({ name: /session_token/ });
+	await context.setOffline(false);
+	await page.evaluate(() => window.dispatchEvent(new Event("online")));
+	const reconnect = page.getByRole("button", { name: "Reconnect with a passkey" });
+	await expect(reconnect).toBeVisible();
+	await page.reload();
+	await expect(reconnect).toBeVisible();
+	await expect(page.getByRole("textbox", { name: "Todo editor" }).first()).toContainText("queued while offline");
+	await expect.poll(async () => (await getSyncStateSnapshot(page, accountId))?.queueDepth).toBeGreaterThan(0);
+	await expect.poll(() => getYjsOutboxCountForColumn(page, accountId, columnId)).toBeGreaterThan(0);
+
+	// A failed WebAuthn attempt leaves the account, editors and both queues intact.
+	await page.route("**/api/auth/passkey/generate-authenticate-options", route => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ message: "Try reconnecting again" }) }));
+	await reconnect.click();
+	await expect(reconnect).toBeEnabled();
+	await expect(page.getByRole("textbox", { name: "Todo editor" }).first()).toContainText("queued while offline");
+	await expect.poll(async () => (await getSyncStateSnapshot(page, accountId))?.queueDepth).toBeGreaterThan(0);
+	await page.unroute("**/api/auth/passkey/generate-authenticate-options");
+
+	await reconnect.click();
+	await expect(reconnect).toBeHidden();
+	await expect.poll(async () => (await getSyncStateSnapshot(page, accountId))?.queueDepth, { timeout: 20_000 }).toBe(0);
+	await expect.poll(() => getYjsOutboxCountForColumn(page, accountId, columnId), { timeout: 20_000 }).toBe(0);
+	await expect.poll(async () => (await getSyncStateSnapshot(page, accountId))?.revokeDiscardCount).toBe(0);
+
+	// A separate browser context with only the renewed cookie must receive the
+	// content and column that had never reached the server before expiry.
+	const observer = await browser.newContext({ storageState: { cookies: await context.cookies(), origins: [] }, extraHTTPHeaders: { "X-Test-Disable-Auth-Bypass": "1" } });
+	try {
+		const observerPage = await observer.newPage();
+		await observerPage.addInitScript(id => {
+			localStorage.setItem("todoflare-account", id);
+			localStorage.setItem("todoflare-welcomed", "true");
+		}, accountId);
+		await observerPage.goto(origin);
+		await expect(observerPage.getByRole("textbox", { name: "Todo editor" }).first()).toContainText("queued while offline");
+		await expect(observerPage.getByRole("textbox", { name: "Todo editor" })).toHaveCount(2);
+	} finally { await observer.close(); }
+
 });
 
 interface PublicKeyCredentialCreationOptionsJSON

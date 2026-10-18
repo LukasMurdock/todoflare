@@ -75,6 +75,8 @@ function harness(options?: {
 	server?: ReturnType<typeof projection>;
 	pending?: QueuedMutation[];
 	replay?: (signal: AbortSignal) => Promise<ReplayReport>;
+	fetchServer?: AccountConvergenceDependencies["fetchServer"];
+	login?: AccountConvergenceDependencies["login"];
 }) {
 	let pending = [...(options?.pending ?? [])];
 	const persistedCredentials: Array<string | null> = [];
@@ -82,12 +84,12 @@ function harness(options?: {
 	let serverFetchCount = 0;
 	const dependencies: AccountConvergenceDependencies = {
 		loadLocal: async () => options?.local ?? null,
-		fetchServer: async (_accountId, signal) => {
+		fetchServer: options?.fetchServer ?? (async (_accountId, signal) => {
 			fetchSignals.push(signal);
 			serverFetchCount += 1;
 			return options?.server ?? projection();
-		},
-		login: async () => options?.server ?? projection(),
+		}),
+		login: options?.login ?? (async () => options?.server ?? projection()),
 		createAccount: async () => options?.server ?? projection(),
 		replay: async (_accountId, signal) => {
 			if (options?.replay) return options.replay(signal);
@@ -118,6 +120,64 @@ function harness(options?: {
 }
 
 describe("account convergence machine", () => {
+	it("retains cached content and queued edits through expiry, failed reconnect and same-account reconnect", async () => {
+		let authenticated = false;
+		let replayed = 0;
+		const test = harness({
+			local: projection(["cached"]), pending: [queuedCreate()],
+			fetchServer: async () => { throw new AccountConvergenceFailure({ scope: "auth", kind: "reauth_required" }, "Expired"); },
+			login: async () => { if (!authenticated) throw new Error("network error"); return projection(["cached"]); },
+			replay: async () => { replayed++; return emptyReport(); },
+		});
+		test.actor.send({ type: "RESTORE_SESSION", accountId: ACCOUNT_ID });
+		await waitFor(test.actor, state => state.matches("authenticationRequired"));
+		expect(test.actor.getSnapshot().context.projection?.account.columnOrder).toEqual(["cached", COLUMN_ID]);
+		expect(test.actor.getSnapshot().context.queueDepth).toBe(1);
+		test.actor.send({ type: "REPLAY_WAKE" });
+		test.actor.send({ type: "COMMAND_PERSISTED" });
+		expect(replayed).toBe(0);
+		test.actor.send({ type: "LOGIN", accountId: "2222 2222 2222 2222" });
+		expect(test.actor.getSnapshot().matches("authenticationRequired")).toBe(true);
+		test.actor.send({ type: "LOGIN", accountId: ACCOUNT_ID });
+		await waitFor(test.actor, state => state.matches("authenticationRequired"));
+		expect(test.actor.getSnapshot().context.queueDepth).toBe(1);
+		expect(test.actor.getSnapshot().context.projection?.account.columnOrder).toContain("cached");
+		authenticated = true;
+		test.actor.send({ type: "LOGIN", accountId: ACCOUNT_ID });
+		await waitFor(test.actor, state => state.matches("retryScheduled"));
+		expect(test.actor.getSnapshot().context.authenticationStatus).toBe("authenticated");
+		expect(test.actor.getSnapshot().context.projection?.account.columnOrder).toEqual(["cached", COLUMN_ID]);
+		expect(replayed).toBe(1);
+		expect(test.persistedCredentials).not.toContain(null);
+		test.actor.stop();
+	});
+
+	it("pauses on unauthorized replay while retaining acknowledged effects", async () => {
+		const command = queuedCreate();
+		const test = harness({ server: projection(), pending: [command], replay: async () => ({
+			...emptyReport(), attempted: 2, acked: 1, ackedCommands: [command], authenticationRequired: true,
+		}) });
+		test.actor.send({ type: "RESTORE_SESSION", accountId: ACCOUNT_ID });
+		await waitFor(test.actor, state => state.matches("authenticationRequired"));
+		expect(test.actor.getSnapshot().context.serverBase?.account.columnOrder).toContain(COLUMN_ID);
+		expect(test.actor.getSnapshot().context.authenticationStatus).toBe("required");
+		expect(test.persistedCredentials).not.toContain(null);
+		test.actor.stop();
+	});
+
+	it("recognizes expiry during confirmation without clearing the local account", async () => {
+		let calls = 0;
+		const test = harness({ local: projection(["cached"]), fetchServer: async () => {
+			if (++calls > 1) throw new AccountConvergenceFailure({ scope: "auth", kind: "reauth_required" }, "Expired");
+			return projection(["cached"]);
+		}, replay: async () => ({ ...emptyReport(), attempted: 1, acked: 1 }) });
+		test.actor.send({ type: "RESTORE_SESSION", accountId: ACCOUNT_ID });
+		await waitFor(test.actor, state => state.matches("authenticationRequired"));
+		expect(test.actor.getSnapshot().context.accountId).toBe(ACCOUNT_ID);
+		expect(test.actor.getSnapshot().context.projection?.account.columnOrder).toEqual(["cached"]);
+		test.actor.stop();
+	});
+
 	it("loads the cached projection and remains ready while offline", async () => {
 		const test = harness({ online: false, local: projection(["cached"]) });
 		test.actor.send({ type: "RESTORE_SESSION", accountId: ACCOUNT_ID });

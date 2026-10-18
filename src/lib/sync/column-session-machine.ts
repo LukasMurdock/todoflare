@@ -13,8 +13,8 @@ export type ColumnTerminationReason = "revoked" | "column_deleted";
 export class ColumnSocketAuthorizationError extends Error {
 	constructor(
 		readonly status: number,
-		readonly reason: ColumnTerminationReason =
-			status === 404 ? "column_deleted" : "revoked",
+		readonly reason: ColumnTerminationReason | "reauth_required" =
+			status === 401 ? "reauth_required" : status === 404 ? "column_deleted" : "revoked",
 	) {
 		super(`WebSocket authorization failed: ${status}`);
 		this.name = "ColumnSocketAuthorizationError";
@@ -77,6 +77,7 @@ export type ColumnSessionEvent =
 	| { type: "COLUMN_DELETED" };
 
 export interface ColumnSessionDependencies {
+	onAuthenticationRequired?: () => void;
 	createSocket: (url: string, protocols: string[]) => ColumnSocketLike;
 	getSocketUrl: (
 		accountId: string,
@@ -226,6 +227,7 @@ export function createColumnSessionMachine(dependencies: ColumnSessionDependenci
 			recordSocketUrl: assign((_, params: { url: string }) => ({
 				socketUrl: params.url,
 			})),
+			notifyAuthenticationRequired: () => dependencies.onAuthenticationRequired?.(),
 			recordAuthorizationFailure: assign({
 				socketUrl: null,
 				retryAttempt: ({ context }) => context.retryAttempt + 1,
@@ -378,6 +380,11 @@ export function createColumnSessionMachine(dependencies: ColumnSessionDependenci
 								},
 							},
 							onError: [
+								{
+									guard: ({ event }) => event.error instanceof ColumnSocketAuthorizationError && event.error.reason === "reauth_required",
+									target: "#columnSession.paused",
+									actions: ["setRealtimeDisabled", "notifyAuthenticationRequired"],
+								},
 								{
 									guard: ({ event }) =>
 										event.error instanceof ColumnSocketAuthorizationError &&

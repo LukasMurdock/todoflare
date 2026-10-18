@@ -2,6 +2,7 @@ import { z } from "zod";
 import { parseQueuedMutation } from "../sync/account-command-parser";
 import type {
 	AccountSnapshotDoc,
+	ColumnDocumentDoc,
 	DurableCollectionName,
 	MutationOutboxDoc,
 	QuarantinedRecord,
@@ -64,6 +65,10 @@ const accountSnapshotSchema = z
 	.strict();
 
 const byteArraySchema = z.array(z.number().int().min(0).max(255));
+const columnDocumentSchema = z.object({
+	schemaVersion: z.literal(1), id: z.string().min(1),
+	accountId: z.string().min(1), columnId: z.string().min(1), updateBytes: byteArraySchema,
+}).strict();
 const yjsUpdateOutboxSchema = z
 	.object({
 		schemaVersion: z.literal(1),
@@ -91,6 +96,7 @@ const syncStateSchema = z
 			"guest_local",
 			"account_offline",
 			"account_syncing",
+			"account_auth_required",
 			"account_realtime",
 			"public_readonly",
 		]),
@@ -106,6 +112,7 @@ const syncStateSchema = z
 	.strict();
 
 type PersistedDoc =
+	| ColumnDocumentDoc
 	| AccountSnapshotDoc
 	| MutationOutboxDoc
 	| YjsUpdateOutboxDoc
@@ -146,6 +153,7 @@ function migrateLegacy(
 				sharedWithByColumn: raw.sharedWithByColumn ?? {},
 				publicLinksByColumn: raw.publicLinksByColumn ?? {},
 			};
+		case "columnDocument":
 		case "mutationOutbox":
 		case "yjsUpdateOutbox":
 		case "syncState":
@@ -196,6 +204,7 @@ function parseCurrent(
 
 	const schema = {
 		accountSnapshot: accountSnapshotSchema,
+		columnDocument: columnDocumentSchema,
 		yjsUpdateOutbox: yjsUpdateOutboxSchema,
 		syncState: syncStateSchema,
 	}[collection];

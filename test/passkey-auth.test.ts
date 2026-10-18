@@ -66,6 +66,45 @@ describe("passkey authentication boundary", () => {
 		const account = await SELF.fetch("http://localhost:5173/api/account", { headers: { Cookie: cookie, "X-Test-Disable-Auth-Bypass": "1" } });
 		expect(account.status).toBe(200);
 		expect((await account.json() as { account: { id: string } }).account.id.replace(/\D/g, "")).toBe(user.id);
+		const mismatch = await SELF.fetch("http://localhost:5173/api/column", {
+			method: "POST", headers: { Cookie: cookie, "X-Test-Disable-Auth-Bypass": "1", "X-Todoflare-Expected-Account": "1111111111111111" },
+		});
+		expect(mismatch.status).toBe(401);
+
+	});
+
+	it.each([
+		["/api/auth-status", "GET", 200],
+		["/api/account", "GET", 200],
+		["/api/column/00000000-0000-4000-8000-000000000001/ws-ticket", "POST", 404],
+	] as const)("refreshes the browser cookie through %s", async (path, method, statusCode) => {
+		const login = await SELF.fetch("http://localhost:5173/api/auth/sign-in/anonymous", {
+			method: "POST", headers: { Origin: "http://localhost:5173" },
+		});
+		const { user } = await login.json() as { user: { id: string } };
+		const cookie = login.headers.getSetCookie().map(value => value.split(";")[0]).join("; ");
+		await env.AUTH_DB.prepare("INSERT INTO passkey (id,publicKey,userId,credentialID,counter,deviceType,backedUp) VALUES (?, 'fixture', ?, ?, 0, 'singleDevice', 0)").bind(crypto.randomUUID(), user.id, crypto.randomUUID()).run();
+		await env.ACCOUNTS.put(`account:${user.id}`, JSON.stringify({ schemaVersion: 1, id: user.id, columnOrder: [], hiddenSharedColumns: [], createdAt: 1 }));
+		// Put the session inside Better Auth's rolling refresh window without
+		// changing its token/signature. Ordinary app traffic must renew both sides.
+		await env.AUTH_DB.prepare('UPDATE session SET "expiresAt" = ? WHERE "userId" = ?').bind(Date.now() + 60 * 60 * 1000, user.id).run();
+		const response = await SELF.fetch(`http://localhost:5173${path}`, {
+			method, headers: { Cookie: cookie, "X-Test-Disable-Auth-Bypass": "1" },
+		});
+		expect(response.status).toBe(statusCode);
+		const renewed = response.headers.getSetCookie().find(value => value.startsWith("better-auth.session_token="));
+		expect(renewed).toContain("Max-Age=604800");
+		const row = await env.AUTH_DB.prepare('SELECT "expiresAt" FROM session WHERE "userId" = ?').bind(user.id).first<{ expiresAt: string | number }>();
+		expect(new Date(row!.expiresAt).getTime()).toBeGreaterThan(Date.now() + 6 * 24 * 60 * 60 * 1000);
+	});
+
+	it("clears an expired session cookie and refuses account access", async () => {
+		const login = await SELF.fetch("http://localhost:5173/api/auth/sign-in/anonymous", { method: "POST", headers: { Origin: "http://localhost:5173" } });
+		const { user } = await login.json() as { user: { id: string } };
+		await env.AUTH_DB.prepare('UPDATE session SET "expiresAt" = ? WHERE "userId" = ?').bind(Date.now() - 1000, user.id).run();
+		const response = await SELF.fetch("http://localhost:5173/api/account", { headers: { Cookie: login.headers.get("Set-Cookie")!, "X-Test-Disable-Auth-Bypass": "1" } });
+		expect(response.status).toBe(401);
+		expect(response.headers.getSetCookie().find(value => value.startsWith("better-auth.session_token="))).toContain("Max-Age=0");
 	});
 
 });

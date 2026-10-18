@@ -44,7 +44,7 @@ export function AccountBadge() {
 		yjsOutboxSummary,
 		logout,
 		resetSyncTelemetry,
-		isAuthenticated,
+		authenticationStatus,
 		restoreColumn,
 		exportAccountData,
 		importAccountData,
@@ -78,7 +78,7 @@ export function AccountBadge() {
 		}
 	};
 
-	if (!isAuthenticated || !accountId) {
+	if (!accountId) {
 		if (
 			syncStateSummary.storageState === "checking" ||
 			(syncStateSummary.storageState === "durable" &&
@@ -122,12 +122,13 @@ export function AccountBadge() {
 		offline: "Offline",
 	}[connectionStatus];
 
-	const effectiveStatusText = statusText;
+	const effectiveStatusText = authenticationStatus === "required" ? "Sign-in required" : statusText;
 
 	const syncModeText = {
 		guest_local: "Guest local",
 		account_offline: "Account offline",
 		account_syncing: "Account syncing",
+		account_auth_required: "Sign-in required",
 		account_realtime: "Account realtime",
 		public_readonly: "Public readonly",
 	}[syncMode];
@@ -184,6 +185,7 @@ export function AccountBadge() {
 			sync: {
 				mode: syncMode,
 				connectionStatus,
+				authenticationStatus,
 				queueDepth: syncStateSummary.queueDepth,
 				yjsQueueDepth: syncStateSummary.yjsQueueDepth,
 				lastServerHydrationAt: syncStateSummary.lastServerHydrationAt,

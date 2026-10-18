@@ -16,7 +16,7 @@ import type {
 } from "./contracts";
 import type { MutationReplayResult } from "./mutation-queue-service";
 import { mutationResultFromResponse } from "./replay-response";
-import { e2eAccountHeaders } from "../e2e-auth";
+import { accountRequestHeaders } from "../account-request-headers";
 
 export type AccountCommandExecutionResult = MutationReplayResult & {
 	effects?: AccountCommandEffect[];
@@ -89,7 +89,7 @@ export function createAccountCommandExecutor(
 	return {
 		async execute(mutation, executionOptions) {
 			const activeAccountId = mutation.entityId;
-			const testHeaders = e2eAccountHeaders(activeAccountId);
+			const headers = accountRequestHeaders(activeAccountId);
 			const signal = executionOptions?.signal;
 
 			switch (mutation.opType) {
@@ -101,7 +101,7 @@ export function createAccountCommandExecutor(
 						method: "POST",
 						signal,
 						headers: {
-							...testHeaders,
+							...headers,
 							"Content-Type": "application/json",
 							"X-Idempotency-Key": mutation.idempotencyKey,
 						},
@@ -138,7 +138,7 @@ export function createAccountCommandExecutor(
 							method: "PUT",
 							signal,
 							headers: {
-								...testHeaders,
+								...headers,
 								"Content-Type": "application/json",
 								"X-Idempotency-Key": mutation.idempotencyKey,
 							},
@@ -162,7 +162,7 @@ export function createAccountCommandExecutor(
 							method: "PUT",
 							signal,
 							headers: {
-								...testHeaders,
+								...headers,
 								"Content-Type": "application/json",
 								"X-Idempotency-Key": mutation.idempotencyKey,
 							},
@@ -185,7 +185,7 @@ export function createAccountCommandExecutor(
 						method: "DELETE",
 						signal,
 						headers: {
-							...testHeaders,
+							...headers,
 							"X-Idempotency-Key": mutation.idempotencyKey,
 						},
 					});
@@ -207,7 +207,7 @@ export function createAccountCommandExecutor(
 						method: "POST",
 						signal,
 						headers: {
-							...testHeaders,
+							...headers,
 							"X-Idempotency-Key": mutation.idempotencyKey,
 						},
 					});
@@ -249,7 +249,7 @@ export function createAccountCommandExecutor(
 							method: isShare ? "POST" : "DELETE",
 							signal,
 							headers: {
-								...testHeaders,
+								...headers,
 								"Content-Type": "application/json",
 								"X-Idempotency-Key": mutation.idempotencyKey,
 							},
@@ -290,7 +290,7 @@ export function createAccountCommandExecutor(
 						method: "POST",
 						signal,
 						headers: {
-							...testHeaders,
+							...headers,
 							"X-Idempotency-Key": mutation.idempotencyKey,
 						},
 					});
@@ -326,7 +326,7 @@ export function createAccountCommandExecutor(
 						method: "DELETE",
 						signal,
 						headers: {
-							...testHeaders,
+							...headers,
 							"X-Idempotency-Key": mutation.idempotencyKey,
 						},
 					});

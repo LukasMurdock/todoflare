@@ -11,8 +11,9 @@ const page = await context.newPage();
 const results = [];
 async function api(path, method = 'GET', data, admin = false, expected = 200) {
   const response = await context.request.fetch(`${origin}${path}`, {
-    method, data, headers: admin ? { Authorization: `Bearer ${token}` } : {},
-  });
+    method, data, timeout: path === '/api/admin/staging/scheduled' ? 180000 : 30000,
+    headers: admin ? { Authorization: `Bearer ${token}` } : {},
+  }).catch(error => { throw new Error(`${method} ${path} failed (${error.name}); request headers withheld`); });
   assert.equal(response.status(), expected, `${method} ${path}: ${await response.text()}`);
   return response.status() === 200 ? response.json() : null;
 }
@@ -37,7 +38,7 @@ async function registerPasskey() {
     const decode = value => Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(value.length / 4) * 4, '=')), c => c.charCodeAt(0)).buffer;
     async function request(path, method = 'GET', data) {
       const res = await fetch(path, { method, headers: { 'Content-Type': 'application/json' }, body: data === undefined ? undefined : JSON.stringify(data) });
-      if (!res.ok) throw new Error(`${path}: ${res.status()} ${await res.text()}`);
+      if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`);
       return res.json();
     }
     const provisional = await request('/api/auth/sign-in/anonymous', 'POST', {});

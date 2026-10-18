@@ -33,6 +33,7 @@ checks hashes of the production-mode staging artifacts before deploying.
 ```sh
 pnpm auth:migrate:staging
 pnpm deploy:staging
+pnpm test:staging:auth
 pnpm test:staging
 ```
 
@@ -83,6 +84,12 @@ does not establish production RPO/RTO. The synthetic fixtures remain available
 in staging for inspection. A failure during recovery leaves staging frozen;
 inspect the failure before retrying or thawing.
 
+`pnpm test:staging:auth` independently queues document edits and a new column
+offline, removes the browser session cookie, and verifies the reconnect banner.
+It reloads, tests a failed reconnect, and reconnects with the original passkey.
+It checks that cached content survives and both document edits and queued metadata
+reach a separate browser session after reconnecting.
+
 The successful report is saved at `.wrangler/staging-drill-report.json`.
 The initial remote drill completed successfully on 2026-10-01, including original
 passkey sign-in, restored account/document metadata and content, collaborator
@@ -121,6 +128,7 @@ active migration path.
 ```sh
 pnpm verify
 pnpm deploy:staging
+pnpm test:staging:auth
 pnpm test:staging
 pnpm build:production
 node scripts/deploy-production.mjs --check
@@ -197,3 +205,34 @@ The writable passkey-only release is
 `de32509c-bb12-4ae6-bf99-61f8f212e546`. Live verification also preserved all
 account/document/credential state, rejected old bearer and header transports,
 confirmed the legacy login route is absent, and passed backup health checks.
+
+## Session renewal and reconnect release on 2026-10-15
+
+Application API responses now forward Better Auth's session renewal and expiry
+cookies. Visible clients refresh their account periodically and on focus.
+Expired authentication pauses metadata and realtime sync without treating a 401
+as revoked column access. A passkey reconnect banner retains the cached account,
+queued commands, and Yjs edits; reconnecting must use that same account. Requests
+also bind queued work to the expected cookie identity so another tab cannot
+redirect it to a different account.
+
+Merged Yjs documents are cached in a validated IndexedDB collection. Cached
+content and pending updates hydrate the editor before collaboration starts,
+including while authentication is expired. Concurrent tabs merge their cached
+Yjs snapshots when writing. Storage recovery exports include the document cache.
+
+Validation passed: 289 unit/Worker tests, all 27 browser tests, the real HTTPS
+staging passkey reconnect test, and the full staging recovery/rollback drill.
+The staging drill's scheduled backup request now allows 180 seconds and reports
+fetch failures without request headers. Its registration helper reports the
+actual HTTP status. A temporary staging-only rate-limit override used for
+synthetic fixture setup was removed by the normal freeze/thaw deployments and
+its removal was checked against the deployed version bindings.
+
+The verified frozen production version is
+`96399a5a-8631-4816-ab2b-7d44b8c67fed`; the writable version is
+`3376d22b-7198-47ff-8336-1a5811df3903`. Fresh preflight, frozen verification, and
+live verification preserved all four accounts, four documents, and their
+credentials. Eight independent backup snapshots verified successfully and backup
+health remained current. The production deployment has no authentication or
+rate-limit bypass bindings.

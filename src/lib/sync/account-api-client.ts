@@ -3,7 +3,8 @@ import {
 	validateAccountId,
 } from "../account";
 import { authClient, fetchAuthStatus } from "../auth-client";
-import { e2eAccountHeaders, usingE2EAuthFixture } from "../e2e-auth";
+import { usingE2EAuthFixture } from "../e2e-auth";
+import { accountRequestHeaders } from "../account-request-headers";
 import {
 	createAccountResponseSchema,
 	getAccountResponseSchema,
@@ -85,7 +86,7 @@ export async function fetchAccountProjection(
 	const response = await fetch("/api/account", {
 		signal,
 		credentials: "same-origin",
-		headers: e2eAccountHeaders(id),
+		headers: accountRequestHeaders(id),
 	});
 	if (response.status === 401) {
 		await throwResponseFailure(
@@ -115,8 +116,15 @@ export async function fetchAccountProjection(
 			`Failed to ${scope === "auth" ? "authenticate" : "hydrate"} account`,
 		);
 	}
+	const data = parseGetAccountResponse(await response.json());
+	if (normalizeAccountId(data.account.id) !== normalizeAccountId(id)) {
+		throw new AccountConvergenceFailure(
+			{ scope: "auth", kind: "reauth_required" },
+			"Reconnect with the passkey for this account",
+		);
+	}
 	return projectionFromServer(
-		parseGetAccountResponse(await response.json()),
+		data,
 		window.location.origin,
 	);
 }

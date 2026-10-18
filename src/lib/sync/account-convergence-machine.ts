@@ -1,4 +1,5 @@
 import { assign, fromPromise, setup } from "xstate";
+import { normalizeAccountId } from "../account";
 import {
 	applyAccountCommand,
 	applyCommandEffects,
@@ -33,6 +34,7 @@ export class AccountConvergenceFailure extends Error {
 
 export interface AccountConvergenceContext {
 	accountId: string | null;
+	authenticationStatus: "unknown" | "authenticated" | "required";
 	serverBase: AccountProjection | null;
 	projection: AccountProjection | null;
 	queueDepth: number;
@@ -61,6 +63,7 @@ export type AccountConvergenceEvent =
 	| { type: "LOGIN"; accountId: string }
 	| { type: "CREATE_ACCOUNT" }
 	| { type: "LOGOUT" }
+	| { type: "AUTHENTICATION_REQUIRED" }
 	| { type: "NETWORK_ONLINE" }
 	| { type: "NETWORK_OFFLINE" }
 	| { type: "COMMAND_PERSISTED" }
@@ -176,11 +179,23 @@ export function createAccountConvergenceMachine(
 		},
 		guards: {
 			isOnline: ({ context }) => context.networkOnline,
+			canAttemptReplay: ({ context }) => context.authenticationStatus !== "required",
 			isOffline: ({ context }) => !context.networkOnline,
 			hasAccountSession: ({ context }) => context.accountId !== null,
 			hasPending: ({ context }) => context.queueDepth > 0,
 			replayHadAttempts: ({ context }) =>
 				(context.lastReplayReport?.attempted ?? 0) > 0,
+			isAuthenticationFailure: ({ event }) =>
+				event.type.startsWith("xstate.error.actor") &&
+				failureFromUnknown((event as { error?: unknown }).error, {
+					scope: "hydrate", kind: "server",
+				}).kind === "reauth_required",
+			replayRequiresAuthentication: ({ event }) =>
+				event.type.startsWith("xstate.done.actor") &&
+				!!(event as unknown as { output: ReplayReport }).output.authenticationRequired,
+			isSameAccountLogin: ({ context, event }) =>
+				event.type === "LOGIN" && !!context.accountId &&
+				normalizeAccountId(event.accountId) === normalizeAccountId(context.accountId),
 			isNotFoundFailure: ({ event }) =>
 				event.type.startsWith("xstate.error.actor") &&
 				failureFromUnknown((event as { error?: unknown }).error, {
@@ -193,6 +208,7 @@ export function createAccountConvergenceMachine(
 				if (event.type !== "RESTORE_SESSION") return {};
 				return {
 					accountId: event.accountId,
+					authenticationStatus: "unknown" as const,
 					serverBase: null,
 					projection: null,
 					error: null,
@@ -216,6 +232,7 @@ export function createAccountConvergenceMachine(
 				dependencies.persistCredential(accountId);
 				return {
 					accountId,
+					authenticationStatus: "authenticated" as const,
 					serverBase: projection,
 					projection: projectPending(projection, accountId),
 					authCandidate: null,
@@ -258,6 +275,7 @@ export function createAccountConvergenceMachine(
 						: null;
 				return {
 					serverBase: base,
+					authenticationStatus: "authenticated" as const,
 					projection: projectPending(base, context.accountId),
 					accessLostColumnIds,
 					error: retainedError,
@@ -409,6 +427,7 @@ export function createAccountConvergenceMachine(
 				dependencies.persistCredential(null);
 				return {
 					accountId: null,
+					authenticationStatus: "unknown" as const,
 					serverBase: null,
 					projection: null,
 					queueDepth: 0,
@@ -430,6 +449,7 @@ export function createAccountConvergenceMachine(
 		id: "accountConvergence",
 		context: ({ input }) => ({
 			accountId: input.restoredAccountId ?? null,
+			authenticationStatus: "unknown",
 			serverBase: null,
 			projection: null,
 			queueDepth: 0,
@@ -450,6 +470,9 @@ export function createAccountConvergenceMachine(
 		initial: "signedOut",
 		on: {
 			LOGOUT: { target: ".signingOut", actions: "clearError" },
+			AUTHENTICATION_REQUIRED: {
+				guard: "hasAccountSession", target: ".authenticationRequired",
+			},
 			NETWORK_ONLINE: { actions: "setOnline" },
 			NETWORK_OFFLINE: { actions: "setOffline" },
 			ACCESS_REVOKED: { actions: "removeRevokedColumn" },
@@ -566,6 +589,7 @@ export function createAccountConvergenceMachine(
 						},
 					},
 					onError: [
+						{ guard: "isAuthenticationFailure", target: "authenticationRequired" },
 						{
 							guard: "isNotFoundFailure",
 							target: "notFound",
@@ -581,13 +605,12 @@ export function createAccountConvergenceMachine(
 				},
 				on: {
 					NETWORK_OFFLINE: { target: "readyOffline", actions: "setOffline" },
-					// A command created while a hydration request is in flight must not be
-					// blocked by that request. Exit cancels the stale fetch; replay remains
-					// serialized and confirmation installs a fresh server base afterward.
-					COMMAND_PERSISTED: {
-						target: "replaying",
-						actions: "refreshProjection",
-					},
+					// A new command can cancel stale hydration unless authentication is
+					// known to require reconnection. HTTP binds replay to the expected account.
+					COMMAND_PERSISTED: [
+						{ guard: "canAttemptReplay", target: "replaying", actions: "refreshProjection" },
+						{ actions: "refreshProjection" },
+					],
 				},
 			},
 			replaying: {
@@ -595,13 +618,23 @@ export function createAccountConvergenceMachine(
 				invoke: {
 					src: "replay",
 					input: ({ context }) => ({ accountId: accountIdOrThrow(context) }),
-					onDone: {
-						target: "reconciling",
-						actions: {
-							type: "recordReplay",
-							params: ({ event }) => event.output,
+					onDone: [
+						{
+							guard: "replayRequiresAuthentication",
+							target: "authenticationRequired",
+							actions: [
+								{ type: "recordReplay", params: ({ event }) => event.output },
+								"applyReplayReport",
+							],
 						},
-					},
+						{
+							target: "reconciling",
+							actions: {
+								type: "recordReplay",
+								params: ({ event }) => event.output,
+							},
+						},
+					],
 					onError: {
 						target: "retryScheduled.replay",
 						actions: "recordReplayFailure",
@@ -644,6 +677,7 @@ export function createAccountConvergenceMachine(
 						},
 					},
 					onError: [
+						{ guard: "isAuthenticationFailure", target: "authenticationRequired" },
 						{
 							guard: "isNotFoundFailure",
 							target: "notFound",
@@ -684,12 +718,12 @@ export function createAccountConvergenceMachine(
 				},
 				on: {
 					NETWORK_OFFLINE: { target: "readyOffline", actions: "setOffline" },
-					COMMAND_PERSISTED: {
-						target: "replaying",
-						actions: "refreshProjection",
-					},
+					COMMAND_PERSISTED: [
+						{ guard: "canAttemptReplay", target: "replaying", actions: "refreshProjection" },
+						{ actions: "refreshProjection" },
+					],
 					REFRESH_REQUESTED: "hydratingServer",
-					REPLAY_WAKE: "replaying",
+					REPLAY_WAKE: { guard: "canAttemptReplay", target: "replaying" },
 				},
 			},
 			ready: {
@@ -704,13 +738,40 @@ export function createAccountConvergenceMachine(
 					],
 					NETWORK_OFFLINE: { target: "readyOffline", actions: "setOffline" },
 					REFRESH_REQUESTED: "hydratingServer",
-					REPLAY_WAKE: "replaying",
+					REPLAY_WAKE: { guard: "canAttemptReplay", target: "replaying" },
 				},
 			},
 			readyOffline: {
 				on: {
 					COMMAND_PERSISTED: { actions: "refreshProjection" },
 					NETWORK_ONLINE: { target: "hydratingServer", actions: "setOnline" },
+				},
+			},
+			authenticationRequired: {
+				entry: assign({
+					authenticationStatus: "required" as const,
+					error: { scope: "auth", kind: "reauth_required" } as const,
+				}),
+				on: {
+					COMMAND_PERSISTED: { actions: "refreshProjection" },
+					LOGIN: { guard: "isSameAccountLogin", target: "reconnecting" },
+					REFRESH_REQUESTED: { guard: "isOnline", target: "hydratingServer" },
+					NETWORK_ONLINE: { actions: "setOnline" },
+				},
+			},
+			reconnecting: {
+				invoke: {
+					src: "login",
+					input: ({ context }) => ({ accountId: accountIdOrThrow(context) }),
+					onDone: {
+						target: "replaying",
+						actions: { type: "installAuthenticatedProjection", params: ({ event }) => event.output },
+					},
+					onError: { target: "authenticationRequired" },
+				},
+				on: {
+					COMMAND_PERSISTED: { actions: "refreshProjection" },
+					NETWORK_OFFLINE: { target: "authenticationRequired", actions: "setOffline" },
 				},
 			},
 			notFound: {

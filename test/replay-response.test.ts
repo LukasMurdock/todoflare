@@ -14,6 +14,10 @@ function errorResponse(status: number, code?: string): Response {
 }
 
 describe("replay response contract", () => {
+	it("pauses for expired authentication even if the payload resembles revocation", async () => {
+		expect(await mutationResultFromResponse(errorResponse(401, "access_revoked"))).toEqual({ kind: "authentication_required" });
+	});
+
 	it("acknowledges successful responses", async () => {
 		expect(await mutationResultFromResponse(Response.json({ ok: true }))).toEqual({
 			kind: "ack",

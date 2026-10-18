@@ -20,6 +20,14 @@ export interface AccountSnapshotDoc {
 	reconciledAt: number | null;
 }
 
+export interface ColumnDocumentDoc {
+	schemaVersion: 1;
+	id: string;
+	accountId: string;
+	columnId: string;
+	updateBytes: number[];
+}
+
 export interface YjsUpdateOutboxDoc {
 	schemaVersion: 1;
 	id: string;
@@ -71,6 +79,7 @@ export interface MutationOutboxDoc {
 
 export type DurableCollectionName =
 	| "accountSnapshot"
+	| "columnDocument"
 	| "mutationOutbox"
 	| "yjsUpdateOutbox"
 	| "syncState";

@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { deriveSyncMode } from "../src/lib/sync/mode-machine";
 
 describe("deriveSyncMode", () => {
+	it("reports authentication required even when the browser is online or a socket remains open", () => {
+		expect(deriveSyncMode({ hasAccountSession: true, authenticationRequired: true, isPublicReadonly: false, isNetworkOnline: true, connectionStatus: "connected" })).toBe("account_auth_required");
+	});
+
 	it("returns public_readonly when public route is active", () => {
 		expect(
 			deriveSyncMode({

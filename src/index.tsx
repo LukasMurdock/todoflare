@@ -1,3 +1,4 @@
+import { getRequestSession, sessionResponseCookies } from "./server/session";
 import { restoreAccountBackup } from "./server/workflows/restore-account-backup";
 import { createAccountBackup, readAccountBackup } from "./server/account-backup";
 import { latestColumnBackupKey, listColumnBackups } from "./server/backup-catalog";
@@ -133,6 +134,15 @@ export type Bindings = {
 
 const app = new Hono<{ Bindings: Bindings }>();
 
+app.use("/api/*", async (c, next) => {
+	await next();
+	// Server-side getSession() can renew or expire cookies. Forward every cookie
+	// individually, including on authentication failures; JSON alone loses them.
+	for (const cookie of await sessionResponseCookies(c.req.raw)) {
+		c.header("Set-Cookie", cookie, { append: true });
+	}
+});
+
 // Authentication remains available to validate recovery, while credential changes
 // must not race with a frozen account restore. Unknown auth routes fail closed.
 const frozenAuthRoutes = new Set([
@@ -149,7 +159,7 @@ app.on(["GET", "POST"], "/api/auth/*", async (c) => {
 	}
 	const auth = createAuth(c.env, new URL(c.req.url).origin);
 	if (new URL(c.req.url).pathname.endsWith("/passkey/delete-passkey")) {
-		const session = await auth.api.getSession({ headers: c.req.raw.headers });
+		const session = await getRequestSession(c.req.raw, c.env);
 		if (!session) return c.json({ error: "unauthorized" }, 401);
 		const createdAt = new Date(session.session.createdAt).getTime();
 		if (Date.now() - createdAt > 5 * 60 * 1000) {
@@ -1040,8 +1050,8 @@ export async function runScheduledBackups(env: Bindings) {
 // ============================================
 
 app.get("/api/auth-status", async (c) => {
-	const auth = createAuth(c.env, new URL(c.req.url).origin);
-	const session = await auth.api.getSession({ headers: c.req.raw.headers });
+	c.header("Cache-Control", "private, no-store");
+	const session = await getRequestSession(c.req.raw, c.env);
 	if (!session || !validateAccountId(session.user.id)) {
 		return c.json({ accountId: null, state: "signed_out" as const });
 	}

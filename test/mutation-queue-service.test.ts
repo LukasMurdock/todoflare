@@ -27,6 +27,23 @@ function makeCommand<T extends AccountCommandType>(
 }
 
 describe("LocalMutationQueueService", () => {
+	it("preserves the unauthorized command and later edits, including across storage reload", async () => {
+		const storage = createMemoryMutationQueueStorage();
+		let calls = 0;
+		const queue = new LocalMutationQueueService({ storage, executor: async () => {
+			calls++;
+			return calls === 1 ? { kind: "ack" } : { kind: "authentication_required" };
+		} });
+		for (let index = 0; index < 3; index++) await queue.enqueue(makeCommand("column.create", { columnId: crypto.randomUUID() }, index));
+		const before = storage.read();
+		const report = await queue.replay({ accountId: "1111111111111111" });
+		expect(report).toMatchObject({ attempted: 2, acked: 1, dropped: 0, authenticationRequired: true });
+		expect(storage.read()).toEqual(before.slice(1));
+		const restored = new LocalMutationQueueService({ storage, executor: async () => ({ kind: "ack" }) });
+		expect((await restored.replay({ accountId: "1111111111111111" })).acked).toBe(2);
+		expect(storage.read()).toEqual([]);
+	});
+
 	it("replays commands in FIFO order by createdAt", async () => {
 		const order: string[] = [];
 		const queue = new LocalMutationQueueService({
@@ -226,6 +243,7 @@ describe("LocalMutationQueueService", () => {
 				accountSnapshot: new Map(),
 				mutationOutbox: new Map(),
 				yjsUpdateOutbox: new Map(),
+				columnDocument: new Map(),
 				syncState: new Map(),
 				quarantine: new Map(),
 			},
@@ -256,6 +274,7 @@ describe("LocalMutationQueueService", () => {
 				accountSnapshot: new Map(),
 				mutationOutbox: new Map<string, any>(),
 				yjsUpdateOutbox: new Map(),
+				columnDocument: new Map(),
 				syncState: new Map(),
 				quarantine: new Map(),
 			},

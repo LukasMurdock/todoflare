@@ -133,6 +133,7 @@ export function createAuth(env: AuthBindings, requestOrigin: string) {
 		secret: env.BETTER_AUTH_SECRET ?? DEVELOPMENT_SECRET,
 		database: env.AUTH_DB,
 		trustedOrigins: [origin],
+		session: { expiresIn: 7 * 24 * 60 * 60, updateAge: 24 * 60 * 60 },
 		emailAndPassword: { enabled: false },
 		account: { accountLinking: { enabled: false } },
 		user: {
