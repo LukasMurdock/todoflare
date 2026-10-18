@@ -9,9 +9,11 @@ const browser = await chromium.launch();
 const context = await browser.newContext();
 const page = await context.newPage();
 const results = [];
+// A full backup run grows with staging's synthetic accounts (82 columns took 205s).
+const SCHEDULED_RUN_TIMEOUT_MS = 300_000;
 async function api(path, method = 'GET', data, admin = false, expected = 200) {
   const response = await context.request.fetch(`${origin}${path}`, {
-    method, data, timeout: path === '/api/admin/staging/scheduled' ? 180000 : 30000,
+    method, data, timeout: path === '/api/admin/staging/scheduled' ? SCHEDULED_RUN_TIMEOUT_MS : 30000,
     headers: admin ? { Authorization: `Bearer ${token}` } : {},
   }).catch(error => { throw new Error(`${method} ${path} failed (${error.name}); request headers withheld`); });
   assert.equal(response.status(), expected, `${method} ${path}: ${await response.text()}`);
