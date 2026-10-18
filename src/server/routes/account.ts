@@ -65,26 +65,16 @@ export async function fetchColumnMetadataBatch(
 	);
 }
 
-/** Imports accept only server-issued UUID column IDs. */
-export const columnMetaInputSchema = columnMetaContractSchema.extend({
-	id: columnIdContractSchema,
-});
-
-export const accountInputSchema = accountContractSchema.extend({
-	columnOrder: z.array(columnIdContractSchema).max(100),
-	hiddenSharedColumns: z.array(columnIdContractSchema).max(100),
-});
-
 export const accountExportColumnInputSchema = z
 	.object({
-		meta: columnMetaInputSchema,
+		meta: columnMetaContractSchema,
 		yjs: yjsBytesSchema,
 	})
 	.strict();
 
 export function validateAccountImportCompleteness(
 	payload: {
-		account: z.output<typeof accountInputSchema>;
+		account: z.output<typeof accountContractSchema>;
 		ownedColumns: Array<z.output<typeof accountExportColumnInputSchema>>;
 		expectedColumnIds?: string[];
 	},
@@ -138,7 +128,7 @@ export const accountImportV1BodySchema = z
 	.object({
 		schemaVersion: z.literal(1),
 		exportedAt: z.number().finite().nonnegative(),
-		account: accountInputSchema,
+		account: accountContractSchema,
 		ownedColumns: z.array(accountExportColumnInputSchema).max(100),
 	})
 	.strict()
@@ -150,7 +140,7 @@ export const accountImportV2BodySchema = z
 		exportedAt: z.number().finite().nonnegative(),
 		complete: z.literal(true),
 		expectedColumnIds: z.array(columnIdContractSchema).max(100),
-		account: accountInputSchema,
+		account: accountContractSchema,
 		ownedColumns: z.array(accountExportColumnInputSchema).max(100),
 	})
 	.strict()

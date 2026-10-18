@@ -191,9 +191,15 @@ Behavior changes (deliberate):
 - Persisted outbox commands and locally cached account snapshots are now
   validated with the server contract (UUID column IDs in commands, valid
   account IDs, 8-character public IDs). Records that fail are quarantined
-  with their raw data kept, as before; nothing is deleted. Server-side
-  stored-record validation was **not** tightened, so production KV and
-  Durable Object data parse exactly as before.
+  with their raw data kept, as before; nothing is deleted.
+- Server-side stored records (account `columnOrder`/`hiddenSharedColumns`,
+  column metadata, trash rows, the shared-column index, backup payloads) now
+  require UUID column IDs. The loose `recordIdContractSchema` and the
+  import-only UUID overrides are gone: one column-ID rule everywhere. A
+  read-only production audit on 2026-10-18 found no non-UUID IDs in KV
+  accounts, the column registry, the latest column backups, or the latest
+  account backups (trash and shared index). A record that fails parses as
+  `invalid_shape`, the same fail-closed path as any other corrupt record.
 - Test fixtures that used IDs such as `"column-1"` now use UUIDs.
 
 Not done, deliberately:

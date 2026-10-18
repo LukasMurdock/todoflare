@@ -1,7 +1,7 @@
 import { z } from "zod";
 import {
 	columnMetaContractSchema,
-	recordIdContractSchema,
+	columnIdContractSchema,
 } from "../lib/api/account-contract";
 
 export const MAX_YJS_UPDATE_BYTES = 8 * 1024 * 1024;
@@ -14,7 +14,7 @@ export const yjsBytesSchema = z
 const columnBackupBaseSchema = z
 	.object({
 		schemaVersion: z.literal(1),
-		columnId: recordIdContractSchema,
+		columnId: columnIdContractSchema,
 		snapshotAt: z.number().int().finite().nonnegative(),
 		meta: columnMetaContractSchema,
 		yjs: yjsBytesSchema,

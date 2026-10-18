@@ -7,11 +7,11 @@ import {
 
 const basePayload = {
 	schemaVersion: 1 as const,
-	columnId: "column-1",
+	columnId: "00000000-0000-4000-8000-000000000001",
 	snapshotAt: 10,
 	meta: {
 		schemaVersion: 1 as const,
-		id: "column-1",
+		id: "00000000-0000-4000-8000-000000000001",
 		ownerId: "1111 2222 3333 4444",
 		sharedWith: [],
 		publicId: null,
@@ -25,27 +25,27 @@ describe("column backup payload", () => {
 		const checksum = await checksumColumnBackupPayload(basePayload);
 		const result = await parseAndVerifyColumnBackup(
 			JSON.stringify({ ...basePayload, checksum }),
-			"column-1",
+			"00000000-0000-4000-8000-000000000001",
 		);
 		expect(result).toMatchObject({ ok: true, payload: basePayload });
 	});
 
 	it("distinguishes malformed JSON, invalid shape, and checksum mismatch", async () => {
-		expect(await parseAndVerifyColumnBackup("{", "column-1")).toEqual({
+		expect(await parseAndVerifyColumnBackup("{", "00000000-0000-4000-8000-000000000001")).toEqual({
 			ok: false,
 			code: "invalid_backup_json",
 		});
 		expect(
 			await parseAndVerifyColumnBackup(
 				JSON.stringify({ ...basePayload, checksum: "not-a-checksum" }),
-				"column-1",
+				"00000000-0000-4000-8000-000000000001",
 			),
 		).toEqual({ ok: false, code: "invalid_backup_payload" });
 		const checksum = "0".repeat(64);
 		expect(
 			await parseAndVerifyColumnBackup(
 				JSON.stringify({ ...basePayload, checksum }),
-				"column-1",
+				"00000000-0000-4000-8000-000000000001",
 			),
 		).toEqual({ ok: false, code: "backup_checksum_mismatch" });
 	});
@@ -61,7 +61,7 @@ describe("column backup payload", () => {
 		expect(
 			columnBackupPayloadSchema.safeParse({
 				...basePayload,
-				meta: { ...basePayload.meta, id: "another-column" },
+				meta: { ...basePayload.meta, id: "00000000-0000-4000-8000-000000000002" },
 				checksum: "0".repeat(64),
 			}).success,
 		).toBe(false);

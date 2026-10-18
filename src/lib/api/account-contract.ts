@@ -14,8 +14,6 @@ export const columnIdContractSchema = z
 export const publicIdContractSchema = z
 	.string()
 	.regex(PUBLIC_ID_PATTERN, "Invalid public ID");
-/** Stored record IDs. Looser than columnIdContractSchema so legacy records still parse. */
-export const recordIdContractSchema = z.string().min(1).max(128);
 export const timestampContractSchema = z.number().finite().nonnegative();
 
 /** Account stored in KV; `id` is formatted with spaces ("4829 1047 3856 2019"). */
@@ -24,9 +22,9 @@ export const accountContractSchema = z
 		schemaVersion: z.literal(1),
 		id: accountIdContractSchema,
 		/** Column IDs in the user's preferred order. */
-		columnOrder: z.array(recordIdContractSchema).max(100),
+		columnOrder: z.array(columnIdContractSchema).max(100),
 		/** Shared columns the user has hidden. */
-		hiddenSharedColumns: z.array(recordIdContractSchema).max(100),
+		hiddenSharedColumns: z.array(columnIdContractSchema).max(100),
 		createdAt: timestampContractSchema,
 	})
 	.strict();
@@ -35,7 +33,7 @@ export const accountContractSchema = z
 export const columnMetaContractSchema = z
 	.object({
 		schemaVersion: z.literal(1),
-		id: recordIdContractSchema,
+		id: columnIdContractSchema,
 		/** Account that created the column. */
 		ownerId: accountIdContractSchema,
 		/** Accounts with full edit access. */
@@ -48,7 +46,7 @@ export const columnMetaContractSchema = z
 
 export const deletedColumnContractSchema = z
 	.object({
-		columnId: recordIdContractSchema,
+		columnId: columnIdContractSchema,
 		deletedAt: timestampContractSchema,
 	})
 	.strict();
