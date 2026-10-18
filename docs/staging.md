@@ -261,3 +261,21 @@ The verified frozen production version is
 `347c72df-4b31-4211-8e11-54940ecc02cb`. Preflight, frozen verification, and live
 verification preserved all four accounts, four documents, and their credentials.
 Eight independent backup snapshots verified and backup health is current.
+
+## Embeddable board release (2026-10-18)
+
+Released merge commit `47b1faf9` (PR #2): the board as the `@todoflare/board`
+package with todoflare as its host, guest columns on Yjs, no placeholder
+column while a signed-in account loads, the public page rendered with the
+board's snapshot renderer, and a client bundle of 385 KiB gzip (from 422).
+Validation: `pnpm verify` (330 unit, 32 e2e, 14 host tests and the boundary,
+API and bundle checks), CI, and on staging version
+`42b57df3-ab15-4def-8c31-e76a96922655` the passkey test and the full
+recovery/rollback drill.
+
+The verified frozen production version is
+`12a25b56-1217-4734-bdc3-909afb73bb59`; the writable version is
+`fa17ca52-381e-4da6-8817-a39aa3875e95`. Preflight, frozen verification, and live
+verification preserved all four accounts, four documents, and their
+credentials. Eight independent backup snapshots verified and backup health is
+current.
