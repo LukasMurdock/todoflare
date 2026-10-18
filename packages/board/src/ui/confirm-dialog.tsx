@@ -2,8 +2,8 @@
 
 import * as React from "react";
 import * as AlertDialogPrimitive from "@radix-ui/react-alert-dialog";
-import { cn } from "@/lib/utils";
-import { usePortalContainer } from "@/components/board/portal-container";
+import { cn } from "./cn";
+import { usePortalContainer } from "../portal-container";
 
 const AlertDialog = AlertDialogPrimitive.Root;
 const AlertDialogTrigger = AlertDialogPrimitive.Trigger;

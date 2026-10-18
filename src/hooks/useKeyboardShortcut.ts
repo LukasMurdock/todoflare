@@ -1,5 +1,8 @@
 import { useEffect, useCallback } from "react";
-import { isMacPlatform } from "@/components/board/platform";
+
+function isMacPlatform(): boolean {
+	return typeof navigator !== "undefined" && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+}
 
 export type ModifierKey = "mod" | "shift" | "alt";
 

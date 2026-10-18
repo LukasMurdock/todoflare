@@ -2,9 +2,9 @@
 
 import * as React from "react";
 import type { Value } from "platejs";
-import type { BoardColumn } from "@/components/board/types";
+import type { BoardColumn } from "./types";
 import { TodoColumn } from "./TodoColumn";
-import { cn } from "@/lib/utils";
+import { cn } from "./ui/cn";
 
 interface ColumnLayoutProps {
 	/** "loading" renders no columns and no add button until the host knows which columns exist. */

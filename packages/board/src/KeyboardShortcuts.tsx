@@ -1,14 +1,14 @@
 "use client";
 
 import * as React from "react";
-import { useModifierSymbol } from "@/components/board/platform";
+import { useModifierSymbol } from "./platform";
 import {
 	Dialog,
 	DialogContent,
 	DialogHeader,
 	DialogTitle,
-} from "@/components/ui/dialog";
-import { cn } from "@/lib/utils";
+} from "./ui/dialog";
+import { cn } from "./ui/cn";
 
 interface ShortcutItem {
 	keys: React.ReactNode[];

@@ -5,9 +5,9 @@ import type { TText, Value } from "platejs";
 import { Plate, usePlateEditor } from "platejs/react";
 import { YjsPlugin } from "@platejs/yjs/react";
 
-import { cn } from "@/lib/utils";
-import { Editor, EditorContainer } from "@/components/ui/editor";
-import { RemoteCursorOverlay } from "@/components/ui/remote-cursor-overlay";
+import { cn } from "./ui/cn";
+import { Editor, EditorContainer } from "./ui/editor";
+import { RemoteCursorOverlay } from "./ui/remote-cursor-overlay";
 import { columnEditorPlugins, findUrlAtOffset, normalizeUrl } from "./column-editor-plugins";
 import { ColumnSnapshot } from "./ColumnSnapshot";
 import { hostOwnedProvider } from "./documents";

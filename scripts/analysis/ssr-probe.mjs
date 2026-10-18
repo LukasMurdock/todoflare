@@ -2,7 +2,7 @@
 //
 // Usage: node scripts/analysis/ssr-probe.mjs [--json]
 //
-// Loads every board module (see ./board-zones.mjs) with Vite's SSR loader in
+// Loads every module of the board package with Vite's SSR loader in
 // plain Node, where window, document and localStorage do not exist, then tries
 // to render the board entry points to HTML. Server-rendering hosts (Void
 // islands, Next.js) need both to succeed.
@@ -11,7 +11,7 @@ import { readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
-import { zoneOf } from "./board-zones.mjs";
+import { BOARD_ROOT } from "./board-zones.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const asJson = process.argv.includes("--json");
@@ -36,7 +36,7 @@ const server = await createServer({
 
 const firstLine = (error) => String(error?.message ?? error).split("\n")[0].slice(0, 160);
 const imports = [];
-for (const file of walk("src").filter((f) => zoneOf(f) === "board").sort()) {
+for (const file of walk(BOARD_ROOT).sort()) {
 	try {
 		await server.ssrLoadModule(`/${file}`);
 		imports.push({ file, ok: true });
@@ -63,20 +63,20 @@ async function tryRender(name, load, expectText) {
 		renders.push({ name, ok: false, error: firstLine(error) });
 	}
 }
-const { createMemoryDocuments } = await server.ssrLoadModule("/src/components/board/memory-documents.ts");
+const { createMemoryDocuments } = await server.ssrLoadModule("/packages/board/src/index.ts");
 await tryRender(
 	"TodoBoard (memory documents, snapshot)",
-	async () => h((await server.ssrLoadModule("/src/components/board/TodoBoard.tsx")).TodoBoard, { columns: [column], documents: createMemoryDocuments(), onCreateColumn() {} }),
+	async () => h((await server.ssrLoadModule("/packages/board/src/index.ts")).TodoBoard, { columns: [column], documents: createMemoryDocuments(), onCreateColumn() {} }),
 	["Server heading", "Rendered todo", "Add column", "data-todo-board"],
 );
 await tryRender(
 	"TodoBoard (loading)",
-	async () => h((await server.ssrLoadModule("/src/components/board/TodoBoard.tsx")).TodoBoard, { status: "loading", columns: [column], documents: createMemoryDocuments() }),
+	async () => h((await server.ssrLoadModule("/packages/board/src/index.ts")).TodoBoard, { status: "loading", columns: [column], documents: createMemoryDocuments() }),
 	['aria-busy="true"'],
 );
 await tryRender(
 	"ColumnSnapshot",
-	async () => h((await server.ssrLoadModule("/src/components/board/ColumnSnapshot.tsx")).ColumnSnapshot, { value: snapshot }),
+	async () => h((await server.ssrLoadModule("/packages/board/src/index.ts")).ColumnSnapshot, { value: snapshot }),
 	["Server heading", "Rendered todo"],
 );
 

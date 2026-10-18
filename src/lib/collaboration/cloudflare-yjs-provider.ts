@@ -3,7 +3,7 @@ import * as Y from "yjs";
 import * as awarenessProtocol from "y-protocols/awareness";
 import type { Awareness } from "y-protocols/awareness";
 import type { SyncMessage } from "@/types/account";
-import type { DocumentAdapter } from "@/components/board/documents";
+import type { DocumentAdapter } from "@todoflare/board";
 
 export type ColumnSyncTransport = {
 	subscribeToColumn: (columnId: string) => () => void;

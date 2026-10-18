@@ -5,10 +5,10 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 
 import type { Value } from "platejs";
-import { ColumnEditor } from "@/components/board/ColumnEditor";
-import type { BoardColumn } from "@/components/board/types";
-import { isColumnEmpty } from "@/types/column";
-import { cn } from "@/lib/utils";
+import { ColumnEditor } from "./ColumnEditor";
+import type { BoardColumn } from "./types";
+import { isEmptyContent } from "./content";
+import { cn } from "./ui/cn";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -19,7 +19,7 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 	AlertDialogTrigger,
-} from "@/components/ui/confirm-dialog";
+} from "./ui/confirm-dialog";
 
 export interface TodoColumnProps {
 	column: BoardColumn;
@@ -53,7 +53,7 @@ export function TodoColumn({
 	};
 
 	const removal = onRemove ? (column.removal ?? "none") : "none";
-	const hasContent = column.snapshot !== undefined && !isColumnEmpty({ id: column.id, value: column.snapshot });
+	const hasContent = column.snapshot !== undefined && !isEmptyContent(column.snapshot);
 
 	const handleRemove = () => {
 		onRemove?.(column);

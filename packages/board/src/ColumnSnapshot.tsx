@@ -1,9 +1,9 @@
 import * as React from "react";
 import type { Value } from "platejs";
 import { createSlateEditor } from "platejs";
-import { EditorStatic } from "@/components/ui/editor-static";
-import { editorVariants } from "@/components/ui/editor";
-import { isColumnEmpty } from "@/types/column";
+import { EditorStatic } from "./ui/editor-static";
+import { editorVariants } from "./ui/editor";
+import { isEmptyContent } from "./content";
 import { columnSnapshotPlugins } from "./column-editor-plugins";
 
 /** Slate's inline placeholder style, copied so the static placeholder lands on the same pixels. */
@@ -30,7 +30,7 @@ export function ColumnSnapshot({ value, placeholder }: { value: Value; placehold
 		[value],
 	);
 
-	if (placeholder && isColumnEmpty({ id: "", value })) {
+	if (placeholder && isEmptyContent(value)) {
 		// An empty paragraph with Slate's placeholder, as the live editor renders it.
 		return (
 			// The live editor's classes carry its placeholder positioning rules.

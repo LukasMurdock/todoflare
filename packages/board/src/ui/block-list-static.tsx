@@ -4,9 +4,9 @@ import type { RenderStaticNodeWrapper, TListElement } from 'platejs';
 import type { SlateRenderElementProps } from 'platejs/static';
 
 import { isOrderedList } from '@platejs/list';
-import { Checkbox } from '@/components/ui/checkbox';
+import { Checkbox } from './checkbox';
 
-import { cn } from '@/lib/utils';
+import { cn } from './cn';
 
 const config: Record<
   string,

@@ -24,10 +24,10 @@ import { ListPlugin } from "@platejs/list/react";
 import { BaseIndentPlugin } from "@platejs/indent";
 import { IndentPlugin } from "@platejs/indent/react";
 
-import { BlockList } from "@/components/ui/block-list";
-import { BlockListStatic } from "@/components/ui/block-list-static";
-import { H1Element, H2Element, H3Element } from "@/components/ui/heading-node";
-import { H1ElementStatic, H2ElementStatic, H3ElementStatic } from "@/components/ui/heading-node-static";
+import { BlockList } from "./ui/block-list";
+import { BlockListStatic } from "./ui/block-list-static";
+import { H1Element, H2Element, H3Element } from "./ui/heading-node";
+import { H1ElementStatic, H2ElementStatic, H3ElementStatic } from "./ui/heading-node-static";
 
 const BLOCK_TARGETS = [...KEYS.heading, KEYS.p];
 const INDENT_OFFSET = 16;

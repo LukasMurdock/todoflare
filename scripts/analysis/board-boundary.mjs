@@ -4,11 +4,12 @@
 // Usage: node scripts/analysis/board-boundary.mjs [--json] [--check] [--root DIR]
 //
 // --check exits non-zero if any board module imports a host module, directly or
-// transitively (wired into `pnpm verify` as check:board-boundary).
+// transitively, or any host module imports the board other than through its
+// package entry (wired into `pnpm verify` as check:board-boundary).
 //
-// Browser modules are assigned to proposed zones: "board" (the editor a host
-// would embed) and "host" (the todoflare application around it: accounts,
-// Cloudflare sync, local-first storage, routes). The report lists
+// Modules are in one of two zones: "board" (the @todoflare/board package) and
+// "host" (the todoflare application around it: accounts, Cloudflare sync,
+// local-first storage, routes). The report lists
 //   1. every import that crosses from board into host, with the names used,
 //      which is the surface the board would need from adapters or props;
 //   2. host modules the board pulls in transitively;
@@ -21,7 +22,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
-import { zoneOf } from "./board-zones.mjs";
+import { BOARD_PACKAGE, BOARD_ROOT, zoneOf } from "./board-zones.mjs";
 
 const args = process.argv.slice(2);
 const root = args.includes("--root")
@@ -44,7 +45,10 @@ function walk(dir) {
 	return out;
 }
 
-const files = walk("src").filter((file) => BROWSER.test(file) && !SERVER_ONLY.test(file));
+const files = [
+	...walk("src").filter((file) => BROWSER.test(file) && !SERVER_ONLY.test(file)),
+	...walk(BOARD_ROOT),
+];
 const sources = new Map(
 	files.map((file) => {
 		const text = readFileSync(path.join(root, file), "utf8");
@@ -55,7 +59,8 @@ const sources = new Map(
 
 function resolveImport(from, specifier) {
 	let base;
-	if (specifier.startsWith("@/")) base = `src/${specifier.slice(2)}`;
+	if (specifier === BOARD_PACKAGE) base = `${BOARD_ROOT}/index`;
+	else if (specifier.startsWith("@/")) base = `src/${specifier.slice(2)}`;
 	else if (specifier.startsWith(".")) base = path.posix.normalize(path.posix.join(path.posix.dirname(from), specifier));
 	else return null;
 	for (const candidate of [base, `${base}.ts`, `${base}.tsx`, `${base}/index.ts`, `${base}/index.tsx`]) {
@@ -167,6 +172,13 @@ for (const file of boardFiles) {
 	}
 }
 
+// Host modules must use the package entry, never a path into the package.
+const deepImports = hostFiles.flatMap((file) =>
+	importsOf(file)
+		.filter((imp) => imp.specifier.startsWith(`${BOARD_PACKAGE}/`) || (imp.target && zoneOf(imp.target) === "board" && imp.specifier !== BOARD_PACKAGE))
+		.map((imp) => ({ from: file, specifier: imp.specifier })),
+);
+
 // 2. Host modules reachable from the board (value imports only).
 const reachable = new Set();
 const stack = boardFiles.slice();
@@ -196,6 +208,7 @@ const report = {
 	},
 	crossings,
 	crossingCount: crossings.length,
+	deepImports,
 	valueCrossingCount: crossings.filter((c) => !c.typeOnly).length,
 	reachableHost: [...reachable].sort().map((file) => ({ file, lines: lines(file) })),
 	reachableHostLines: [...reachable].reduce((n, f) => n + lines(f), 0),
@@ -204,9 +217,10 @@ const report = {
 };
 
 if (check) {
-	if (report.crossingCount > 0 || report.reachableHost.length > 0) {
-		console.error(`Board modules must not import app (host) modules; see scripts/analysis/board-zones.mjs.`);
+	if (report.crossingCount > 0 || report.reachableHost.length > 0 || deepImports.length > 0) {
+		console.error(`The board package must not import app modules, and the app must import the board only as "${BOARD_PACKAGE}".`);
 		for (const c of crossings) console.error(`  ${c.from} -> ${c.to}`);
+		for (const d of deepImports) console.error(`  ${d.from} imports "${d.specifier}"`);
 		process.exit(1);
 	}
 	console.log(`Board boundary holds: ${report.zones.board.files} board modules import no host module.`);

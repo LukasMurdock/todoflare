@@ -7,9 +7,7 @@ import { StorageRecoveryBanner } from "@/components/account/StorageRecoveryBanne
 import { AccountBadge } from "@/components/account/AccountBadge";
 import { PresenceAvatars } from "@/components/column/PresenceAvatars";
 import { ShareMenu } from "@/components/column/ShareMenu";
-import { TodoBoard } from "@/components/board/TodoBoard";
-import { createMemoryDocuments } from "@/components/board/memory-documents";
-import type { BoardColumn, TodoBoardApi } from "@/components/board/types";
+import { createMemoryDocuments, TodoBoard, type BoardColumn, type TodoBoardApi } from "@todoflare/board";
 import { useWelcomeRefsOptional } from "@/contexts/welcome-refs-context";
 import { useSyncContext } from "@/contexts/sync-context";
 import { useColumns } from "@/hooks/useColumns";

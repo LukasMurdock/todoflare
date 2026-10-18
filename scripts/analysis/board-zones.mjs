@@ -1,16 +1,8 @@
-// Proposed zones for the embeddable board, shared by the boundary inventory and
-// the bundle attribution. Moving a file between zones is a one-line change here.
+// Zones for the embeddable board, shared by the boundary check, the SSR probe
+// and the bundle attribution. The board is the @todoflare/board package; every
+// other browser module is host (the todoflare application).
 
-/** Modules that would form the embeddable board package. */
-export const BOARD_ZONE = [
-	/^src\/components\/board\//,
-	/^src\/components\/todo\/(ColumnLayout|TodoColumn)\.tsx$/,
-	/^src\/components\/ui\//,
-	/^src\/components\/editor\//,
-	/^src\/components\/keyboard-shortcuts\.tsx$/,
-	/^src\/types\/column\.ts$/,
-	/^src\/lib\/utils\.ts$/,
-];
+export const BOARD_ROOT = "packages/board/src";
+export const BOARD_PACKAGE = "@todoflare/board";
 
-/** Every other browser module is host (the todoflare application). */
-export const zoneOf = (file) => (BOARD_ZONE.some((re) => re.test(file)) ? "board" : "host");
+export const zoneOf = (file) => (file.startsWith(`${BOARD_ROOT}/`) ? "board" : "host");

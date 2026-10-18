@@ -1,4 +1,5 @@
 import type { Value } from "platejs";
+import { isEmptyContent } from "@todoflare/board";
 
 /**
  * Column as stored/displayed on the client
@@ -30,21 +31,5 @@ export function createEmptyColumn(): Column {
 }
 
 export function isColumnEmpty(column: Column): boolean {
-	if (column.value.length === 0) return true;
-	if (column.value.length === 1) {
-		const firstBlock = column.value[0];
-		if (
-			firstBlock.type === "p" &&
-			Array.isArray(firstBlock.children) &&
-			firstBlock.children.length === 1
-		) {
-			const firstChild = firstBlock.children[0];
-			return (
-				typeof firstChild === "object" &&
-				"text" in firstChild &&
-				firstChild.text === ""
-			);
-		}
-	}
-	return false;
+	return isEmptyContent(column.value);
 }

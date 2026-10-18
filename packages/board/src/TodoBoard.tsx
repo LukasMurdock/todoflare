@@ -17,9 +17,9 @@ import {
 	sortableKeyboardCoordinates,
 } from "@dnd-kit/sortable";
 
-import { ColumnLayout } from "@/components/todo/ColumnLayout";
-import { KeyboardShortcuts } from "@/components/keyboard-shortcuts";
-import { cn } from "@/lib/utils";
+import { ColumnLayout } from "./ColumnLayout";
+import { KeyboardShortcuts } from "./KeyboardShortcuts";
+import { cn } from "./ui/cn";
 import { ModifierKeyProvider } from "./modifier-key";
 import { isModShortcut } from "./platform";
 import { PortalContainerProvider } from "./portal-container";

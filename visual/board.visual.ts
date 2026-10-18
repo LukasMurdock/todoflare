@@ -65,3 +65,26 @@ test("signed-in board with share menu", async ({ page, request, baseURL }) => {
 	await expect(page.getByRole("textbox", { name: "Account ID" })).toBeVisible();
 	await expect(page).toHaveScreenshot("share-menu.png", { mask: [accountBadge(page)] });
 });
+
+test("public read-only page", async ({ page, browser, request, baseURL }) => {
+	const accountId = await createAccount(request, baseURL!);
+	await bootstrapAuthenticatedPage(page, accountId);
+	await addColumnAndGetId(page);
+	const editor = page.getByRole("textbox", { name: "Todo editor" }).first();
+	await expect(editor).toHaveAttribute("contenteditable", "true");
+	await editor.click();
+	await page.keyboard.type("# Shared list\n[] Open item\n");
+	await expect(editor).toContainText("Open item");
+	await page.getByRole("button", { name: "Share column" }).click();
+	await page.getByRole("button", { name: "Enable public link" }).click();
+	const link = page.getByText(/\/p\/[A-Za-z0-9]{8}/).first();
+	await expect(link).toBeVisible();
+	const publicPath = /\/p\/[A-Za-z0-9]{8}/.exec((await link.textContent()) ?? "")![0];
+
+	const viewer = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+	await viewer.goto(publicPath);
+	await expect(viewer.getByText("Open item")).toBeVisible();
+	await viewer.addStyleTag({ content: STABLE_CSS });
+	await expect(viewer).toHaveScreenshot("public-view.png");
+	await viewer.close();
+});
