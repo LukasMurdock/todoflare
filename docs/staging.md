@@ -280,3 +280,19 @@ The verified frozen production version is
 verification preserved all four accounts, four documents, and their
 credentials. Eight independent backup snapshots verified and backup health is
 current.
+
+## Dependency update release (2026-10-18)
+
+Released merge commit `32157216` (PR #3): React 19.3, Plate 53.3, yjs, the
+Radix packages, hono 4.13, zod 4.6, Vite 8.3, Wrangler 4.151 and the
+Cloudflare Vite plugin 1.64, among routine updates. Client JS is 407.4 KiB
+gzip (budget 415). Validation: `pnpm verify`, CI, 0-pixel visual baseline,
+and on staging version `08731df4-50e9-4ef2-8034-5b5e08f49953` the passkey test
+and the full recovery/rollback drill.
+
+The verified frozen production version is
+`085cc56e-67dd-4a0e-a693-f5a0d66f5470`; the writable version is
+`52209b2a-db33-4cde-9ef9-488198172f8e`. Preflight, frozen verification, and live
+verification preserved all four accounts, four documents, and their
+credentials. Eight independent backup snapshots verified and backup health is
+current.
