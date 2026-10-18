@@ -246,3 +246,18 @@ live verification preserved all four accounts, four documents, and their
 credentials. Eight independent backup snapshots verified successfully and backup
 health remained current. The production deployment has no authentication or
 rate-limit bypass bindings.
+
+## Change-locality release (2026-10-18)
+
+Released commit `93d58637` from `refactor/change-locality` (PR #1): shared route
+and account command tables, contract-derived record types, the `index.tsx` split,
+and UUID-only column IDs in server stored records. A read-only audit beforehand
+found no non-UUID column IDs in production. Validation passed: 326 unit/Worker
+tests, all 27 browser tests, the staging passkey test, and the full staging
+recovery/rollback drill on the same commit.
+
+The verified frozen production version is
+`c053f08d-2623-4c63-b254-f712cec7c249`; the writable version is
+`347c72df-4b31-4211-8e11-54940ecc02cb`. Preflight, frozen verification, and live
+verification preserved all four accounts, four documents, and their credentials.
+Eight independent backup snapshots verified and backup health is current.
