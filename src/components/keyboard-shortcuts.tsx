@@ -4,7 +4,7 @@ import * as React from "react";
 import { useEffect, useRef } from "react";
 import {
 	useKeyboardShortcut,
-	getModifierSymbol,
+	useModifierSymbol,
 } from "@/hooks/useKeyboardShortcut";
 import {
 	Dialog,
@@ -81,7 +81,7 @@ function ShortcutSectionComponent({ title, shortcuts }: ShortcutSection) {
 
 export function KeyboardShortcuts() {
 	const [open, setOpen] = React.useState(false);
-	const mod = getModifierSymbol();
+	const mod = useModifierSymbol();
 	const { registerRef } = useWelcomeRefsOptional();
 	const buttonRef = useRef<HTMLButtonElement>(null);
 

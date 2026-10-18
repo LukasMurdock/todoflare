@@ -22,6 +22,7 @@ import {
 import { useColumns } from "@/hooks/useColumns";
 import { ColumnLayout } from "./ColumnLayout";
 import { AccountBadge } from "@/components/account/AccountBadge";
+import { ModifierKeyProvider } from "@/components/board/modifier-key";
 
 export function TodoApp() {
 	const {
@@ -64,6 +65,7 @@ export function TodoApp() {
 				<AccountBadge />
 			</div>
 
+			<ModifierKeyProvider>
 			<DndContext
 				sensors={sensors}
 				collisionDetection={closestCenter}
@@ -85,6 +87,7 @@ export function TodoApp() {
 					/>
 				</SortableContext>
 			</DndContext>
+			</ModifierKeyProvider>
 		</div>
 	);
 }

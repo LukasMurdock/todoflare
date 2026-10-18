@@ -8,7 +8,7 @@ export const BOARD_ZONE = [
 	/^src\/components\/editor\//,
 	/^src\/components\/column\/PresenceAvatars\.tsx$/,
 	/^src\/components\/keyboard-shortcuts\.tsx$/,
-	/^src\/hooks\/(useKeyboardShortcut|useDebouncedEffect)\.ts$/,
+	/^src\/hooks\/(useKeyboardShortcut)\.ts$/,
 	/^src\/types\/column\.ts$/,
 	/^src\/lib\/utils\.ts$/,
 ];

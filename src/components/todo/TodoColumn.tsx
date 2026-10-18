@@ -1,5 +1,6 @@
-import { applyUpdate } from "yjs";
 "use client";
+
+import { applyUpdate } from "yjs";
 
 import * as React from "react";
 import { useSortable } from "@dnd-kit/sortable";
@@ -45,6 +46,7 @@ import {
 import { ShareMenu } from "@/components/column/ShareMenu";
 import { PresenceAvatars } from "@/components/column/PresenceAvatars";
 import { useAccount } from "@/hooks/useAccount";
+import { useModifierKeyPressed } from "@/components/board/modifier-key";
 
 export interface TodoColumnProps {
 	column: Column;
@@ -359,61 +361,8 @@ const UrlDecorationPlugin = createPlatePlugin({
 	},
 });
 
-// Global state for Cmd key - shared across all editors
-let cmdKeyPressed = false;
-const cmdKeyListeners = new Set<() => void>();
-
-function subscribeToCmdKey(listener: () => void) {
-	cmdKeyListeners.add(listener);
-	return () => {
-		cmdKeyListeners.delete(listener);
-	};
-}
-
-function notifyCmdKeyListeners() {
-	cmdKeyListeners.forEach((listener) => listener());
-}
-
-// Initialize global key listeners once
-if (typeof window !== "undefined") {
-	const handleKeyDown = (e: KeyboardEvent) => {
-		if ((e.metaKey || e.ctrlKey) && !cmdKeyPressed) {
-			cmdKeyPressed = true;
-			notifyCmdKeyListeners();
-		}
-	};
-
-	const handleKeyUp = (e: KeyboardEvent) => {
-		if (!e.metaKey && !e.ctrlKey && cmdKeyPressed) {
-			cmdKeyPressed = false;
-			notifyCmdKeyListeners();
-		}
-	};
-
-	const handleBlur = () => {
-		if (cmdKeyPressed) {
-			cmdKeyPressed = false;
-			notifyCmdKeyListeners();
-		}
-	};
-
-	window.addEventListener("keydown", handleKeyDown);
-	window.addEventListener("keyup", handleKeyUp);
-	window.addEventListener("blur", handleBlur);
-}
-
-function useCmdKeyPressed() {
-	const [pressed, setPressed] = React.useState(cmdKeyPressed);
-
-	React.useEffect(() => {
-		return subscribeToCmdKey(() => setPressed(cmdKeyPressed));
-	}, []);
-
-	return pressed;
-}
-
 function TodoEditor({ column, onUpdate }: TodoEditorProps) {
-	const cmdPressed = useCmdKeyPressed();
+	const cmdPressed = useModifierKeyPressed();
 	const {
 		accountId,
 		account,
