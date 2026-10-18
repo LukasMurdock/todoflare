@@ -5,12 +5,16 @@
 	"description": "The embeddable todo board used by todoflare.",
 	"type": "module",
 	"sideEffects": ["*.css"],
-	"files": ["src", "dist"],
+	"files": ["src", "dist", "vite"],
 	"exports": {
 		".": "./src/index.ts",
 		"./tailwind.css": "./src/styles/tailwind.css",
 		"./tokens.css": "./src/styles/tokens.css",
-		"./board.css": "./dist/board.css"
+		"./board.css": "./dist/board.css",
+		"./vite": {
+			"types": "./vite/index.d.ts",
+			"default": "./vite/index.js"
+		}
 	},
 	"scripts": {
 		"build:css": "node build-css.mjs"

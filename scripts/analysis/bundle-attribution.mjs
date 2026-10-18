@@ -57,7 +57,7 @@ function owner(source) {
 	const plain = /node_modules\/((?:@[^/]+\/)?[^/]+)/.exec(normalized);
 	const pkg = pnpm?.[1] ?? plain?.[1];
 	if (pkg) return { group: "dependency", name: pkg };
-	const src = /(?:^|\/)(src\/.+)$/.exec(normalized);
+	const src = /(?:^|\/)((?:packages\/[^/]+\/)?src\/.+)$/.exec(normalized);
 	if (src) return { group: zoneOf(src[1]), name: src[1] };
 	return { group: "other", name: normalized };
 }
