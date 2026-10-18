@@ -24,10 +24,10 @@ the folder, which copies it and resolves its dependencies (including React)
 in your project:
 
 ```sh
-# <repo> is the todoflare checkout, e.g. ~/code/todoflare. Building the CSS
-# needs the repo's own dependencies installed (pnpm install at <repo>).
-node ~/code/todoflare/packages/board/build-css.mjs   # writes dist/board.css
-pnpm add file:~/code/todoflare/packages/board
+# Use the absolute path of your todoflare checkout. Building the CSS needs the
+# repo's own dependencies installed (pnpm install there).
+node /Users/you/code/todoflare/packages/board/build-css.mjs   # writes dist/board.css
+pnpm add file:/Users/you/code/todoflare/packages/board
 ```
 
 The package ships TypeScript source and compiles under strict settings
@@ -80,6 +80,22 @@ build it with `pnpm --filter @todoflare/board build:css` (the example hosts'
 `dev` scripts do this).
 
 ## Concepts
+
+### Content format
+
+Content is Plate JSON (`Value`): an array of blocks. The board's blocks are
+paragraphs (`"p"`), headings (`"h1"` to `"h3"`), and list items, which are
+paragraphs with `listStyleType` (`"disc"`, `"decimal"` or `"todo"`) and an
+`indent` level:
+
+```ts
+const snapshot: Value = [
+	{ type: "h1", children: [{ text: "Groceries" }] },
+	{ type: "p", listStyleType: "todo", indent: 1, checked: true, children: [{ text: "Milk" }] },
+	{ type: "p", listStyleType: "disc", indent: 1, children: [{ text: "Bread" }] },
+	{ type: "p", children: [{ text: "See example.com for details" }] },
+];
+```
 
 ### Columns are controlled
 
@@ -153,8 +169,22 @@ document loads and seeds it if it opens empty. Changing `snapshot` while the
 column is open has no effect on the editor (the document is the source of
 truth), so storing every change back into `snapshot` is safe.
 
-The board renders on the server with no `window`, `localStorage` or
-IndexedDB access. If your framework renders the board inside a page but
+The board renders on the server without `window`, `localStorage` or
+IndexedDB. (On Node 26, importing Yjs prints a harmless "localStorage is not
+available" warning: its `lib0` dependency checks for storage when loaded.)
+
+```ts
+// e.g. in a Vite SSR handler or a script using vite.ssrLoadModule
+import { renderToString } from "react-dom/server";
+import { TodoBoard, createMemoryDocuments } from "@todoflare/board";
+
+const html = renderToString(
+	<TodoBoard id="board" columns={[{ id: "a", snapshot }]} documents={createMemoryDocuments()} />,
+);
+```
+
+Keep browser-only code (reading `localStorage` for saved columns, for example)
+out of the module you render on the server, or run it in an effect. If your framework renders the board inside a page but
 hydrates it as a separate React root (islands, as in Void or Astro), pass a
 stable `id` so generated ids match:
 
@@ -168,7 +198,9 @@ board then renders no columns and opens no documents.
 ### Layout
 
 - `layout="fill"` (default): the board fills its container and each column
-  scrolls inside it. Give the container a height.
+  scrolls inside it. Give the container a height, for example
+  `<div style={{ height: 480 }}>` for a card-sized board inside a page, or
+  `height: 100vh` for a full-screen one.
 - `layout="page"`: the board is the page; columns grow with their content and
   the page scrolls.
 
@@ -190,6 +222,10 @@ page-wide.
   failures (default: `console.error`). The board stays mounted.
 - Overlays you render from slots (popovers, menus) should portal into the
   board: pass `usePortalContainer()` as the portal container.
+- Controls you render in slots are inside the board, so the board's reset
+  applies to them: a plain `<button>` has no border, background or padding.
+  Style them with your own classes or inline styles; the board's internal
+  utility classes are not a supported styling API.
 
 ### Imperative API
 
@@ -222,7 +258,14 @@ for tests of your embed.
 - Its reset applies only inside the board, and it overrides a host's
   universal and element rules (`* { font-family: serif }`,
   `button { all: unset }`), so the board looks the same on any page.
-- Theme colors are CSS variables on `[data-todo-board]`. Override any of them:
+- Theme colors are CSS variables on `[data-todo-board]`: `--background` and
+  `--foreground` (board surface and text), `--muted` / `--muted-foreground`
+  (column headers, placeholders, secondary text), `--primary` /
+  `--primary-foreground` (checked todos, link underline while Cmd/Ctrl is
+  held, dialog buttons), `--border`, `--input` (unchecked todo boxes),
+  `--ring` (focus rings), `--destructive`, `--accent`, `--secondary`,
+  `--popover`, `--card` (dialogs), `--brand` and `--highlight`. Override any
+  of them:
 
   ```css
   [data-todo-board] { --primary: oklch(0.55 0.2 260); --border: #ddd; }
@@ -245,7 +288,9 @@ instead of the prebuilt file (todoflare does):
 
 The board and its editor (React, Slate, Plate, Yjs) are about 300 KiB gzip in
 a minimal host, so Vite warns about a chunk over 500 KiB minified. Lazy-load
-the board (`React.lazy`) if it is not on the first screen.
+the board (`React.lazy`) if it is not on the first screen. A `"use no memo"`
+directive warning from `react-compiler-runtime` (a Plate dependency) during
+`vite build` is expected and harmless.
 
 `@platejs/yjs` imports its WebRTC, Hocuspocus and IndexedDB providers even
 though the board never uses them. `excludeUnusedYjsProviders()` from

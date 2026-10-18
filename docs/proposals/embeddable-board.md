@@ -6,22 +6,25 @@ only, the way Excalidraw's app consumes `@excalidraw/excalidraw`. A second and
 third host (minimal offline, adversarial server-rendered) prove the boundary.
 
 Step 1 (measurement and API draft) changed no product code. Step 2 (seams in
-place) is recorded under [Step 2 results](#step-2-results).
+place) and step 3 (package, hosts, proof) are recorded under
+[Step 2 results](#step-2-results) and [Step 3 results](#step-3-results). The
+embedding guide is [packages/board/README.md](../../packages/board/README.md).
 
 ## How to reproduce
 
 ```sh
-node scripts/analysis/board-boundary.mjs            # imports and hazards across the proposed boundary
+node scripts/analysis/board-boundary.mjs            # imports and hazards across the boundary (--check: enforced in verify)
 node scripts/analysis/ssr-probe.mjs                 # import and render the board in plain Node
 vite build --sourcemap  # in a scratch worktree; dist/ holds release artifacts
 node scripts/analysis/bundle-attribution.mjs DIR/dist/client/assets
 pnpm build:e2e && pnpm test:visual --update-snapshots   # capture visual baseline (machine-specific)
 pnpm build:e2e && pnpm test:visual                      # compare, 0 pixels allowed
-pnpm check:board-spec                               # API draft and host examples type-check together
+pnpm check:board-api                                # public API matches packages/board/api-report.md
+pnpm test:hosts                                     # the board in examples/minimal and examples/void
 ```
 
-Zones (which modules would be the board) are declared once in
-`scripts/analysis/board-zones.mjs`.
+Zones are declared once in `scripts/analysis/board-zones.mjs`; since step 3
+the board zone is the `packages/board/src` package.
 
 ## Baseline (main at 6d965237)
 
@@ -106,7 +109,9 @@ The 12 crossings define the adapter surface. Grouped by what the board uses:
 
 ## API draft
 
-`docs/proposals/embeddable-board/api.ts` is the draft public API. It follows
+*Historical: the step 1 draft (`docs/proposals/embeddable-board/`) was retired
+in step 3, replaced by the real API report and example hosts.* The draft
+public API followed
 Excalidraw's four mechanisms and adds a fifth:
 
 | Mechanism | Draft |
@@ -205,6 +210,72 @@ Not done yet, and planned for step 3: the package move; `focusColumn`,
 `editorPlugins` from the draft; the board's own `position: fixed` shortcuts
 button; type-checking the host examples against the real types instead of
 the draft; the minimal and Void hosts; the bundle trim.
+
+## Step 3 results
+
+1. **Package.** `packages/board` (`@todoflare/board`) holds the board's 28
+   modules with one public entry. The app imports only `@todoflare/board`;
+   `check:board-boundary` fails on any import from the package into the app
+   and on any deep import from the app into the package.
+2. **API.** The draft's remaining pieces: `onOpenLink`, `onError` (adapter,
+   editor and rejected-callback failures), `editorPlugins`, `layout`
+   (`"fill"` / `"page"`), `shortcutsButton`, `id`, and the ref's
+   `focusColumn`, `scrollToColumn` and `getColumnContent`.
+   `packages/board/api-report.md` lists every export; `check:board-api` fails
+   when code and report differ. The package also compiles under create-vite's
+   strict settings, since it ships TypeScript source.
+3. **Styles.** One palette in the package (`styles/tokens.css`). Todoflare
+   compiles the board's Tailwind source; other hosts import the prebuilt
+   `board.css`, whose reset is scoped to the board and unlayered, with
+   `!important` utilities, so a host's global CSS does not restyle it.
+4. **Hosts.** `examples/minimal` (plain Vite + React, no Tailwind) and
+   `examples/void` (a [Void](https://void.cloud/guide/) island: server
+   rendered on the Workers runtime, then hydrated). `pnpm test:hosts` (in
+   `verify`) covers persistence, every callback, `onOpenLink`, host editor
+   plugins, the ref, a failing adapter, two isolated boards on one page,
+   StrictMode, hostile global CSS, 50 mount/unmount cycles with no listener or
+   DOM growth (a one-listener-per-mount leak fails it), server HTML, the
+   no-JavaScript render, hydration without mismatch warnings, and
+   pixel-identical columns before and after hydration.
+5. **Bundle.** `excludeUnusedYjsProviders()` (`@todoflare/board/vite`) drops
+   the WebRTC, Hocuspocus and IndexedDB providers Plate imports but the board
+   never constructs. `check:bundle-size` enforces a 395 KiB gzip budget.
+6. **Public page.** It now renders with the board's `ColumnSnapshot`, so
+   headings and todos look as they do in the editor (it showed plain lines).
+7. **Cold-start trials.** An agent given only the README and API report
+   embedded the board in a new Vite app in 3.8 minutes, all requirements met
+   and verified. Its friction log (strict-mode type errors in the package
+   source, no `Value` export, missing persistence recipe and control names)
+   was fixed. A second fresh agent, using create-vite's strict defaults, met
+   all five requirements (including a server render) in about 2 minutes
+   without reading package source; its remaining friction was documentation
+   (block format, theme variables, slot styling, expected warnings), now in
+   the README.
+
+Along the way: Void's dependencies (database drivers, a newer better-auth)
+re-resolved the app's own `better-auth` with optional peers when the example
+joined the workspace, so `examples/void` is its own pnpm project and installs
+the board as a package copy. The 33 unused registry files in
+`components/ui` and `editor/plugins` are deleted.
+
+| Measure | Baseline | Step 2 | Step 3 | Target |
+| --- | ---: | ---: | ---: | ---: |
+| Board → host imports | 12 | 0 | **0**, enforced | 0 |
+| Host modules reachable from the board | 47 | 0 | **0** | 0 |
+| Embedding hazards | 12 | 1 | **1**: the default link opener (`onOpenLink` overrides it) | 0 |
+| Board renders on a server | 0/3 | 3/3 | **3/3**, and in a real SSR host with hydration | 3/3 |
+| Visual change for users | – | 0 px | **0 px**, except the public page (deliberate) | 0 |
+| Tests | 326 / 27 | 330 / 31 | **330 unit, 32 e2e, 14 host** | all pass |
+| Client JS (gzip) | 421.9 KiB | 423.3 KiB | **385.4 KiB** (board code 30.5 KiB minified) | ≤ 421.9 KiB |
+| Time to embed from the docs | not possible | – | **3.8 min**, then **~2 min** after fixes | < 15 min |
+| Host feature needs board edits | yes (`TodoColumn.tsx`) | no | **no**: slots, adapters, plugins | 0 board files |
+
+Staging: version `388d3bf1` (this branch at `abda8dc5`) passed the passkey
+test and the full recovery/rollback drill. Production is unchanged.
+
+Deliberate duplicates: the app and the package each own their shadcn
+`dialog` and the `cn` helper (shadcn's copy-per-package convention), and the
+app's page-wide shortcut keeps its own one-line platform check.
 
 ## Proposed order of work
 
