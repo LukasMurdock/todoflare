@@ -78,9 +78,11 @@ function ShortcutSectionComponent({ title, shortcuts }: ShortcutSection) {
 export function KeyboardShortcuts({
 	open,
 	onOpenChange,
+	button = "board",
 }: {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
+	button?: "board" | "viewport" | "none";
 }) {
 	const mod = useModifierSymbol();
 
@@ -126,21 +128,23 @@ export function KeyboardShortcuts({
 	return (
 		<>
 			{/* Floating button */}
-			<button
-				data-board-part="shortcuts-button"
-				onClick={() => onOpenChange(true)}
-				className={cn(
-					"fixed bottom-4 left-4 z-50",
-					"flex items-center gap-1.5 rounded-lg border border-border bg-background/80 px-3 py-2 shadow-sm backdrop-blur-sm",
-					"text-muted-foreground transition-all hover:bg-muted hover:text-foreground",
-					"focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
-				)}
-				aria-label="Keyboard shortcuts"
-			>
-				<Kbd>{mod}</Kbd>
-				<span className="text-muted-foreground text-xs">+</span>
-				<Kbd>/</Kbd>
-			</button>
+			{button !== "none" && (
+				<button
+					data-board-part="shortcuts-button"
+					onClick={() => onOpenChange(true)}
+					className={cn(
+						button === "viewport" ? "fixed bottom-4 left-4 z-50" : "absolute bottom-4 left-4 z-50",
+						"flex items-center gap-1.5 rounded-lg border border-border bg-background/80 px-3 py-2 shadow-sm backdrop-blur-sm",
+						"text-muted-foreground transition-all hover:bg-muted hover:text-foreground",
+						"focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+					)}
+					aria-label="Keyboard shortcuts"
+				>
+					<Kbd>{mod}</Kbd>
+					<span className="text-muted-foreground text-xs">+</span>
+					<Kbd>/</Kbd>
+				</button>
+			)}
 
 			{/* Dialog */}
 			<Dialog open={open} onOpenChange={onOpenChange}>

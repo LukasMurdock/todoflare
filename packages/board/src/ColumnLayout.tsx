@@ -37,6 +37,7 @@ export function ColumnLayout({
 			{columns.map((column, index) => (
 				<div
 					key={column.id}
+					data-column-id={column.id}
 					data-board-part={index === 0 ? "first-column" : undefined}
 				>
 					<TodoColumn

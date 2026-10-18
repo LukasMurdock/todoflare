@@ -12,6 +12,7 @@ import { columnEditorPlugins, findUrlAtOffset, normalizeUrl } from "./column-edi
 import { ColumnSnapshot } from "./ColumnSnapshot";
 import { hostOwnedProvider } from "./documents";
 import { useModifierKeyPressed } from "./modifier-key";
+import { useBoardContext } from "./board-context";
 import { useColumnDocument, type OpenColumnDocument } from "./use-column-document";
 
 const PLACEHOLDER = "Start typing...";
@@ -32,6 +33,7 @@ export interface ColumnEditorProps {
 /** One column's editor, bound to the Y.Doc the board's document adapter opens. */
 export function ColumnEditor({ columnId, snapshot, readOnly, identity, onContentChange }: ColumnEditorProps) {
 	const cmdPressed = useModifierKeyPressed();
+	const { openLink, reportError, editorPlugins, registerEditor } = useBoardContext();
 	const columnDocument = useColumnDocument(columnId, true);
 	const [boundDocument, setBoundDocument] = React.useState<OpenColumnDocument | null>(null);
 	const isReady = columnDocument !== null && boundDocument === columnDocument;
@@ -47,10 +49,11 @@ export function ColumnEditor({ columnId, snapshot, readOnly, identity, onContent
 	const identityName = identity?.name;
 	const identityColor = identity?.color;
 	const plugins = React.useMemo(() => {
-		if (!columnDocument) return columnEditorPlugins;
+		if (!columnDocument) return [...columnEditorPlugins, ...editorPlugins];
 		const cursors = identityName && identityColor ? { data: { name: identityName, color: identityColor } } : null;
 		return [
 			...columnEditorPlugins,
+			...editorPlugins,
 			YjsPlugin.configure({
 				render: cursors ? { afterEditable: RemoteCursorOverlay } : {},
 				options: {
@@ -61,7 +64,7 @@ export function ColumnEditor({ columnId, snapshot, readOnly, identity, onContent
 				},
 			} as never),
 		];
-	}, [columnDocument, identityName, identityColor]);
+	}, [columnDocument, identityName, identityColor, editorPlugins]);
 
 	const editor = usePlateEditor({ id: columnId, plugins, value: [] }, [plugins]);
 
@@ -79,7 +82,7 @@ export function ColumnEditor({ columnId, snapshot, readOnly, identity, onContent
 				await api.yjs.init({ id: columnId, autoConnect: false, value: snapshotRef.current });
 				didInit = true;
 			} catch (err) {
-				console.error(err);
+				reportError(err, { columnId, operation: "bind-document" });
 			}
 			if (!cancelled) setBoundDocument(columnDocument);
 		})();
@@ -95,7 +98,16 @@ export function ColumnEditor({ columnId, snapshot, readOnly, identity, onContent
 				}
 			});
 		};
-	}, [editor, columnId, columnDocument]);
+	}, [editor, columnId, columnDocument, reportError]);
+
+	// Let the board's ref reach this column while its editor is live.
+	React.useEffect(() => {
+		if (!isReady) return;
+		return registerEditor(columnId, {
+			focus: () => editor.tf.focus({ edge: "end" }),
+			getContent: () => editor.children as Value,
+		});
+	}, [isReady, columnId, editor, registerEditor]);
 
 	const handleChange = React.useCallback(
 		({ value }: { value: Value }) => onContentChangeRef.current?.(columnId, value),
@@ -120,9 +132,9 @@ export function ColumnEditor({ columnId, snapshot, readOnly, identity, onContent
 		if (url) {
 			e.preventDefault();
 			e.stopPropagation();
-			window.open(normalizeUrl(url), "_blank", "noopener,noreferrer");
+			openLink(normalizeUrl(url));
 		}
-	}, []);
+	}, [openLink]);
 
 	const renderLeaf = React.useCallback(
 		(props: {

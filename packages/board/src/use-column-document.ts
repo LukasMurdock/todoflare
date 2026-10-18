@@ -3,6 +3,7 @@
 import * as React from "react";
 import { Awareness } from "y-protocols/awareness";
 import type { ColumnDocument, DocumentAdapter } from "./documents";
+import { useBoardContext } from "./board-context";
 
 /** An opened document whose awareness is always present; the board owns one it created. */
 export type OpenColumnDocument = ColumnDocument & { awareness: Awareness };
@@ -31,6 +32,7 @@ export const DocumentAdapterProvider = DocumentAdapterContext.Provider;
  */
 export function useColumnDocument(columnId: string, enabled: boolean): OpenColumnDocument | null {
 	const adapter = React.useContext(DocumentAdapterContext);
+	const { reportError } = useBoardContext();
 	const [document, setDocument] = React.useState<OpenColumnDocument | null>(null);
 
 	React.useEffect(() => {
@@ -47,7 +49,7 @@ export function useColumnDocument(columnId: string, enabled: boolean): OpenColum
 				setDocument(opened);
 			},
 			(error: unknown) => {
-				if (!controller.signal.aborted) console.error(error);
+				if (!controller.signal.aborted) reportError(error, { columnId, operation: "open-document" });
 			},
 		);
 		return () => {
@@ -59,7 +61,7 @@ export function useColumnDocument(columnId: string, enabled: boolean): OpenColum
 				queueMicrotask(() => toRelease.release());
 			}
 		};
-	}, [adapter, columnId, enabled]);
+	}, [adapter, columnId, enabled, reportError]);
 
 	return document;
 }
