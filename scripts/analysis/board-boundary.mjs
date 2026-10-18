@@ -1,7 +1,10 @@
 // Board boundary inventory: how far is the todo board from being an embeddable
 // component?
 //
-// Usage: node scripts/analysis/board-boundary.mjs [--json] [--root DIR]
+// Usage: node scripts/analysis/board-boundary.mjs [--json] [--check] [--root DIR]
+//
+// --check exits non-zero if any board module imports a host module, directly or
+// transitively (wired into `pnpm verify` as check:board-boundary).
 //
 // Browser modules are assigned to proposed zones: "board" (the editor a host
 // would embed) and "host" (the todoflare application around it: accounts,
@@ -25,6 +28,7 @@ const root = args.includes("--root")
 	? path.resolve(args[args.indexOf("--root") + 1])
 	: path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const asJson = args.includes("--json");
+const check = args.includes("--check");
 
 const BROWSER = /^src\/(client\.tsx|components|contexts|hooks|types|lib)(\/|$)/;
 const SERVER_ONLY = /^src\/lib\/(rate-limit|http-account-auth)\.ts$/;
@@ -199,7 +203,14 @@ const report = {
 	hostImportTimeHazards: hostHazards,
 };
 
-if (asJson) {
+if (check) {
+	if (report.crossingCount > 0 || report.reachableHost.length > 0) {
+		console.error(`Board modules must not import app (host) modules; see scripts/analysis/board-zones.mjs.`);
+		for (const c of crossings) console.error(`  ${c.from} -> ${c.to}`);
+		process.exit(1);
+	}
+	console.log(`Board boundary holds: ${report.zones.board.files} board modules import no host module.`);
+} else if (asJson) {
 	console.log(JSON.stringify(report, null, 2));
 } else {
 	console.log(`board: ${report.zones.board.files} files, ${report.zones.board.lines} lines`);

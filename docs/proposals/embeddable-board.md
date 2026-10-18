@@ -1,12 +1,12 @@
-# Embeddable board: step 1 (measurement and API draft)
+# Embeddable board
 
 Goal: turn the todo board into an embeddable, extensible React component
 (`packages/board` in this workspace) and rebuild todoflare on its public API
 only, the way Excalidraw's app consumes `@excalidraw/excalidraw`. A second and
 third host (minimal offline, adversarial server-rendered) prove the boundary.
 
-This step changes no product code. It adds measurement tools, a visual
-baseline, and a type-checked API draft with three host examples.
+Step 1 (measurement and API draft) changed no product code. Step 2 (seams in
+place) is recorded under [Step 2 results](#step-2-results).
 
 ## How to reproduce
 
@@ -162,6 +162,49 @@ functions. They now return `unknown` and the board only awaits them.
 | Client JS | 422 KiB gzip | ≤ 422 KiB gzip; stretch: −100 KiB by excluding `simple-peer` and Hocuspocus | `bundle-attribution.mjs`, size budget |
 | Host feature without board edits | header action needs `TodoColumn.tsx` edit | 0 board files | change-cost scenario |
 | Embedding from docs alone | not possible | working minimal embed in under 15 minutes by an agent with no repo context | cold-start trial, friction log |
+
+## Step 2 results
+
+Six changes, each verified with `pnpm verify` and the visual baseline:
+
+1. **Loading state.** Fixes the placeholder-column bug (finding 2). The new
+   e2e test fails on the old code and passes on the new.
+2. **Board-owned modifier-key state.** No module state or import-time
+   listeners; the platform symbol is hydration-safe.
+3. **Overlays inside the board.** Dialogs, popovers, menus and tooltips
+   portal into the board root (an e2e test fails if they land in `body`).
+4. **Document adapter.** The app's Cloudflare adapter opens each column's
+   `Y.Doc`; Plate's global provider registry is no longer used.
+5. **Guests on Yjs.** One editor path. Until a document opens, the board
+   renders the column snapshot with static plugins declared beside the live
+   ones; a build whose documents never opened rendered the guest board with 0
+   pixels different from the live baseline.
+6. **`TodoBoard`.** `components/board/TodoBoard.tsx` with the props, slots and
+   ref from `components/board/types.ts`; `TodoApp` is now the host.
+
+Two e2e tests that relied on the placeholder column were tightened
+(`ensureColumnExists` matched any column POST; an offline test compared
+against an unsettled snapshot).
+
+| Measure | Baseline | After step 2 | Target |
+| --- | ---: | ---: | ---: |
+| Board → host imports | 12 | **0**, enforced by `check:board-boundary` | 0 |
+| Host modules reachable from the board | 47 (8,896 lines) | **0** | 0 |
+| Embedding hazards in the board | 12 | **1** (default `window.open` for Cmd+click; `onOpenLink` is in the draft) | 0 |
+| Board entry points rendering in Node | 0/3 | **3/3**, with snapshot HTML | 3/3 |
+| Visual change | – | **0 pixels** on all 6 screens after every change | 0 |
+| Unit / e2e tests | 326 / 27 | **330 / 31**, all passing | all pass |
+| Client JS (gzip) | 421.9 KiB | **423.3 KiB** (+1.4 KiB: snapshot plugins and board code) | ≤ 421.9 KiB |
+
+Behavior changes, all intended: signed-in users no longer see a placeholder
+column while loading; guests now get Yjs undo history (as signed-in users
+already did); guest saves skip selection-only changes.
+
+Not done yet, and planned for step 3: the package move; `focusColumn`,
+`scrollToColumn`, `getColumnContent`, `onOpenLink`, `onError` and
+`editorPlugins` from the draft; the board's own `position: fixed` shortcuts
+button; type-checking the host examples against the real types instead of
+the draft; the minimal and Void hosts; the bundle trim.
 
 ## Proposed order of work
 
