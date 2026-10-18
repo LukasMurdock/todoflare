@@ -69,4 +69,6 @@ interface TodoBoardProps {
 
 function usePortalContainer(): HTMLElement | undefined;
 
+type Value = TElement[];
+
 ```

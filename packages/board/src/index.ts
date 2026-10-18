@@ -8,6 +8,8 @@
 export { TodoBoard } from "./TodoBoard";
 export type { BoardColumn, TodoBoardApi, TodoBoardProps } from "./types";
 export type { ColumnDocument, DocumentAdapter } from "./documents";
+/** Column content as Plate JSON, re-exported so hosts need no direct platejs dependency. */
+export type { Value } from "platejs";
 export { createMemoryDocuments } from "./memory-documents";
 export { ColumnSnapshot } from "./ColumnSnapshot";
 export { isEmptyContent } from "./content";

@@ -24,9 +24,15 @@ the folder, which copies it and resolves its dependencies (including React)
 in your project:
 
 ```sh
-node <repo>/packages/board/build-css.mjs     # build dist/board.css first
-pnpm add file:<repo>/packages/board
+# <repo> is the todoflare checkout, e.g. ~/code/todoflare. Building the CSS
+# needs the repo's own dependencies installed (pnpm install at <repo>).
+node ~/code/todoflare/packages/board/build-css.mjs   # writes dist/board.css
+pnpm add file:~/code/todoflare/packages/board
 ```
+
+The package ships TypeScript source and compiles under strict settings
+(including create-vite's `noUnusedLocals`). Content is typed as `Value`,
+re-exported by the package, so you do not need a direct `platejs` dependency.
 
 ```tsx
 import { useState } from "react";
@@ -58,13 +64,15 @@ function App() {
 createRoot(document.getElementById("root")!).render(<App />);
 ```
 
-In your Vite config, add the provider trim (saves about 120 KiB, see below):
+In your Vite config, add the provider trim next to your React plugin (saves
+about 120 KiB, see below):
 
 ```ts
 import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
 import { excludeUnusedYjsProviders } from "@todoflare/board/vite";
 
-export default defineConfig({ plugins: [excludeUnusedYjsProviders()] });
+export default defineConfig({ plugins: [react(), excludeUnusedYjsProviders()] });
 ```
 
 The stylesheet is prebuilt: you do not need Tailwind. Inside this workspace,
@@ -116,7 +124,18 @@ first sync). If it opens empty, the board seeds it from the column's
 - **In memory**: `createMemoryDocuments()`. Save content from
   `onContentChange(columnId, content)`, which reports Plate JSON on every
   editor change (including selection moves; compare before writing), and pass
-  it back as `snapshot` next time.
+  it back as `snapshot` next time:
+
+  ```tsx
+  const [columns, setColumns] = useState<BoardColumn[]>(
+  	() => JSON.parse(localStorage.getItem("board") ?? "null") ?? [{ id: crypto.randomUUID(), removal: "delete" }],
+  );
+  useEffect(() => localStorage.setItem("board", JSON.stringify(columns)), [columns]);
+  // ...
+  onContentChange={(columnId, content) =>
+  	setColumns((list) => list.map((c) => (c.id === columnId ? { ...c, snapshot: content } : c)))
+  }
+  ```
 - **Live collaboration**: connect the `Y.Doc` and `Awareness` to any Yjs
   transport. Todoflare's adapter (`createCloudflareDocuments` in
   `src/lib/collaboration/cloudflare-yjs-provider.ts`) applies an IndexedDB
@@ -128,6 +147,11 @@ first sync). If it opens empty, the board seeds it from the column's
 Until a column's document opens, the board renders its `snapshot` as static
 HTML that matches the editor pixel for pixel, so there is no loading flash and
 a server render shows real content. On a server, documents never open.
+
+`snapshot` is read when a column's document opens: it is shown while the
+document loads and seeds it if it opens empty. Changing `snapshot` while the
+column is open has no effect on the editor (the document is the source of
+truth), so storing every change back into `snapshot` is safe.
 
 The board renders on the server with no `window`, `localStorage` or
 IndexedDB access. If your framework renders the board inside a page but
@@ -169,6 +193,10 @@ page-wide.
 
 ### Imperative API
 
+A column is *open* while it is expanded and its editor is bound to its
+document. Collapsed columns, and columns whose document has not opened yet,
+are not open: fall back to your own saved `snapshot` for them.
+
 ```ts
 const board = useRef<TodoBoardApi>(null);
 board.current?.focusColumn(id);       // false if the column is not open; focus is asynchronous
@@ -177,6 +205,14 @@ board.current?.getColumnContent(id);  // Plate JSON, or null if not open
 board.current?.openShortcutsHelp();
 board.current?.getElement("add-column" | "first-column" | "shortcuts-button");
 ```
+
+### Controls and keyboard
+
+Column headers have buttons named "Reorder column" (drag handle; with the
+keyboard, focus it and press Space, then the arrow keys, then Space),
+"Collapse column" / "Expand column", and "Delete column" or "Hide column".
+The board has "Add column" and "Keyboard shortcuts". These names are stable,
+for tests of your embed.
 
 ## Styling
 
@@ -206,6 +242,10 @@ instead of the prebuilt file (todoflare does):
 ```
 
 ## Bundle size
+
+The board and its editor (React, Slate, Plate, Yjs) are about 300 KiB gzip in
+a minimal host, so Vite warns about a chunk over 500 KiB minified. Lazy-load
+the board (`React.lazy`) if it is not on the first screen.
 
 `@platejs/yjs` imports its WebRTC, Hocuspocus and IndexedDB providers even
 though the board never uses them. `excludeUnusedYjsProviders()` from

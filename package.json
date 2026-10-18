@@ -17,7 +17,7 @@
     "e2e:serve": "pnpm e2e:reset-state && wrangler d1 migrations apply AUTH_DB --local --persist-to .wrangler/e2e-state && TODOFLARE_E2E=true vite preview --host 127.0.0.1 --port 4173",
     "typecheck": "tsc --noEmit",
     "typecheck:test": "tsc --noEmit -p test/tsconfig.json",
-    "typecheck:examples": "tsc -p examples/minimal",
+    "typecheck:examples": "tsc -p packages/board && tsc -p examples/minimal",
     "check:verification-config": "node scripts/check-verification-config.mjs",
     "check:architecture": "node scripts/check-browser-boundaries.mjs",
     "check:route-literals": "node scripts/check-route-literals.mjs",

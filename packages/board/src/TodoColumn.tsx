@@ -79,6 +79,7 @@ export function TodoColumn({
 				<div className="flex flex-col w-10 items-center gap-1 border-b border-border bg-muted/30 py-2">
 					{/* Drag handle */}
 					<button
+						aria-label="Reorder column"
 						className="cursor-grab rounded p-1 hover:bg-muted active:cursor-grabbing"
 						{...attributes}
 						{...listeners}
@@ -114,6 +115,7 @@ export function TodoColumn({
 				<div className="flex items-center gap-1">
 					{/* Drag handle */}
 					<button
+						aria-label="Reorder column"
 						className="cursor-grab rounded p-1 hover:bg-muted active:cursor-grabbing"
 						{...attributes}
 						{...listeners}
@@ -156,6 +158,7 @@ export function TodoColumn({
 									<button
 										type="button"
 										aria-label="Delete column"
+										title="Delete column"
 										aria-haspopup="dialog"
 										aria-expanded={confirmOpen}
 										onClick={() => setConfirmOpen(true)}
