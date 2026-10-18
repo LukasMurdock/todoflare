@@ -107,7 +107,9 @@ export function TodoApp() {
 			columns={boardColumns}
 			documents={documents}
 			identity={identity}
-			// Todoflare's board is the page, so the button stays put while long columns scroll.
+			// Todoflare's board is the page: columns grow with content and the page scrolls,
+			// so the shortcuts button stays fixed to the window.
+			layout="page"
 			shortcutsButton="viewport"
 			onCreateColumn={addColumn}
 			onRemoveColumn={(column) => removeColumn(column.id)}

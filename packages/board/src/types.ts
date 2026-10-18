@@ -64,6 +64,12 @@ export interface TodoBoardProps {
 	 * board is the page), or "none". Mod+/ inside the board works either way.
 	 */
 	shortcutsButton?: "board" | "viewport" | "none";
+	/**
+	 * "fill" (default): the board fills its container and columns scroll
+	 * inside it; give the container a height. "page": the board is the page,
+	 * columns grow with their content and the page scrolls.
+	 */
+	layout?: "fill" | "page";
 
 	/** Extra controls in a column header, before the remove control. */
 	renderColumnActions?(column: BoardColumn): ReactNode;
@@ -76,7 +82,10 @@ export interface TodoBoardProps {
 
 /** Imperative control for hosts. */
 export interface TodoBoardApi {
-	/** Places the caret at the end of an open column. Returns false if it is not open. */
+	/**
+	 * Places the caret at the end of an open column; the editor takes focus
+	 * asynchronously. Returns false if the column is not open.
+	 */
 	focusColumn(columnId: string): boolean;
 	scrollToColumn(columnId: string): void;
 	/** Current content of an open column, or null if it is not open. */

@@ -9,6 +9,7 @@ import { cn } from "./ui/cn";
 interface ColumnLayoutProps {
 	/** "loading" renders no columns and no add button until the host knows which columns exist. */
 	status?: "loading" | "ready";
+	layout?: "fill" | "page";
 	columns: readonly BoardColumn[];
 	onAdd?: () => void;
 	onRemove?: (column: BoardColumn) => void;
@@ -20,6 +21,7 @@ interface ColumnLayoutProps {
 
 export function ColumnLayout({
 	status = "ready",
+	layout = "fill",
 	columns,
 	onAdd,
 	onRemove,
@@ -28,12 +30,13 @@ export function ColumnLayout({
 	identity,
 	renderColumnActions,
 }: ColumnLayoutProps) {
+	const height = layout === "page" ? "h-full" : "min-h-0 flex-1";
 	if (status === "loading") {
-		return <div className="flex h-full" aria-busy="true" />;
+		return <div className={cn("flex", height)} aria-busy="true" />;
 	}
 
 	return (
-		<div className="flex h-full overflow-x-auto pr-28 scrollbar-hide scroll-pr-28">
+		<div className={cn("flex overflow-x-auto pr-28 scrollbar-hide scroll-pr-28", height)}>
 			{columns.map((column, index) => (
 				<div
 					key={column.id}

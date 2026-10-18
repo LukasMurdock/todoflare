@@ -46,6 +46,7 @@ export function TodoBoard({
 	identity,
 	editorPlugins,
 	shortcutsButton = "board",
+	layout = "fill",
 	renderColumnActions,
 	renderTopBar,
 	className,
@@ -129,7 +130,7 @@ export function TodoBoard({
 		<div
 			ref={setRoot}
 			data-todo-board=""
-			className={cn("relative min-h-screen", className)}
+			className={cn(layout === "page" ? "relative min-h-screen" : "relative flex h-full min-h-0 flex-col", className)}
 			onKeyDown={handleKeyDown}
 		>
 			<BoardContextProvider value={boardContext}>
@@ -141,6 +142,7 @@ export function TodoBoard({
 								<SortableContext items={columns.map((column) => column.id)} strategy={horizontalListSortingStrategy}>
 									<ColumnLayout
 										status={status}
+										layout={layout}
 										columns={columns}
 										onAdd={onCreateColumn ? () => runIntent("create-column", onCreateColumn) : undefined}
 										onRemove={handleRemove}
