@@ -113,6 +113,35 @@ function firstDeclared(...candidates) {
 	return { declaredIn: "(not found)", members: [] };
 }
 
+const contractSchemaFor = {
+	Account: "accountContractSchema",
+	ColumnMeta: "columnMetaContractSchema",
+	DeletedColumn: "deletedColumnContractSchema",
+};
+
+/** Keys of a record shape: the interface if one exists, else its contract schema. */
+function recordKeys(name) {
+	let keys = interfaceKeys("src/types/account.ts", name);
+	if (!keys.length) {
+		visit(sources.get("src/lib/api/account-contract.ts"), (node) => {
+			if (!ts.isVariableDeclaration(node) || node.name.getText() !== contractSchemaFor[name]) return;
+			visit(node.initializer, (inner) => {
+				if (
+					!keys.length &&
+					ts.isCallExpression(inner) &&
+					inner.expression.getText().endsWith(".object") &&
+					inner.arguments[0] &&
+					ts.isObjectLiteralExpression(inner.arguments[0])
+				) {
+					keys = inner.arguments[0].properties.filter((p) => p.name).map((p) => p.name.getText());
+				}
+			});
+		});
+	}
+	if (!keys.length) throw new Error(`No declaration found for record shape ${name}`);
+	return keys;
+}
+
 function interfaceKeys(file, name) {
 	let keys = [];
 	visit(sources.get(file), (node) => {
@@ -277,7 +306,7 @@ const families = [
 		name: "record-shape",
 		declaredIn: "src/types/account.ts interfaces",
 		members: ["Account", "ColumnMeta", "DeletedColumn"],
-		sites: (member) => shapeSites(interfaceKeys("src/types/account.ts", member)),
+		sites: (member) => shapeSites(recordKeys(member)),
 	},
 ];
 
