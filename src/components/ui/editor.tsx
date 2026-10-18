@@ -52,7 +52,7 @@ export function EditorContainer({
   );
 }
 
-const editorVariants = cva(
+export const editorVariants = cva(
   cn(
     'group/editor',
     'relative w-full cursor-text select-text overflow-x-hidden whitespace-pre-wrap break-words',

@@ -200,6 +200,9 @@ export function useColumns() {
 	const updateColumnValue = useCallback(
 		(id: string, value: Value) => {
 			if (!usesSyncedMode) {
+				// The editor reports every change, including selection moves; save only content changes.
+				const current = localColumnsRef.current.find((col) => col.id === id);
+				if (current && JSON.stringify(current.value) === JSON.stringify(value)) return;
 				setLocalColumns((prev) =>
 					prev.map((col) => (col.id === id ? { ...col, value } : col)),
 				);

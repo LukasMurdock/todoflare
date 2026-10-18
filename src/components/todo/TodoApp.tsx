@@ -26,6 +26,7 @@ import { ModifierKeyProvider } from "@/components/board/modifier-key";
 import { PortalContainerProvider } from "@/components/board/portal-container";
 import { KeyboardShortcuts } from "@/components/keyboard-shortcuts";
 import { DocumentAdapterProvider } from "@/components/board/use-column-document";
+import { createMemoryDocuments } from "@/components/board/memory-documents";
 import { createCloudflareDocuments } from "@/lib/collaboration/cloudflare-yjs-provider";
 import { useSyncContext } from "@/contexts/sync-context";
 
@@ -42,14 +43,19 @@ export function TodoApp() {
 		getColumnOwner,
 	} = useColumns();
 
-	const { loadColumnDocument, subscribeToColumn, onColumnMessage, sendUpdate, sendAwareness } = useSyncContext();
+	const { accountId, account, loadColumnDocument, subscribeToColumn, onColumnMessage, sendUpdate, sendAwareness } =
+		useSyncContext();
+	const isSyncedMode = !!accountId && !!account;
+	// Signed-in columns live in the Cloudflare room; guest columns in memory, saved from onContentChange.
 	const documents = React.useMemo(
 		() =>
-			createCloudflareDocuments({
-				loadColumnDocument,
-				transport: { subscribeToColumn, onColumnMessage, sendUpdate, sendAwareness },
-			}),
-		[loadColumnDocument, subscribeToColumn, onColumnMessage, sendUpdate, sendAwareness],
+			isSyncedMode
+				? createCloudflareDocuments({
+					loadColumnDocument,
+					transport: { subscribeToColumn, onColumnMessage, sendUpdate, sendAwareness },
+				})
+				: createMemoryDocuments(),
+		[isSyncedMode, loadColumnDocument, subscribeToColumn, onColumnMessage, sendUpdate, sendAwareness],
 	);
 
 	// Dialogs, popovers and menus portal into the board root, not document.body.

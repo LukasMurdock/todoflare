@@ -11,6 +11,6 @@ export interface BoardIslandProps {
 export default function BoardIsland({ columns }: BoardIslandProps) {
 	const initial: BoardColumn[] = columns.map(({ id, content }) => ({ id, snapshot: content, removal: "delete" }));
 	const { boardProps } = useLocalBoard(initial);
-	const documents = createMemoryDocuments(Object.fromEntries(columns.map(({ id, content }) => [id, content])));
+	const documents = createMemoryDocuments();
 	return <TodoBoard {...boardProps} documents={documents} />;
 }

@@ -6,10 +6,12 @@ import { TodoBoard, createMemoryDocuments, useLocalBoard } from "../api";
 
 const STORAGE_KEY = "my-app-board";
 const saved: Record<string, Value> = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
-const documents = createMemoryDocuments(saved);
+const documents = createMemoryDocuments();
 
 function App() {
-	const { boardProps } = useLocalBoard(Object.keys(saved).map((id) => ({ id, removal: "delete" })));
+	const { boardProps } = useLocalBoard(
+		Object.entries(saved).map(([id, snapshot]) => ({ id, snapshot, removal: "delete" })),
+	);
 	return (
 		<TodoBoard
 			{...boardProps}

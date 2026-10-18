@@ -26,7 +26,7 @@ export interface DocumentAdapter {
  * connected the document, so the board hands Plate this inert one instead of
  * registering provider types in Plate's process-wide registry.
  */
-export function hostOwnedProvider(document: ColumnDocument & { awareness: Awareness }): UnifiedProvider {
+export function hostOwnedProvider(document: { doc: Y.Doc; awareness: Awareness }): UnifiedProvider {
 	return {
 		type: "host",
 		document: document.doc,

@@ -37,3 +37,32 @@ test("dialogs render inside the board, not in document.body", async ({ page }) =
 	await board.locator("div.w-80").first().locator("div.h-10 button").last().click();
 	await expect(board.getByRole("alertdialog")).toBeVisible();
 });
+
+test("guest edits persist across reloads and can be undone", async ({ page }) => {
+	await page.addInitScript(({ welcomeKey }) => localStorage.setItem(welcomeKey, "true"), { welcomeKey: WELCOME_KEY });
+	await page.goto("/");
+	await page.keyboard.press("Escape");
+	const editor = page.getByRole("textbox", { name: "Todo editor" }).first();
+	await editor.click();
+	await page.keyboard.type("[] Guest todo");
+	await expect(editor).toContainText("Guest todo");
+	await expect(editor.getByRole("checkbox")).toHaveCount(1);
+
+	await expect
+		.poll(() => page.evaluate((key) => localStorage.getItem(key) ?? "", LOCAL_COLUMNS_KEY))
+		.toContain("Guest todo");
+	await page.reload();
+	// Saved guest data now prompts to claim it; dismiss to reach the board.
+	await expect(page.getByRole("dialog", { name: "You have local data" })).toBeVisible();
+	await page.keyboard.press("Escape");
+	await expect(editor).toContainText("Guest todo");
+	await expect(editor.getByRole("checkbox")).toHaveCount(1);
+
+	await editor.click();
+	await page.keyboard.press("End");
+	await page.keyboard.type(" extra");
+	await expect(editor).toContainText("Guest todo extra");
+	await page.keyboard.press("ControlOrMeta+z");
+	await expect(editor).not.toContainText("extra");
+	await expect(editor).toContainText("Guest todo");
+});

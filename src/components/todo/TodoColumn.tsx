@@ -3,32 +3,14 @@
 import * as React from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import type { Value, TText, NodeEntry, Range } from "platejs";
-import { Plate, usePlateEditor, createPlatePlugin } from "platejs/react";
-import { KEYS } from "platejs";
-import { HeadingRules } from "@platejs/basic-nodes";
-import { H1Plugin, H2Plugin, H3Plugin } from "@platejs/basic-nodes/react";
-import { ListPlugin } from "@platejs/list/react";
-import {
-	BulletedListRules,
-	OrderedListRules,
-	TaskListRules,
-	toggleList,
-	someList,
-	someTodoList,
-} from "@platejs/list";
-import { IndentPlugin } from "@platejs/indent/react";
-import { YjsPlugin } from "@platejs/yjs/react";
 
+import type { Value } from "platejs";
 import type { Column } from "@/types/column";
-import { EMPTY_COLUMN_VALUE, isColumnEmpty } from "@/types/column";
+import { ColumnEditor } from "@/components/board/ColumnEditor";
+import { isColumnEmpty } from "@/types/column";
 import { cn } from "@/lib/utils";
 import { displayAccountId, getAccountColor, truncateAccountId } from "@/lib/account";
 import { useSyncContext } from "@/contexts/sync-context";
-import { RemoteCursorOverlay } from "@/components/ui/remote-cursor-overlay";
-import { Editor, EditorContainer } from "@/components/ui/editor";
-import { H1Element, H2Element, H3Element } from "@/components/ui/heading-node";
-import { BlockList } from "@/components/ui/block-list";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -43,9 +25,6 @@ import {
 import { ShareMenu } from "@/components/column/ShareMenu";
 import { PresenceAvatars } from "@/components/column/PresenceAvatars";
 import { useAccount } from "@/hooks/useAccount";
-import { useModifierKeyPressed } from "@/components/board/modifier-key";
-import { hostOwnedProvider } from "@/components/board/documents";
-import { useColumnDocument } from "@/components/board/use-column-document";
 
 export interface TodoColumnProps {
 	column: Column;
@@ -243,373 +222,26 @@ interface TodoEditorProps {
 	onUpdate: (id: string, value: Value) => void;
 }
 
-// Plugin for list keyboard shortcuts
-const ListShortcutsPlugin = createPlatePlugin({
-	key: "listShortcuts",
-	handlers: {
-		onKeyDown: ({ editor, event }) => {
-			// Mod+E: Rotate list types
-			if ((event.metaKey || event.ctrlKey) && event.key === "e") {
-				event.preventDefault();
-
-				if (someTodoList(editor)) {
-					// Todo → Bullet (remove checked property)
-					editor.tf.unsetNodes(["checked"]);
-					editor.tf.setNodes({ listStyleType: KEYS.ul });
-				} else if (someList(editor, KEYS.ol)) {
-					// Ordered → Todo
-					editor.tf.setNodes({
-						listStyleType: KEYS.listTodo,
-						checked: false,
-					});
-				} else if (someList(editor, KEYS.ul)) {
-					// Bullet → Ordered
-					editor.tf.setNodes({ listStyleType: KEYS.ol });
-				} else {
-					// Not in list → Create bullet list
-					toggleList(editor, { listStyleType: KEYS.ul });
-				}
-
-				return true;
-			}
-
-			// Mod+Enter: Toggle todo completion
-			if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-				if (someTodoList(editor)) {
-					event.preventDefault();
-
-					// Get current checked state and toggle it
-					const nodes = Array.from(
-						editor.api.nodes({
-							match: (n) =>
-								"listStyleType" in n &&
-								n.listStyleType === KEYS.listTodo,
-							mode: "lowest",
-						})
-					);
-
-					if (nodes.length > 0) {
-						const [node] = nodes[0];
-						const currentChecked =
-							(node as { checked?: boolean }).checked ?? false;
-						editor.tf.setNodes({ checked: !currentChecked });
-					}
-
-					return true;
-				}
-			}
-		},
-	},
-});
-
-// URL regex pattern - matches URLs including bare domains and subdomains
-const URL_REGEX =
-	/(?:https?:\/\/[^\s<>]+|www\.[^\s<>]+|(?:[a-zA-Z0-9][-a-zA-Z0-9]*\.)+[a-zA-Z]{2,}(?:\/[^\s<>]*)?)/g;
-
-// Find URL at a specific offset in text
-function findUrlAtOffset(text: string, offset: number): string | null {
-	let match;
-	URL_REGEX.lastIndex = 0;
-	while ((match = URL_REGEX.exec(text)) !== null) {
-		const start = match.index;
-		const end = start + match[0].length;
-		if (offset >= start && offset <= end) {
-			return match[0];
-		}
-	}
-	return null;
-}
-
-// Normalize URL to ensure it has a protocol
-function normalizeUrl(url: string): string {
-	if (url.startsWith("http://") || url.startsWith("https://")) {
-		return url;
-	}
-	if (url.startsWith("www.")) {
-		return `https://${url}`;
-	}
-	return `https://${url}`;
-}
-
-// Find all URL ranges in a text node for decoration
-function findUrlRanges(node: TText, path: number[]): Range[] {
-	const text = node.text;
-	const ranges: Range[] = [];
-
-	let match;
-	URL_REGEX.lastIndex = 0;
-	while ((match = URL_REGEX.exec(text)) !== null) {
-		ranges.push({
-			anchor: { path, offset: match.index },
-			focus: { path, offset: match.index + match[0].length },
-			url: match[0],
-		} as Range & { url: string });
-	}
-
-	return ranges;
-}
-
-// URL decoration plugin - adds url property to decorated ranges
-const UrlDecorationPlugin = createPlatePlugin({
-	key: "urlDecoration",
-	decorate: ({ entry }) => {
-		const [node, path] = entry as NodeEntry<TText>;
-		// Check if node is a text node (has a 'text' property)
-		if (typeof (node as TText).text !== "string") return [];
-		return findUrlRanges(node as TText, path);
-	},
-});
-
 function TodoEditor({ column, onUpdate }: TodoEditorProps) {
-	const cmdPressed = useModifierKeyPressed();
-	const {
-		accountId,
-		account,
-		browserStorageError,
-		syncStateSummary,
-	} = useSyncContext();
-
+	const { accountId, account, browserStorageError, syncStateSummary } = useSyncContext();
 	const isSyncedMode = !!accountId && !!account;
-	const [isYjsReady, setIsYjsReady] = React.useState(() => !isSyncedMode);
-	const columnDocument = useColumnDocument(column.id, isSyncedMode);
-
-	const plugins = React.useMemo(() => {
-		const base: any[] = [
-			H1Plugin.configure({
-				inputRules: [HeadingRules.markdown()],
-			}).withComponent(H1Element),
-			H2Plugin.configure({
-				inputRules: [HeadingRules.markdown()],
-			}).withComponent(H2Element),
-			H3Plugin.configure({
-				inputRules: [HeadingRules.markdown()],
-			}).withComponent(H3Element),
-			ListPlugin.configure({
-				inputRules: [
-					BulletedListRules.markdown({ variant: "-" }),
-					BulletedListRules.markdown({ variant: "*" }),
-					OrderedListRules.markdown({ variant: "." }),
-					OrderedListRules.markdown({ variant: ")" }),
-					TaskListRules.markdown({ checked: false }),
-					TaskListRules.markdown({ checked: true }),
-				],
-				inject: {
-					targetPlugins: [...KEYS.heading, KEYS.p],
-				},
-				render: {
-					belowNodes: BlockList,
-				},
-			}),
-			IndentPlugin.configure({
-				inject: {
-					targetPlugins: [...KEYS.heading, KEYS.p],
-				},
-				options: {
-					offset: 16,
-				},
-			}),
-			ListShortcutsPlugin,
-			UrlDecorationPlugin,
-		];
-
-		if (isSyncedMode && accountId && columnDocument?.awareness) {
-			const awareness = columnDocument.awareness;
-			base.push(
-				(YjsPlugin.configure({
-					render: {
-						afterEditable: RemoteCursorOverlay,
-					},
-					options: {
-						ydoc: columnDocument.doc,
-						awareness,
-						providers: [hostOwnedProvider({ ...columnDocument, awareness })],
-						cursors: {
-							data: {
-								name: displayAccountId(accountId),
-								color: getAccountColor(accountId),
-							},
-						},
-					},
-				}) as any),
-			);
-		}
-
-		return base;
-	}, [isSyncedMode, accountId, columnDocument]);
-
-	const editor = usePlateEditor(
-		isSyncedMode
-			? {
-				id: column.id,
-				plugins,
-				value: [],
-			}
-			: {
-				id: column.id,
-				plugins,
-				value: column.value,
-			},
-		// Ensure the editor is recreated when collaboration plugins change.
-		[isSyncedMode, accountId, plugins],
+	const identity = React.useMemo(
+		() =>
+			isSyncedMode && accountId
+				? { name: displayAccountId(accountId), color: getAccountColor(accountId) }
+				: undefined,
+		[isSyncedMode, accountId],
 	);
 
-	// Bind the editor to the opened document. The host's adapter already loaded
-	// and connected it, so Plate only seeds an empty document and connects.
-	React.useEffect(() => {
-		if (!isSyncedMode || !editor || !columnDocument) return;
-
-		let cancelled = false;
-		let didInit = false;
-		setIsYjsReady(false);
-		const api = editor.getApi(YjsPlugin);
-
-		const initPromise = (async () => {
-			try {
-				await api.yjs.init({ id: column.id, autoConnect: false });
-				didInit = true;
-			} catch (err) {
-				console.error(err);
-			}
-			if (!cancelled) setIsYjsReady(true);
-		})();
-
-		return () => {
-			cancelled = true;
-			void initPromise.finally(() => {
-				if (!didInit) return;
-				try {
-					api.yjs.destroy();
-				} catch {
-					// ignore
-				}
-			});
-		};
-	}, [isSyncedMode, editor, column.id, columnDocument]);
-
-	// For local-only mode, keep Plate in sync with `column.value`.
-	const isApplyingExternalValueRef = React.useRef(false);
-	const lastLocalValueRef = React.useRef<string | null>(null);
-
-	React.useEffect(() => {
-		if (isSyncedMode) return;
-
-		const setValue = (editor as any)?.tf?.setValue as
-			| ((v: Value) => void)
-			| undefined;
-		if (typeof setValue !== "function") return;
-
-		let serialized: string;
-		try {
-			serialized = JSON.stringify(column.value);
-		} catch {
-			return;
-		}
-
-		if (serialized === lastLocalValueRef.current) return;
-
-		isApplyingExternalValueRef.current = true;
-		try {
-			setValue(column.value);
-			lastLocalValueRef.current = serialized;
-		} finally {
-			isApplyingExternalValueRef.current = false;
-		}
-	}, [editor, column.value, isSyncedMode]);
-
-	const handleChange = React.useCallback(
-		({ value }: { value: Value }) => {
-			if (isSyncedMode) return;
-			if (isApplyingExternalValueRef.current) return;
-
-			try {
-				lastLocalValueRef.current = JSON.stringify(value);
-			} catch {
-				lastLocalValueRef.current = null;
-			}
-
-			onUpdate(column.id, value);
-		},
-		[column.id, onUpdate, isSyncedMode],
-	);
-
-	// Handle Cmd+Click on URLs
-	const handleClick = React.useCallback((e: React.MouseEvent) => {
-		if (!e.metaKey && !e.ctrlKey) return;
-
-		const target = e.target as HTMLElement;
-		if (!target.closest("[data-slate-node='text']")) return;
-
-		const selection = window.getSelection();
-		if (!selection || selection.rangeCount === 0) return;
-
-		const range = selection.getRangeAt(0);
-		const textNode = range.startContainer;
-		if (textNode.nodeType !== Node.TEXT_NODE) return;
-
-		const text = textNode.textContent || "";
-		const offset = range.startOffset;
-
-		const url = findUrlAtOffset(text, offset);
-		if (url) {
-			e.preventDefault();
-			e.stopPropagation();
-			window.open(normalizeUrl(url), "_blank", "noopener,noreferrer");
-		}
-	}, []);
-
-	// Custom leaf renderer for URL decorations
-	const renderLeaf = React.useCallback(
-		(props: {
-			attributes: React.HTMLAttributes<HTMLSpanElement>;
-			children: React.ReactNode;
-			leaf: TText & { url?: string };
-		}) => {
-			const { attributes, children, leaf } = props;
-			if (leaf.url) {
-				return (
-					<span
-						{...attributes}
-						className="url-text"
-						data-url={leaf.url}
-					>
-						{children}
-					</span>
-				);
-			}
-			return <span {...attributes}>{children}</span>;
-		},
-		[],
-	);
-
-	const plate = (
-		isSyncedMode && !isYjsReady ? (
-			<EditorContainer className="h-full px-4 py-3 text-sm text-muted-foreground">
-				Preparing collaborative editor...
-			</EditorContainer>
-		) : (
-			<EditorContainer
-				className={cn("h-full", cmdPressed && "cmd-pressed")}
-				onClick={handleClick}
-			>
-				<Editor
-					variant="column"
-					readOnly={browserStorageError !== null || (isSyncedMode && syncStateSummary.storageState !== "durable")}
-					role="textbox"
-					aria-multiline="true"
-					aria-label="Todo editor"
-					placeholder="Start typing..."
-					renderLeaf={renderLeaf}
-				/>
-			</EditorContainer>
-		)
-	);
-
-	return isSyncedMode ? (
-		<Plate editor={editor}>{plate}</Plate>
-	) : (
-		<Plate editor={editor} onChange={handleChange}>
-			{plate}
-		</Plate>
+	return (
+		<ColumnEditor
+			columnId={column.id}
+			// Guest columns seed their document from saved content; synced ones load theirs.
+			snapshot={isSyncedMode ? undefined : column.value}
+			readOnly={browserStorageError !== null || (isSyncedMode && syncStateSummary.storageState !== "durable")}
+			identity={identity}
+			onContentChange={onUpdate}
+		/>
 	);
 }
 

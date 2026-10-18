@@ -37,8 +37,8 @@ export interface BoardColumn {
 	/** Short header label, for example "Shared by 1234...5678". */
 	label?: string;
 	/**
-	 * Last known content, rendered read-only until the document opens and when
-	 * rendering on a server, so SSR hosts ship real HTML instead of a skeleton.
+	 * Last known content: rendered read-only until the document opens (and when
+	 * rendering on a server), and used to seed the document if it opens empty.
 	 */
 	snapshot?: Value;
 	/** Opaque host data passed back in callbacks and render props. */
@@ -127,8 +127,8 @@ export declare function TodoBoard(props: TodoBoardProps): ReactNode;
 // ---------------------------------------------------------------------------
 // Batteries for simple hosts (subpath "@todoflare/board/memory")
 
-/** In-memory documents seeded from Plate JSON; nothing persists. */
-export declare function createMemoryDocuments(initial?: Record<string, Value>): DocumentAdapter;
+/** In-memory documents; each opens empty and the board seeds it from the column's snapshot. */
+export declare function createMemoryDocuments(): DocumentAdapter;
 
 /**
  * Uncontrolled convenience state for hosts that do not own column membership:

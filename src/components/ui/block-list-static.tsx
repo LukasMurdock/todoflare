@@ -4,7 +4,7 @@ import type { RenderStaticNodeWrapper, TListElement } from 'platejs';
 import type { SlateRenderElementProps } from 'platejs/static';
 
 import { isOrderedList } from '@platejs/list';
-import { CheckIcon } from 'lucide-react';
+import { Checkbox } from '@/components/ui/checkbox';
 
 import { cn } from '@/lib/utils';
 
@@ -45,22 +45,16 @@ function List(props: SlateRenderElementProps) {
 }
 
 function TodoMarkerStatic(props: SlateRenderElementProps) {
-  const checked = props.element.checked as boolean;
-
+  // The same checkbox as the live editor's TodoMarker, inert, so a static
+  // snapshot is pixel-identical to the editor that replaces it.
   return (
     <div contentEditable={false}>
-      <button
-        className={cn(
-          'peer -left-6 pointer-events-none absolute top-1 size-4 shrink-0 rounded-sm border border-primary bg-background ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground',
-          props.className
-        )}
-        data-state={checked ? 'checked' : 'unchecked'}
-        type="button"
-      >
-        <div className={cn('flex items-center justify-center text-current')}>
-          {checked && <CheckIcon className="size-4" />}
-        </div>
-      </button>
+      <Checkbox
+        className="-left-5 absolute top-[3px] pointer-events-none"
+        checked={Boolean(props.element.checked)}
+        tabIndex={-1}
+        aria-hidden
+      />
     </div>
   );
 }
