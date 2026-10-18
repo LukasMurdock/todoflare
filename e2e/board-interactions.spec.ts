@@ -66,3 +66,22 @@ test("guest edits persist across reloads and can be undone", async ({ page }) =>
 	await expect(editor).not.toContainText("extra");
 	await expect(editor).toContainText("Guest todo");
 });
+
+test("Mod+/ opens shortcuts once from inside the editor and from the page", async ({ page }) => {
+	await page.addInitScript(({ welcomeKey }) => localStorage.setItem(welcomeKey, "true"), { welcomeKey: WELCOME_KEY });
+	await page.goto("/");
+	await page.keyboard.press("Escape");
+	const dialog = page.getByRole("dialog", { name: "Keyboard Shortcuts" });
+
+	// Inside the board: handled by the board only (handled twice would open and close it).
+	await page.getByRole("textbox", { name: "Todo editor" }).first().click();
+	await page.keyboard.press("ControlOrMeta+/");
+	await expect(dialog).toBeVisible();
+	await page.keyboard.press("ControlOrMeta+/");
+	await expect(dialog).toBeHidden();
+
+	// Focus outside the board: the app's page-wide shortcut opens it.
+	await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+	await page.keyboard.press("ControlOrMeta+/");
+	await expect(dialog).toBeVisible();
+});

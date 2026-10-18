@@ -48,27 +48,37 @@ for (const file of walk("src").filter((f) => zoneOf(f) === "board").sort()) {
 // Dependencies are externalized, so the board and this script share Node's React instance.
 const { createElement: h } = await import("react");
 const { renderToString } = await import("react-dom/server");
-const column = { id: "00000000-0000-4000-8000-000000000001", value: [{ type: "p", children: [{ text: "Hello" }] }] };
+const snapshot = [
+	{ type: "h1", children: [{ text: "Server heading" }] },
+	{ type: "p", listStyleType: "todo", indent: 1, checked: true, children: [{ text: "Rendered todo" }] },
+];
+const column = { id: "00000000-0000-4000-8000-000000000001", snapshot };
 const renders = [];
-async function tryRender(name, load) {
+async function tryRender(name, load, expectText) {
 	try {
 		const html = renderToString(await load());
-		renders.push({ name, ok: true, htmlBytes: html.length });
+		const missing = expectText.filter((text) => !html.includes(text));
+		renders.push(missing.length ? { name, ok: false, error: `HTML lacks ${missing.join(", ")}` } : { name, ok: true, htmlBytes: html.length });
 	} catch (error) {
 		renders.push({ name, ok: false, error: firstLine(error) });
 	}
 }
-await tryRender("TodoApp (no providers)", async () => h((await server.ssrLoadModule("/src/components/todo/TodoApp.tsx")).TodoApp));
-await tryRender("ColumnLayout (props only)", async () => {
-	const { ColumnLayout } = await server.ssrLoadModule("/src/components/todo/ColumnLayout.tsx");
-	const noop = () => {};
-	return h(ColumnLayout, { columns: [column], onAdd: noop, onUpdate: noop, onRemove: noop, onToggleCollapse: noop });
-});
-await tryRender("TodoColumn (props only)", async () => {
-	const { TodoColumn } = await server.ssrLoadModule("/src/components/todo/TodoColumn.tsx");
-	const noop = () => {};
-	return h(TodoColumn, { column, onUpdate: noop, onRemove: noop, onToggleCollapse: noop, canRemove: false });
-});
+const { createMemoryDocuments } = await server.ssrLoadModule("/src/components/board/memory-documents.ts");
+await tryRender(
+	"TodoBoard (memory documents, snapshot)",
+	async () => h((await server.ssrLoadModule("/src/components/board/TodoBoard.tsx")).TodoBoard, { columns: [column], documents: createMemoryDocuments(), onCreateColumn() {} }),
+	["Server heading", "Rendered todo", "Add column", "data-todo-board"],
+);
+await tryRender(
+	"TodoBoard (loading)",
+	async () => h((await server.ssrLoadModule("/src/components/board/TodoBoard.tsx")).TodoBoard, { status: "loading", columns: [column], documents: createMemoryDocuments() }),
+	['aria-busy="true"'],
+);
+await tryRender(
+	"ColumnSnapshot",
+	async () => h((await server.ssrLoadModule("/src/components/board/ColumnSnapshot.tsx")).ColumnSnapshot, { value: snapshot }),
+	["Server heading", "Rendered todo"],
+);
 
 await server.close();
 const report = { imports, importFailures: imports.filter((i) => !i.ok).length, renders };

@@ -1,9 +1,5 @@
-import { useEffect, useCallback, useSyncExternalStore } from "react";
-
-/** Read at call time, never at import, so server rendering has no navigator dependency. */
-function isMacPlatform(): boolean {
-	return typeof navigator !== "undefined" && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
-}
+import { useEffect, useCallback } from "react";
+import { isMacPlatform } from "@/components/board/platform";
 
 export type ModifierKey = "mod" | "shift" | "alt";
 
@@ -27,6 +23,8 @@ export function useKeyboardShortcut({
 }: UseKeyboardShortcutOptions) {
 	const handler = useCallback(
 		(event: KeyboardEvent) => {
+			// Something closer to the target (such as a board) already handled it.
+			if (event.defaultPrevented) return;
 			const isMac = isMacPlatform();
 			// Check modifiers
 			const modPressed = modifiers.includes("mod")
@@ -68,16 +66,4 @@ export function useKeyboardShortcut({
 		window.addEventListener("keydown", handler);
 		return () => window.removeEventListener("keydown", handler);
 	}, [handler]);
-}
-
-const noSubscription = () => () => {};
-const modifierSymbol = () => (isMacPlatform() ? "⌘" : "Ctrl");
-const serverModifierSymbol = () => "Ctrl";
-
-/**
- * The platform's modifier key symbol. Server rendering and hydration use
- * "Ctrl"; the client then switches to "⌘" on Apple platforms.
- */
-export function useModifierSymbol(): string {
-	return useSyncExternalStore(noSubscription, modifierSymbol, serverModifierSymbol);
 }

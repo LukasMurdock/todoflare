@@ -3,12 +3,11 @@
 
 /** Modules that would form the embeddable board package. */
 export const BOARD_ZONE = [
-	/^src\/components\/todo\/(TodoApp|ColumnLayout|TodoColumn)\.tsx$/,
+	/^src\/components\/board\//,
+	/^src\/components\/todo\/(ColumnLayout|TodoColumn)\.tsx$/,
 	/^src\/components\/ui\//,
 	/^src\/components\/editor\//,
-	/^src\/components\/column\/PresenceAvatars\.tsx$/,
 	/^src\/components\/keyboard-shortcuts\.tsx$/,
-	/^src\/hooks\/(useKeyboardShortcut)\.ts$/,
 	/^src\/types\/column\.ts$/,
 	/^src\/lib\/utils\.ts$/,
 ];

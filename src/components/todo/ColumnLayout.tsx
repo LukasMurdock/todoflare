@@ -1,46 +1,33 @@
 "use client";
 
 import * as React from "react";
-import { useEffect, useRef } from "react";
 import type { Value } from "platejs";
-import type { Column } from "@/types/column";
+import type { BoardColumn } from "@/components/board/types";
 import { TodoColumn } from "./TodoColumn";
 import { cn } from "@/lib/utils";
-import { useWelcomeRefsOptional } from "@/contexts/welcome-refs-context";
 
 interface ColumnLayoutProps {
 	/** "loading" renders no columns and no add button until the host knows which columns exist. */
 	status?: "loading" | "ready";
-	columns: Column[];
-	onAdd: () => void;
-	onUpdate: (id: string, value: Value) => void;
-	onRemove: (id: string) => void;
-	onToggleCollapse: (id: string) => void;
-	isColumnOwner?: (columnId: string) => boolean;
-	getColumnOwner?: (columnId: string) => string | null;
+	columns: readonly BoardColumn[];
+	onAdd?: () => void;
+	onRemove?: (column: BoardColumn) => void;
+	onToggleCollapse?: (column: BoardColumn) => void;
+	onContentChange?: (columnId: string, content: Value) => void;
+	identity?: { name: string; color: string };
+	renderColumnActions?: (column: BoardColumn) => React.ReactNode;
 }
 
 export function ColumnLayout({
 	status = "ready",
 	columns,
 	onAdd,
-	onUpdate,
 	onRemove,
 	onToggleCollapse,
-	isColumnOwner,
-	getColumnOwner,
+	onContentChange,
+	identity,
+	renderColumnActions,
 }: ColumnLayoutProps) {
-	const canRemove = columns.length > 1;
-	const { registerRef } = useWelcomeRefsOptional();
-	const addButtonRef = useRef<HTMLButtonElement>(null);
-	const firstColumnRef = useRef<HTMLDivElement>(null);
-
-	// Register refs for welcome screen annotations
-	useEffect(() => {
-		registerRef("add-column-button", addButtonRef.current);
-		registerRef("first-column", firstColumnRef.current);
-	}, [registerRef, status]);
-
 	if (status === "loading") {
 		return <div className="flex h-full" aria-busy="true" />;
 	}
@@ -50,37 +37,38 @@ export function ColumnLayout({
 			{columns.map((column, index) => (
 				<div
 					key={column.id}
-					ref={index === 0 ? firstColumnRef : undefined}
+					data-board-part={index === 0 ? "first-column" : undefined}
 				>
 					<TodoColumn
 						column={column}
-						onUpdate={onUpdate}
 						onRemove={onRemove}
 						onToggleCollapse={onToggleCollapse}
-						canRemove={canRemove}
-						isOwner={isColumnOwner?.(column.id) ?? true}
-						sharedBy={getColumnOwner?.(column.id) ?? null}
+						onContentChange={onContentChange}
+						identity={identity}
+						renderActions={renderColumnActions}
 					/>
 				</div>
 			))}
 
 			{/* Add column button */}
 			<div className="flex h-full w-16 flex-shrink-0 items-start justify-center pt-2">
-				<button
-					ref={addButtonRef}
-					onClick={onAdd}
-					type="button"
-					aria-label="Add column"
-					className={cn(
-						"flex h-8 w-8 items-center justify-center rounded-md",
-						"border border-dashed border-border",
-						"text-muted-foreground hover:border-foreground hover:text-foreground",
-						"transition-colors"
-					)}
-					title="Add column"
-				>
-					<PlusIcon className="h-4 w-4" />
-				</button>
+				{onAdd && (
+					<button
+						data-board-part="add-column"
+						onClick={onAdd}
+						type="button"
+						aria-label="Add column"
+						className={cn(
+							"flex h-8 w-8 items-center justify-center rounded-md",
+							"border border-dashed border-border",
+							"text-muted-foreground hover:border-foreground hover:text-foreground",
+							"transition-colors"
+						)}
+						title="Add column"
+					>
+						<PlusIcon className="h-4 w-4" />
+					</button>
+				)}
 			</div>
 
 			<div className="h-full w-12 flex-shrink-0" aria-hidden="true" />

@@ -1,35 +1,23 @@
 "use client";
 
+import * as React from "react";
+
 import { ReconnectBanner } from "@/components/account/ReconnectBanner";
 import { StorageRecoveryBanner } from "@/components/account/StorageRecoveryBanner";
-
-import * as React from "react";
-import {
-	DndContext,
-	closestCenter,
-	KeyboardSensor,
-	PointerSensor,
-	useSensor,
-	useSensors,
-	type DragEndEvent,
-} from "@dnd-kit/core";
-import {
-	SortableContext,
-	sortableKeyboardCoordinates,
-	horizontalListSortingStrategy,
-} from "@dnd-kit/sortable";
-
-import { useColumns } from "@/hooks/useColumns";
-import { ColumnLayout } from "./ColumnLayout";
 import { AccountBadge } from "@/components/account/AccountBadge";
-import { ModifierKeyProvider } from "@/components/board/modifier-key";
-import { PortalContainerProvider } from "@/components/board/portal-container";
-import { KeyboardShortcuts } from "@/components/keyboard-shortcuts";
-import { DocumentAdapterProvider } from "@/components/board/use-column-document";
+import { PresenceAvatars } from "@/components/column/PresenceAvatars";
+import { ShareMenu } from "@/components/column/ShareMenu";
+import { TodoBoard } from "@/components/board/TodoBoard";
 import { createMemoryDocuments } from "@/components/board/memory-documents";
-import { createCloudflareDocuments } from "@/lib/collaboration/cloudflare-yjs-provider";
+import type { BoardColumn, TodoBoardApi } from "@/components/board/types";
+import { useWelcomeRefsOptional } from "@/contexts/welcome-refs-context";
 import { useSyncContext } from "@/contexts/sync-context";
+import { useColumns } from "@/hooks/useColumns";
+import { useKeyboardShortcut } from "@/hooks/useKeyboardShortcut";
+import { displayAccountId, getAccountColor, truncateAccountId } from "@/lib/account";
+import { createCloudflareDocuments } from "@/lib/collaboration/cloudflare-yjs-provider";
 
+/** Todoflare's host for the board: accounts, Cloudflare sync, sharing, and guest storage. */
 export function TodoApp() {
 	const {
 		status,
@@ -42,10 +30,21 @@ export function TodoApp() {
 		isColumnOwner,
 		getColumnOwner,
 	} = useColumns();
-
-	const { accountId, account, loadColumnDocument, subscribeToColumn, onColumnMessage, sendUpdate, sendAwareness } =
-		useSyncContext();
+	const {
+		accountId,
+		account,
+		authenticationStatus,
+		browserStorageError,
+		syncStateSummary,
+		loadColumnDocument,
+		subscribeToColumn,
+		onColumnMessage,
+		sendUpdate,
+		sendAwareness,
+	} = useSyncContext();
 	const isSyncedMode = !!accountId && !!account;
+	const board = React.useRef<TodoBoardApi>(null);
+
 	// Signed-in columns live in the Cloudflare room; guest columns in memory, saved from onContentChange.
 	const documents = React.useMemo(
 		() =>
@@ -58,65 +57,93 @@ export function TodoApp() {
 		[isSyncedMode, loadColumnDocument, subscribeToColumn, onColumnMessage, sendUpdate, sendAwareness],
 	);
 
-	// Dialogs, popovers and menus portal into the board root, not document.body.
-	const [root, setRoot] = React.useState<HTMLDivElement | null>(null);
-
-	const sensors = useSensors(
-		useSensor(PointerSensor, {
-			activationConstraint: {
-				distance: 8,
-			},
-		}),
-		useSensor(KeyboardSensor, {
-			coordinateGetter: sortableKeyboardCoordinates,
-		})
+	const identity = React.useMemo(
+		() =>
+			isSyncedMode && accountId
+				? { name: displayAccountId(accountId), color: getAccountColor(accountId) }
+				: undefined,
+		[isSyncedMode, accountId],
 	);
 
-	const handleDragEnd = (event: DragEndEvent) => {
-		const { active, over } = event;
+	const readOnly =
+		browserStorageError !== null || (isSyncedMode && syncStateSummary.storageState !== "durable");
+	const boardColumns = React.useMemo(
+		(): BoardColumn[] =>
+			columns.map((column) => {
+				const owned = isColumnOwner(column.id);
+				const owner = getColumnOwner(column.id);
+				return {
+					id: column.id,
+					collapsed: column.collapsed,
+					readOnly,
+					removal: columns.length > 1 ? (owned ? "delete" : "hide") : "none",
+					label: !owned && owner ? `Shared by ${truncateAccountId(owner)}` : undefined,
+					// Guest columns seed their document from saved content; synced ones load theirs.
+					snapshot: isSyncedMode ? undefined : column.value,
+				};
+			}),
+		[columns, isColumnOwner, getColumnOwner, readOnly, isSyncedMode],
+	);
 
-		if (over && active.id !== over.id) {
-			reorderColumns(active.id as string, over.id as string);
-		}
-	};
+	const columnsById = React.useMemo(() => new Map(columns.map((column) => [column.id, column])), [columns]);
+
+	// The welcome tour anchors its callouts to board elements.
+	const { registerRef } = useWelcomeRefsOptional();
+	React.useEffect(() => {
+		registerRef("add-column-button", board.current?.getElement("add-column") ?? null);
+		registerRef("first-column", board.current?.getElement("first-column") ?? null);
+		registerRef("shortcuts-button", board.current?.getElement("shortcuts-button") ?? null);
+	});
+
+	// Todoflare is the whole page, so Mod+/ opens help wherever focus is.
+	useKeyboardShortcut({
+		key: "/",
+		modifiers: MOD,
+		onTrigger: React.useCallback(() => board.current?.openShortcutsHelp(), []),
+	});
 
 	return (
-		<div ref={setRoot} data-todo-board="" className="relative min-h-screen">
-			<PortalContainerProvider container={root}>
-			<DocumentAdapterProvider value={documents}>
-			<StorageRecoveryBanner />
-			<ReconnectBanner />
-			{/* Account badge in top-right corner */}
-			<div className="fixed top-2 right-2 z-50">
-				<AccountBadge />
-			</div>
-
-			<ModifierKeyProvider>
-			<DndContext
-				sensors={sensors}
-				collisionDetection={closestCenter}
-				onDragEnd={handleDragEnd}
-			>
-				<SortableContext
-					items={columns.map((c) => c.id)}
-					strategy={horizontalListSortingStrategy}
-				>
-					<ColumnLayout
-						status={status}
-						columns={columns}
-						onAdd={addColumn}
-						onUpdate={updateColumnValue}
-						onRemove={removeColumn}
-						onToggleCollapse={toggleColumnCollapsed}
-						isColumnOwner={isColumnOwner}
-						getColumnOwner={getColumnOwner}
-					/>
-				</SortableContext>
-			</DndContext>
-			<KeyboardShortcuts />
-			</ModifierKeyProvider>
-			</DocumentAdapterProvider>
-			</PortalContainerProvider>
-		</div>
+		<TodoBoard
+			ref={board}
+			status={status}
+			columns={boardColumns}
+			documents={documents}
+			identity={identity}
+			onCreateColumn={addColumn}
+			onRemoveColumn={(column) => removeColumn(column.id)}
+			onReorderColumns={reorderColumns}
+			onCollapsedChange={(column) => toggleColumnCollapsed(column.id)}
+			onContentChange={updateColumnValue}
+			renderTopBar={() => (
+				<>
+					<StorageRecoveryBanner />
+					<ReconnectBanner />
+					{/* Account badge in top-right corner */}
+					<div className="fixed top-2 right-2 z-50">
+						<AccountBadge />
+					</div>
+				</>
+			)}
+			renderColumnActions={(column) => (
+				<>
+					<PresenceAvatars columnId={column.id} />
+					{isColumnOwner(column.id) && authenticationStatus === "authenticated" && (
+						<ShareMenu
+							columnId={column.id}
+							columnMeta={{
+								id: column.id,
+								ownerId: columnsById.get(column.id)?.ownerId || "",
+								sharedWith: columnsById.get(column.id)?.sharedWith || [],
+								publicId: columnsById.get(column.id)?.publicId ?? null,
+								createdAt: 0,
+								schemaVersion: 1,
+							}}
+						/>
+					)}
+				</>
+			)}
+		/>
 	);
 }
+
+const MOD = ["mod" as const];

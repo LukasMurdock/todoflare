@@ -5,12 +5,10 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 
 import type { Value } from "platejs";
-import type { Column } from "@/types/column";
 import { ColumnEditor } from "@/components/board/ColumnEditor";
+import type { BoardColumn } from "@/components/board/types";
 import { isColumnEmpty } from "@/types/column";
 import { cn } from "@/lib/utils";
-import { displayAccountId, getAccountColor, truncateAccountId } from "@/lib/account";
-import { useSyncContext } from "@/contexts/sync-context";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -22,31 +20,24 @@ import {
 	AlertDialogTitle,
 	AlertDialogTrigger,
 } from "@/components/ui/confirm-dialog";
-import { ShareMenu } from "@/components/column/ShareMenu";
-import { PresenceAvatars } from "@/components/column/PresenceAvatars";
-import { useAccount } from "@/hooks/useAccount";
 
 export interface TodoColumnProps {
-	column: Column;
-	onUpdate: (id: string, value: Value) => void;
-	onRemove: (id: string) => void;
-	onToggleCollapse: (id: string) => void;
-	canRemove: boolean;
-	isOwner?: boolean;
-	sharedBy?: string | null;
+	column: BoardColumn;
+	onRemove?: (column: BoardColumn) => void;
+	onToggleCollapse?: (column: BoardColumn) => void;
+	onContentChange?: (columnId: string, content: Value) => void;
+	identity?: { name: string; color: string };
+	renderActions?: (column: BoardColumn) => React.ReactNode;
 }
 
 export function TodoColumn({
 	column,
-	onUpdate,
 	onRemove,
 	onToggleCollapse,
-	canRemove,
-	isOwner = true,
-	sharedBy = null,
+	onContentChange,
+	identity,
+	renderActions,
 }: TodoColumnProps) {
-	const { isAuthenticated } = useAccount();
-
 	const {
 		attributes,
 		listeners,
@@ -61,14 +52,15 @@ export function TodoColumn({
 		transition,
 	};
 
-	const isEmpty = isColumnEmpty(column);
+	const removal = onRemove ? (column.removal ?? "none") : "none";
+	const hasContent = column.snapshot !== undefined && !isColumnEmpty({ id: column.id, value: column.snapshot });
 
 	const handleRemove = () => {
-		onRemove(column.id);
+		onRemove?.(column);
 	};
 
 	const handleToggleCollapse = () => {
-		onToggleCollapse(column.id);
+		onToggleCollapse?.(column);
 	};
 
 	// Collapsed state: narrow column with just drag handle and expand button
@@ -136,41 +128,24 @@ export function TodoColumn({
 					>
 						<ChevronLeftIcon className="h-4 w-4 text-muted-foreground" />
 					</button>
-					{/* Shared indicator */}
-					{!isOwner && sharedBy && (
+					{column.label && (
 						<span className="text-xs text-muted-foreground px-1">
-							Shared by {truncateAccountId(sharedBy)}
+							{column.label}
 						</span>
 					)}
 				</div>
 
 				<div className="flex items-center gap-1">
-					{/* Presence avatars */}
-					<PresenceAvatars columnId={column.id} />
-
-					{/* Share button (owner only) */}
-					{isOwner && isAuthenticated && (
-						<ShareMenu
-							columnId={column.id}
-							columnMeta={{
-								id: column.id,
-								ownerId: column.ownerId || "",
-								sharedWith: column.sharedWith || [],
-								publicId: column.publicId ?? null,
-								createdAt: 0,
-								schemaVersion: 1,
-							}}
-						/>
-					)}
+					{renderActions?.(column)}
 
 					{/* Delete/Hide button */}
-					{canRemove && (
+					{removal !== "none" && (
 						<>
-							{isEmpty || !isOwner ? (
+							{removal === "hide" || !hasContent ? (
 								<button
 									onClick={handleRemove}
 									className="rounded p-1 hover:bg-muted"
-									title={isOwner ? "Delete column" : "Hide column"}
+									title={removal === "delete" ? "Delete column" : "Hide column"}
 								>
 									<XIcon className="h-4 w-4 text-muted-foreground" />
 								</button>
@@ -211,37 +186,15 @@ export function TodoColumn({
 
 			{/* Editor */}
 			<div className="flex-1 overflow-hidden">
-				<TodoEditor column={column} onUpdate={onUpdate} />
+				<ColumnEditor
+					columnId={column.id}
+					snapshot={column.snapshot}
+					readOnly={column.readOnly ?? false}
+					identity={identity}
+					onContentChange={onContentChange}
+				/>
 			</div>
 		</div>
-	);
-}
-
-interface TodoEditorProps {
-	column: Column;
-	onUpdate: (id: string, value: Value) => void;
-}
-
-function TodoEditor({ column, onUpdate }: TodoEditorProps) {
-	const { accountId, account, browserStorageError, syncStateSummary } = useSyncContext();
-	const isSyncedMode = !!accountId && !!account;
-	const identity = React.useMemo(
-		() =>
-			isSyncedMode && accountId
-				? { name: displayAccountId(accountId), color: getAccountColor(accountId) }
-				: undefined,
-		[isSyncedMode, accountId],
-	);
-
-	return (
-		<ColumnEditor
-			columnId={column.id}
-			// Guest columns seed their document from saved content; synced ones load theirs.
-			snapshot={isSyncedMode ? undefined : column.value}
-			readOnly={browserStorageError !== null || (isSyncedMode && syncStateSummary.storageState !== "durable")}
-			identity={identity}
-			onContentChange={onUpdate}
-		/>
 	);
 }
 

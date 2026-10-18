@@ -212,43 +212,25 @@ export function useColumns() {
 		[usesSyncedMode, setLocalColumns],
 	);
 
-	// Reorder columns
+	// Apply a new column order (all visible column IDs, in order)
 	const reorderColumns = useCallback(
-		async (activeId: string, overId: string) => {
+		async (columnIds: string[]) => {
 			if (usesSyncedMode) {
-				// Synced mode: update column order
-				const oldIndex = syncedColumnIds.indexOf(activeId);
-				const newIndex = syncedColumnIds.indexOf(overId);
-
-				if (oldIndex === -1 || newIndex === -1) return;
-
-				const newOrder = [...syncedColumnIds];
-				const [removed] = newOrder.splice(oldIndex, 1);
-				newOrder.splice(newIndex, 0, removed);
-
-				// Separate owned and shared columns
-				const ownedOrder = newOrder.filter(
-					(id) => !columnMetaMap.has(id),
-				);
-
+				// Shared columns are appended after owned ones; only owned order is stored.
+				const ownedOrder = columnIds.filter((id) => !columnMetaMap.has(id));
 				await updateColumnOrder(ownedOrder);
 			} else {
-				// Local-only mode
 				setLocalColumns((prev) => {
-					const oldIndex = prev.findIndex((col) => col.id === activeId);
-					const newIndex = prev.findIndex((col) => col.id === overId);
-
-					if (oldIndex === -1 || newIndex === -1) return prev;
-
-					const newColumns = [...prev];
-					const [removed] = newColumns.splice(oldIndex, 1);
-					newColumns.splice(newIndex, 0, removed);
-
-					return newColumns;
+					const byId = new Map(prev.map((col) => [col.id, col]));
+					const reordered = columnIds.flatMap((id) => {
+						const col = byId.get(id);
+						return col ? [col] : [];
+					});
+					return reordered.length === prev.length ? reordered : prev;
 				});
 			}
 		},
-		[usesSyncedMode, syncedColumnIds, columnMetaMap, updateColumnOrder, setLocalColumns],
+		[usesSyncedMode, columnMetaMap, updateColumnOrder, setLocalColumns],
 	);
 
 	// Toggle column collapsed

@@ -1,11 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useEffect, useRef } from "react";
-import {
-	useKeyboardShortcut,
-	useModifierSymbol,
-} from "@/hooks/useKeyboardShortcut";
+import { useModifierSymbol } from "@/components/board/platform";
 import {
 	Dialog,
 	DialogContent,
@@ -13,7 +9,6 @@ import {
 	DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { useWelcomeRefsOptional } from "@/contexts/welcome-refs-context";
 
 interface ShortcutItem {
 	keys: React.ReactNode[];
@@ -79,22 +74,15 @@ function ShortcutSectionComponent({ title, shortcuts }: ShortcutSection) {
 	);
 }
 
-export function KeyboardShortcuts() {
-	const [open, setOpen] = React.useState(false);
+/** The shortcuts button and help dialog; the board owns the open state and the Mod+/ shortcut. */
+export function KeyboardShortcuts({
+	open,
+	onOpenChange,
+}: {
+	open: boolean;
+	onOpenChange: (open: boolean) => void;
+}) {
 	const mod = useModifierSymbol();
-	const { registerRef } = useWelcomeRefsOptional();
-	const buttonRef = useRef<HTMLButtonElement>(null);
-
-	// Register ref for welcome screen annotation
-	useEffect(() => {
-		registerRef("shortcuts-button", buttonRef.current);
-	}, [registerRef]);
-
-	useKeyboardShortcut({
-		key: "/",
-		modifiers: ["mod"],
-		onTrigger: React.useCallback(() => setOpen((prev) => !prev), []),
-	});
 
 	const sections: ShortcutSection[] = [
 		// {
@@ -139,8 +127,8 @@ export function KeyboardShortcuts() {
 		<>
 			{/* Floating button */}
 			<button
-				ref={buttonRef}
-				onClick={() => setOpen(true)}
+				data-board-part="shortcuts-button"
+				onClick={() => onOpenChange(true)}
 				className={cn(
 					"fixed bottom-4 left-4 z-50",
 					"flex items-center gap-1.5 rounded-lg border border-border bg-background/80 px-3 py-2 shadow-sm backdrop-blur-sm",
@@ -155,7 +143,7 @@ export function KeyboardShortcuts() {
 			</button>
 
 			{/* Dialog */}
-			<Dialog open={open} onOpenChange={setOpen}>
+			<Dialog open={open} onOpenChange={onOpenChange}>
 				<DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-md">
 					<DialogHeader>
 						<DialogTitle>Keyboard Shortcuts</DialogTitle>
