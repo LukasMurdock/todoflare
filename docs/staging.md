@@ -72,6 +72,11 @@ frozen Worker version was created, rolls back to that frozen version, and verifi
 that the later data survives. Worker rollback must never restore an older data
 snapshot merely because the code version changed.
 
+Staging keeps production rate limits (for example, five new accounts per IP
+per hour). Because every drill creates fresh accounts, it first calls the
+staging-only `reset-rate-limits` control, which clears the IP-keyed windows for
+the caller's IP only.
+
 Staging controls require `ENVIRONMENT=staging` and the admin token. Marking also
 requires an authenticated account session; loss simulation requires a marked
 case, a write freeze, and a verified account credential backup. These controls

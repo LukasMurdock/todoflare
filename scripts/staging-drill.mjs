@@ -57,6 +57,10 @@ try {
   assert.equal(bypass.status(), 401);
   await api('/api/admin/staging/scheduled', 'POST', {}, false, 401);
   results.push('anonymous access, test auth bypass, and unauthenticated drill controls rejected');
+  // Staging keeps production rate limits; repeated drills would otherwise exhaust
+  // this workstation's hourly account-creation allowance.
+  await api('/api/admin/staging/reset-rate-limits', 'POST', {}, false, 401);
+  await api('/api/admin/staging/reset-rate-limits', 'POST', {}, true);
   const cdp = await context.newCDPSession(page);
   await cdp.send('WebAuthn.enable');
   await cdp.send('WebAuthn.addVirtualAuthenticator', { options: { protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } });
