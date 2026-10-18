@@ -1,0 +1,23 @@
+{
+	"name": "@todoflare/example-void",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"prepare-board": "node ../../packages/board/build-css.mjs && pnpm install --prefer-offline",
+		"dev": "pnpm prepare-board && vite dev --port 4280 --strictPort",
+		"build": "pnpm prepare-board && vite build"
+	},
+	"dependencies": {
+		"@todoflare/board": "file:../../packages/board",
+		"@void/react": "1.1.11",
+		"platejs": "^53.2.4",
+		"react": "^19.2.7",
+		"react-dom": "^19.2.7"
+	},
+	"devDependencies": {
+		"@types/react": "^19.2.17",
+		"@types/react-dom": "^19.2.3",
+		"vite": "^8.1.5",
+		"void": "1.1.11"
+	}
+}

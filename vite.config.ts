@@ -2,6 +2,7 @@ import path from "path";
 import { defineConfig } from "vite";
 import { cloudflare } from "@cloudflare/vite-plugin";
 import tailwindcss from "@tailwindcss/vite";
+import { excludeUnusedYjsProviders } from "@todoflare/board/vite";
 
 const isE2e = process.env.TODOFLARE_E2E === "true";
 
@@ -10,6 +11,7 @@ export default defineConfig({
 		__TODOFLARE_E2E__: JSON.stringify(isE2e),
 	},
 	plugins: [
+		excludeUnusedYjsProviders(),
 		tailwindcss(),
 		cloudflare({
 			// Keep local dev fully offline (no Cloudflare login).

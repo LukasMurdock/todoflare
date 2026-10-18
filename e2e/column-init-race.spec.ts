@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { createAccount } from "./helpers/account-api";
-import { bootstrapAuthenticatedPage } from "./helpers/ui-session";
+import { ACCOUNT_STORAGE_KEY, bootstrapAuthenticatedPage, WELCOME_KEY } from "./helpers/ui-session";
 
 test.describe("collaborative editing", () => {
 	test("newly added synced column keeps first typed characters", async ({
@@ -26,5 +26,40 @@ test.describe("collaborative editing", () => {
 				timeout: 5000,
 			})
 			.toBe(typedText);
+	});
+
+	test("shows no guest placeholder column while a signed-in account loads", async ({
+		page,
+		request,
+		baseURL,
+	}) => {
+		const accountId = await createAccount(request, baseURL!);
+		let releaseAccount!: () => void;
+		const accountReleased = new Promise<void>((resolve) => {
+			releaseAccount = resolve;
+		});
+		let markAccountRequested!: () => void;
+		const accountRequested = new Promise<void>((resolve) => {
+			markAccountRequested = resolve;
+		});
+		await page.route("**/api/account", async (route) => {
+			markAccountRequested();
+			await accountReleased;
+			await route.continue();
+		}, { times: 1 });
+		await page.addInitScript(({ accountKey, welcomeKey, id }) => {
+			localStorage.setItem(accountKey, id);
+			localStorage.setItem(welcomeKey, "true");
+		}, { accountKey: ACCOUNT_STORAGE_KEY, welcomeKey: WELCOME_KEY, id: accountId });
+
+		await page.goto("/");
+		await accountRequested;
+		await expect(page.getByRole("button", { name: "Keyboard shortcuts" })).toBeVisible();
+		await expect(page.getByRole("textbox", { name: "Todo editor" })).toHaveCount(0);
+		await expect(page.getByRole("button", { name: "Add column" })).toHaveCount(0);
+
+		releaseAccount();
+		await expect(page.getByRole("button", { name: "Add column" })).toBeVisible();
+		await expect(page.getByRole("textbox", { name: "Todo editor" })).toHaveCount(0);
 	});
 });

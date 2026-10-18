@@ -1,8 +1,8 @@
 import { useEffect, useCallback } from "react";
 
-const isMac =
-	typeof navigator !== "undefined" &&
-	/Mac|iPod|iPhone|iPad/.test(navigator.platform);
+function isMacPlatform(): boolean {
+	return typeof navigator !== "undefined" && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+}
 
 export type ModifierKey = "mod" | "shift" | "alt";
 
@@ -26,6 +26,9 @@ export function useKeyboardShortcut({
 }: UseKeyboardShortcutOptions) {
 	const handler = useCallback(
 		(event: KeyboardEvent) => {
+			// Something closer to the target (such as a board) already handled it.
+			if (event.defaultPrevented) return;
+			const isMac = isMacPlatform();
 			// Check modifiers
 			const modPressed = modifiers.includes("mod")
 				? isMac
@@ -66,18 +69,4 @@ export function useKeyboardShortcut({
 		window.addEventListener("keydown", handler);
 		return () => window.removeEventListener("keydown", handler);
 	}, [handler]);
-}
-
-/**
- * Returns the platform-appropriate modifier key symbol.
- */
-export function getModifierSymbol(): string {
-	return isMac ? "⌘" : "Ctrl";
-}
-
-/**
- * Returns whether the current platform is Mac.
- */
-export function getIsMac(): boolean {
-	return isMac;
 }

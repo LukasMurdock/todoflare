@@ -1,0 +1,20 @@
+{
+	"name": "@todoflare/example-minimal",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "pnpm --filter @todoflare/board build:css && vite --port 4180 --strictPort",
+		"build": "pnpm --filter @todoflare/board build:css && vite build"
+	},
+	"dependencies": {
+		"@todoflare/board": "workspace:*",
+		"platejs": "^53.2.4",
+		"react": "^19.2.7",
+		"react-dom": "^19.2.7"
+	},
+	"devDependencies": {
+		"@types/react": "^19.2.17",
+		"@types/react-dom": "^19.2.3",
+		"vite": "^8.1.5"
+	}
+}

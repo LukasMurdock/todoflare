@@ -85,6 +85,7 @@ export function useColumns() {
 	const {
 		accountId,
 		account,
+		isLoading,
 		sharedColumns,
 		sharedWithByColumn,
 		publicLinksByColumn,
@@ -99,6 +100,10 @@ export function useColumns() {
 
 	const usesSyncedMode =
 		!!accountId && !!account && syncMode !== "guest_local";
+	// A signed-in account whose columns are not known yet. Showing guest columns
+	// here would let edits land in guest storage and then vanish.
+	const status: "loading" | "ready" =
+		!!accountId && !account && isLoading ? "loading" : "ready";
 
 	// Local columns (for offline/unauthenticated mode)
 	const [localColumns, setLocalColumnsState] = useState<Column[]>(() =>
@@ -195,6 +200,9 @@ export function useColumns() {
 	const updateColumnValue = useCallback(
 		(id: string, value: Value) => {
 			if (!usesSyncedMode) {
+				// The editor reports every change, including selection moves; save only content changes.
+				const current = localColumnsRef.current.find((col) => col.id === id);
+				if (current && JSON.stringify(current.value) === JSON.stringify(value)) return;
 				setLocalColumns((prev) =>
 					prev.map((col) => (col.id === id ? { ...col, value } : col)),
 				);
@@ -204,43 +212,25 @@ export function useColumns() {
 		[usesSyncedMode, setLocalColumns],
 	);
 
-	// Reorder columns
+	// Apply a new column order (all visible column IDs, in order)
 	const reorderColumns = useCallback(
-		async (activeId: string, overId: string) => {
+		async (columnIds: string[]) => {
 			if (usesSyncedMode) {
-				// Synced mode: update column order
-				const oldIndex = syncedColumnIds.indexOf(activeId);
-				const newIndex = syncedColumnIds.indexOf(overId);
-
-				if (oldIndex === -1 || newIndex === -1) return;
-
-				const newOrder = [...syncedColumnIds];
-				const [removed] = newOrder.splice(oldIndex, 1);
-				newOrder.splice(newIndex, 0, removed);
-
-				// Separate owned and shared columns
-				const ownedOrder = newOrder.filter(
-					(id) => !columnMetaMap.has(id),
-				);
-
+				// Shared columns are appended after owned ones; only owned order is stored.
+				const ownedOrder = columnIds.filter((id) => !columnMetaMap.has(id));
 				await updateColumnOrder(ownedOrder);
 			} else {
-				// Local-only mode
 				setLocalColumns((prev) => {
-					const oldIndex = prev.findIndex((col) => col.id === activeId);
-					const newIndex = prev.findIndex((col) => col.id === overId);
-
-					if (oldIndex === -1 || newIndex === -1) return prev;
-
-					const newColumns = [...prev];
-					const [removed] = newColumns.splice(oldIndex, 1);
-					newColumns.splice(newIndex, 0, removed);
-
-					return newColumns;
+					const byId = new Map(prev.map((col) => [col.id, col]));
+					const reordered = columnIds.flatMap((id) => {
+						const col = byId.get(id);
+						return col ? [col] : [];
+					});
+					return reordered.length === prev.length ? reordered : prev;
 				});
 			}
 		},
-		[usesSyncedMode, syncedColumnIds, columnMetaMap, updateColumnOrder, setLocalColumns],
+		[usesSyncedMode, columnMetaMap, updateColumnOrder, setLocalColumns],
 	);
 
 	// Toggle column collapsed
@@ -265,6 +255,7 @@ export function useColumns() {
 
 	// Get columns based on mode
 	const columns = useMemo(() => {
+		if (status === "loading") return [];
 		if (usesSyncedMode) {
 			// Synced mode: return column IDs with metadata
 			return syncedColumnIds.map((id) => {
@@ -292,6 +283,7 @@ export function useColumns() {
 		localColumns,
 		collapsedById,
 		accountId,
+		status,
 	]);
 
 	// Check if a column is owned by the current user
@@ -319,6 +311,7 @@ export function useColumns() {
 	);
 
 	return {
+		status,
 		columns,
 		addColumn,
 		removeColumn,

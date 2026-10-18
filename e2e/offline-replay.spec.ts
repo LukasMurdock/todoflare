@@ -279,6 +279,18 @@ test.describe("collaborative editing", () => {
 			})
 			.toBe(true);
 
+		// Creating the column triggers one more server hydration. Wait until the
+		// state settles so the stored snapshot is the one compared below.
+		let previousHydrationAt: number | undefined;
+		await expect
+			.poll(async () => {
+				const state = await getSyncStateSnapshot(warmPage, accountId);
+				const settled = state?.lastServerHydrationAt === previousHydrationAt;
+				previousHydrationAt = state?.lastServerHydrationAt ?? undefined;
+				return settled;
+			}, { intervals: [750], timeout: 15000 })
+			.toBe(true);
+
 		const onlineSyncState = await getSyncStateSnapshot(warmPage, accountId);
 
 		if (!onlineSyncState) {

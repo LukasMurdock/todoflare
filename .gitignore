@@ -20,3 +20,6 @@ dist
 # Playwright
 playwright-report
 test-results
+
+# Visual baselines are machine-specific
+.visual-baseline

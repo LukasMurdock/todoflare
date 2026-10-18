@@ -1,9 +1,9 @@
 import type { ProviderConstructorProps, UnifiedProvider } from "@platejs/yjs";
-import { registerProviderType } from "@platejs/yjs";
 import * as Y from "yjs";
 import * as awarenessProtocol from "y-protocols/awareness";
 import type { Awareness } from "y-protocols/awareness";
 import type { SyncMessage } from "@/types/account";
+import type { DocumentAdapter } from "@todoflare/board";
 
 export type ColumnSyncTransport = {
 	subscribeToColumn: (columnId: string) => () => void;
@@ -168,7 +168,42 @@ class CloudflareProvider implements UnifiedProvider {
 	}
 }
 
-// Register once on module import.
-registerProviderType("cloudflare", CloudflareProvider);
-
 export type { CloudflareProvider };
+
+/**
+ * Todoflare's document adapter for the board: the cached document from
+ * IndexedDB first, then live updates over the column's socket.
+ */
+export function createCloudflareDocuments({
+	loadColumnDocument,
+	transport,
+}: {
+	loadColumnDocument(columnId: string): Promise<Uint8Array | null>;
+	transport: ColumnSyncTransport;
+}): DocumentAdapter {
+	return {
+		async open(columnId, signal) {
+			// A failed cache read opens the column without it, as before the adapter existed.
+			const cached = await loadColumnDocument(columnId).catch((error: unknown) => {
+				console.error(error);
+				return null;
+			});
+			signal.throwIfAborted();
+			const doc = new Y.Doc();
+			const awareness = new awarenessProtocol.Awareness(doc);
+			if (cached) Y.applyUpdate(doc, cached, "remote");
+			const provider = new CloudflareProvider({ options: { columnId, transport }, doc, awareness });
+			provider.connect();
+			return {
+				doc,
+				awareness,
+				release() {
+					// Detach the provider first so tearing down awareness sends nothing.
+					provider.destroy();
+					awareness.destroy();
+					doc.destroy();
+				},
+			};
+		},
+	};
+}

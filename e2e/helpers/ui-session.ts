@@ -31,10 +31,11 @@ export async function ensureColumnExists(page: Page): Promise<void> {
 	const collapseButtons = page.getByRole("button", { name: "Collapse column" });
 	if ((await collapseButtons.count()) > 0) return;
 
+	// Exactly the create route: the new column's ws-ticket POST also contains "/api/column".
 	const createResponsePromise = page.waitForResponse(
 		(response) =>
 			response.request().method() === "POST" &&
-			response.url().includes("/api/column"),
+			response.url().endsWith("/api/column"),
 	);
 	await page.getByRole("button", { name: "Add column" }).click();
 	const createResponse = await createResponsePromise;

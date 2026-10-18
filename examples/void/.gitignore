@@ -1,0 +1,3 @@
+# Local Workers state and build output from Void
+.void/
+dist/

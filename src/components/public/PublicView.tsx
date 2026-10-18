@@ -1,8 +1,4 @@
-import type { Value } from "platejs";
-import { createSlateEditor } from "platejs";
-import { KEYS } from "platejs";
-
-import { EditorStatic } from "@/components/ui/editor-static";
+import { ColumnSnapshot } from "@todoflare/board";
 import { usePublicColumnSync } from "@/hooks/usePublicColumnSync";
 
 interface PublicViewProps {
@@ -62,21 +58,9 @@ export function PublicView({ publicId }: PublicViewProps) {
 
 			{/* Content */}
 			<main className="max-w-3xl mx-auto px-4 py-8">
-				<PublicEditor value={value} />
+				{/* The board's own static renderer, so headings and todos look as they do in the editor. */}
+				<ColumnSnapshot value={value} />
 			</main>
 		</div>
-	);
-}
-
-function PublicEditor({ value }: { value: Value }) {
-	const editor = createSlateEditor({
-		value,
-	});
-
-	return (
-		<EditorStatic
-			editor={editor}
-			className="prose prose-neutral dark:prose-invert max-w-none"
-		/>
 	);
 }
