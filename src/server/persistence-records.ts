@@ -4,7 +4,7 @@ import {
 	accountContractSchema,
 	columnMetaContractSchema,
 	deletedColumnContractSchema,
-	recordIdContractSchema,
+	columnIdContractSchema,
 } from "../lib/api/account-contract";
 
 export const ACCOUNT_SCHEMA_VERSION = 1;
@@ -25,7 +25,7 @@ export const columnMetaRecordSchema = columnMetaContractSchema.extend({
 
 export const deletedColumnRecordSchema = deletedColumnContractSchema;
 
-export const sharedColumnIndexSchema = z.array(recordIdContractSchema).max(100);
+export const sharedColumnIndexSchema = z.array(columnIdContractSchema).max(100);
 
 export type SchemaParseErrorCode =
 	| "invalid_json"

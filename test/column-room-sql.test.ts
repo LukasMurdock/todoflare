@@ -142,7 +142,7 @@ async function waitForOp(
 
 describe("ColumnRoomSql Durable Object (HTTP)", () => {
 	it("distinguishes an uninitialized room from denied access", async () => {
-		const columnId = "ws-ticket-error-semantics";
+		const columnId = "00000000-0000-4000-8000-000000000101"; // ws-ticket-error-semantics
 		const stub = getColumnRoomStub(columnId);
 		const ownerId = "1111 1111 1111 1111";
 
@@ -174,7 +174,7 @@ describe("ColumnRoomSql Durable Object (HTTP)", () => {
 	});
 
 	it("negotiates the supported WebSocket protocol and rejects unknown versions", async () => {
-		const columnId = "ws-protocol-negotiation";
+		const columnId = "00000000-0000-4000-8000-000000000102"; // ws-protocol-negotiation
 		const stub = getColumnRoomStub(columnId);
 		const ownerId = "1111 1111 1111 1111";
 		await stub.fetch("http://do/init", {
@@ -220,7 +220,7 @@ describe("ColumnRoomSql Durable Object (HTTP)", () => {
 	});
 
 	it("initializes, updates meta, and deletes", async () => {
-		const columnId = "http-init-meta";
+		const columnId = "00000000-0000-4000-8000-000000000103"; // http-init-meta
 		const stub = getColumnRoomStub(columnId);
 
 		const meta: ColumnMeta = {
@@ -285,7 +285,7 @@ describe("ColumnRoomSql Durable Object (HTTP)", () => {
 	});
 
 	it("exports imported Yjs text state", async () => {
-		const columnId = "http-export-state";
+		const columnId = "00000000-0000-4000-8000-000000000104"; // http-export-state
 		const stub = getColumnRoomStub(columnId);
 
 		const meta: ColumnMeta = {
@@ -335,7 +335,7 @@ describe("ColumnRoomSql Durable Object (HTTP)", () => {
 	});
 
 	it("rejects corrupt Yjs imports without changing authoritative state", async () => {
-		const columnId = "http-reject-corrupt-import";
+		const columnId = "00000000-0000-4000-8000-000000000105"; // http-reject-corrupt-import
 		const stub = getColumnRoomStub(columnId);
 		const originalMeta: ColumnMeta = {
 			schemaVersion: 1,
@@ -396,7 +396,7 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 	}
 
 	it("upgrades to a binary WebSocket and sends initial frames", async () => {
-		const columnId = "ws-initial-frames";
+		const columnId = "00000000-0000-4000-8000-000000000106"; // ws-initial-frames
 		const stub = getColumnRoomStub(columnId);
 
 		const meta: ColumnMeta = {
@@ -441,7 +441,7 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 	});
 
 	it("revokes access over WebSocket when /share removes a user", async () => {
-		const columnId = "ws-access-revoked";
+		const columnId = "00000000-0000-4000-8000-000000000107"; // ws-access-revoked
 		const stub = getColumnRoomStub(columnId);
 		const ownerId = "1111 1111 1111 1111";
 		const sharedId = "2222 2222 2222 2222";
@@ -493,7 +493,7 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 	});
 
 	it("keeps a normalized collaborator session when another user is added", async () => {
-		const columnId = "ws-access-normalized";
+		const columnId = "00000000-0000-4000-8000-000000000108"; // ws-access-normalized
 		const stub = getColumnRoomStub(columnId);
 		const sharedId = "2222 2222 2222 2222";
 		const meta: ColumnMeta = {
@@ -536,7 +536,7 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 	});
 
 	it("broadcasts Yjs sync updates between clients", async () => {
-		const columnId = "ws-yjs-sync";
+		const columnId = "00000000-0000-4000-8000-000000000109"; // ws-yjs-sync
 		const stub = getColumnRoomStub(columnId);
 		const ownerId = "1111 1111 1111 1111";
 
@@ -610,7 +610,7 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 	});
 
 	it("deduplicates durable submissions before and after compaction", async () => {
-		const columnId = "ws-yjs-dedup";
+		const columnId = "00000000-0000-4000-8000-000000000110"; // ws-yjs-dedup
 		const stub = getColumnRoomStub(columnId);
 		const ownerId = "1111 1111 1111 1111";
 		await stub.fetch(
@@ -699,7 +699,7 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 	});
 
 	it("rejects reuse of a delivery ID with different update bytes", async () => {
-		const columnId = "ws-yjs-delivery-conflict";
+		const columnId = "00000000-0000-4000-8000-000000000111"; // ws-yjs-delivery-conflict
 		const stub = getColumnRoomStub(columnId);
 		const ownerId = "1111 1111 1111 1111";
 		await stub.fetch("http://do/init", {
@@ -755,7 +755,7 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 	});
 
 	it("does not persist an existing socket submission after read-only activation", async () => {
-		const columnId = "ws-read-only-existing-socket";
+		const columnId = "00000000-0000-4000-8000-000000000112"; // ws-read-only-existing-socket
 		const stub = getColumnRoomStub(columnId);
 		const ownerId = "1111 1111 1111 1111";
 		const meta: ColumnMeta = {

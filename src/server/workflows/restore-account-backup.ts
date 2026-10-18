@@ -1,5 +1,5 @@
 import * as Y from "yjs";
-import type { Bindings } from "../../index";
+import type { Bindings } from "../bindings";
 import { normalizeAccountId } from "../../lib/account";
 import { createAccountBackup, restoreAccountCredentials, type AccountBackup } from "../account-backup";
 import { accountRecordStore } from "../account-record-store";

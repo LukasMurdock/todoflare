@@ -259,7 +259,7 @@ describe("LocalMutationQueueService", () => {
 
 		const storage = createLocalFirstMutationQueueStorage(db);
 		const queuedMutation = {
-			...makeCommand("column.create", { columnId: "col-1" }, 123),
+			...makeCommand("column.create", { columnId: "00000000-0000-4000-8000-000000000001" }, 123),
 			queueId: "queue-local-first",
 			lastError: "temporary",
 		};
@@ -289,7 +289,7 @@ describe("LocalMutationQueueService", () => {
 		} satisfies LocalFirstDatabase;
 		const storage = createLocalFirstMutationQueueStorage(db);
 		const valid = {
-			...makeCommand("column.delete", { columnId: "column-1" }, 123),
+			...makeCommand("column.delete", { columnId: "00000000-0000-4000-8000-000000000001" }, 123),
 			queueId: "valid",
 		};
 

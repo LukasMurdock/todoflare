@@ -150,68 +150,119 @@ export function isWsFrameWithinLimits(data: ArrayBuffer): boolean {
 	return isWsPayloadWithinLimit(op, payload.byteLength);
 }
 
+type ServerMessageType = SyncMessage["type"];
+type ServerMessage<T extends ServerMessageType> = Extract<SyncMessage, { type: T }>;
+
+interface ServerMessageCodec<T extends ServerMessageType> {
+	op: number;
+	maxPayloadBytes: number;
+	encode(message: ServerMessage<T>): Uint8Array;
+	decode(payload: Uint8Array): ServerMessage<T> | null;
+}
+
+const EMPTY_PAYLOAD = new Uint8Array();
+
+/**
+ * The single declaration of every server-to-client message: its opcode, size
+ * limit and payload encoding. The mapped type makes a SyncMessage variant
+ * without a codec a compile error.
+ */
+const SERVER_MESSAGE_CODECS: { [T in ServerMessageType]: ServerMessageCodec<T> } = {
+	sync: {
+		op: WS_OP_SYNC,
+		maxPayloadBytes: MAX_SYNC_UPDATE_BYTES,
+		encode: (message) => message.data,
+		decode: (data) => ({ type: "sync", data }),
+	},
+	"sync-ack": {
+		op: WS_OP_SYNC_ACK,
+		maxPayloadBytes: SYNC_DELIVERY_HEADER_BYTES + MAX_OUTBOX_ID_BYTES,
+		encode: (message) => encodeSyncDeliveryPayload(message.outboxId),
+		decode: (payload) => {
+			const receipt = decodeSyncDeliveryPayload(payload);
+			return receipt && receipt.update.byteLength === 0
+				? { type: "sync-ack", outboxId: receipt.outboxId }
+				: null;
+		},
+	},
+	awareness: {
+		op: WS_OP_AWARENESS,
+		maxPayloadBytes: MAX_AWARENESS_BYTES,
+		encode: (message) => message.data,
+		decode: (data) => ({ type: "awareness", data }),
+	},
+	presence: {
+		op: WS_OP_PRESENCE,
+		maxPayloadBytes: MAX_PRESENCE_BYTES,
+		encode: (message) => textEncoder.encode(JSON.stringify({ users: message.users })),
+		decode: (payload) => {
+			try {
+				const parsed = JSON.parse(textDecoder.decode(payload)) as {
+					users?: PresenceUser[];
+				};
+				return { type: "presence", users: parsed.users ?? [] };
+			} catch {
+				return null;
+			}
+		},
+	},
+	"column-deleted": {
+		op: WS_OP_COLUMN_DELETED,
+		maxPayloadBytes: 0,
+		encode: () => EMPTY_PAYLOAD,
+		decode: () => ({ type: "column-deleted" }),
+	},
+	"access-revoked": {
+		op: WS_OP_ACCESS_REVOKED,
+		maxPayloadBytes: 0,
+		encode: () => EMPTY_PAYLOAD,
+		decode: () => ({ type: "access-revoked" }),
+	},
+	error: {
+		op: WS_OP_ERROR,
+		maxPayloadBytes: MAX_ERROR_BYTES,
+		encode: (message) => textEncoder.encode(message.message),
+		decode: (payload) => ({ type: "error", message: textDecoder.decode(payload) }),
+	},
+};
+
+type AnyServerMessageCodec = {
+	op: number;
+	maxPayloadBytes: number;
+	encode(message: SyncMessage): Uint8Array;
+	decode(payload: Uint8Array): SyncMessage | null;
+};
+
+const SERVER_MESSAGE_BY_OP = new Map<number, AnyServerMessageCodec>(
+	Object.values(SERVER_MESSAGE_CODECS).map((codec) => [
+		codec.op,
+		codec as AnyServerMessageCodec,
+	]),
+);
+
+/** Payload limits per opcode: every server message plus client-only submissions. */
+const PAYLOAD_LIMIT_BY_OP = new Map<number, number>([
+	...[...SERVER_MESSAGE_BY_OP].map(([op, codec]) => [op, codec.maxPayloadBytes] as const),
+	[WS_OP_SYNC_SUBMIT, SYNC_DELIVERY_HEADER_BYTES + MAX_OUTBOX_ID_BYTES + MAX_SYNC_UPDATE_BYTES],
+]);
+
 export function isWsPayloadWithinLimit(
 	op: number,
 	payloadBytes: number,
 ): boolean {
 	if (payloadBytes < 0 || payloadBytes + 1 > MAX_WS_FRAME_BYTES) return false;
+	const limit = PAYLOAD_LIMIT_BY_OP.get(op);
+	return limit === undefined || payloadBytes <= limit;
+}
 
-	switch (op) {
-		case WS_OP_SYNC:
-			return payloadBytes <= MAX_SYNC_UPDATE_BYTES;
-		case WS_OP_SYNC_SUBMIT:
-			return payloadBytes <= 2 + MAX_OUTBOX_ID_BYTES + MAX_SYNC_UPDATE_BYTES;
-		case WS_OP_SYNC_ACK:
-			return payloadBytes <= 2 + MAX_OUTBOX_ID_BYTES;
-		case WS_OP_AWARENESS:
-			return payloadBytes <= MAX_AWARENESS_BYTES;
-		case WS_OP_PRESENCE:
-			return payloadBytes <= MAX_PRESENCE_BYTES;
-		case WS_OP_ERROR:
-			return payloadBytes <= MAX_ERROR_BYTES;
-		case WS_OP_COLUMN_DELETED:
-		case WS_OP_ACCESS_REVOKED:
-			return payloadBytes === 0;
-		default:
-			return true;
-	}
+/** Encodes a server-to-client message using its declared opcode and payload. */
+export function encodeServerMessage(message: SyncMessage): ArrayBuffer {
+	const codec = SERVER_MESSAGE_CODECS[message.type] as AnyServerMessageCodec;
+	return encodeWsFrame(codec.op, codec.encode(message));
 }
 
 export function decodeWsMessage(data: ArrayBuffer): SyncMessage | null {
 	if (!isWsFrameWithinLimits(data)) return null;
 	const { op, payload } = decodeWsFrame(data);
-
-	switch (op) {
-		case WS_OP_SYNC:
-			return { type: "sync", data: payload };
-		case WS_OP_SYNC_ACK: {
-			const receipt = decodeSyncDeliveryPayload(payload);
-			return receipt && receipt.update.byteLength === 0
-				? { type: "sync-ack", outboxId: receipt.outboxId }
-				: null;
-		}
-		case WS_OP_AWARENESS:
-			return { type: "awareness", data: payload };
-		case WS_OP_PRESENCE:
-			try {
-				return {
-					type: "presence",
-					users: (
-						JSON.parse(textDecoder.decode(payload)) as {
-							users?: PresenceUser[];
-						}
-					).users ?? [],
-				};
-			} catch {
-				return null;
-			}
-		case WS_OP_COLUMN_DELETED:
-			return { type: "column-deleted" };
-		case WS_OP_ACCESS_REVOKED:
-			return { type: "access-revoked" };
-		case WS_OP_ERROR:
-			return { type: "error", message: textDecoder.decode(payload) };
-		default:
-			return null;
-	}
+	return SERVER_MESSAGE_BY_OP.get(op)?.decode(payload) ?? null;
 }

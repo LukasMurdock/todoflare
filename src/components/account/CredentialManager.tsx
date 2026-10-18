@@ -9,6 +9,7 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
+import { AUTH_BASE_PATH } from "@/lib/api/routes";
 
 interface CredentialManagerProps {
 	open: boolean;
@@ -73,7 +74,7 @@ export function CredentialManager({ open, onOpenChange }: CredentialManagerProps
 		setBusy(true);
 		setError(null);
 		try {
-			const response = await fetch("/api/auth/recovery-code/generate", { method: "POST" });
+			const response = await fetch(`${AUTH_BASE_PATH}/recovery-code/generate`, { method: "POST" });
 			const body = (await response.json()) as { recoveryCode?: string; message?: string };
 			if (!response.ok || !body.recoveryCode) throw new Error(body.message ?? "Recovery code creation failed");
 			setRecoveryCode(body.recoveryCode);

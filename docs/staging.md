@@ -72,6 +72,11 @@ frozen Worker version was created, rolls back to that frozen version, and verifi
 that the later data survives. Worker rollback must never restore an older data
 snapshot merely because the code version changed.
 
+Staging keeps production rate limits (for example, five new accounts per IP
+per hour). Because every drill creates fresh accounts, it first calls the
+staging-only `reset-rate-limits` control, which clears the IP-keyed windows for
+the caller's IP only.
+
 Staging controls require `ENVIRONMENT=staging` and the admin token. Marking also
 requires an authenticated account session; loss simulation requires a marked
 case, a write freeze, and a verified account credential backup. These controls
@@ -89,6 +94,11 @@ offline, removes the browser session cookie, and verifies the reconnect banner.
 It reloads, tests a failed reconnect, and reconnects with the original passkey.
 It checks that cached content survives and both document edits and queued metadata
 reach a separate browser session after reconnecting.
+
+Version changes propagate gradually, so after every deploy or rollback the
+drill waits for five consecutive `/api/clock` responses in the requested write
+mode. Before the rollback rehearsal it parks both browsers on `about:blank`, so
+the app cannot write to the comparison column between snapshots.
 
 The successful report is saved at `.wrangler/staging-drill-report.json`.
 The initial remote drill completed successfully on 2026-10-01, including original
@@ -236,3 +246,18 @@ live verification preserved all four accounts, four documents, and their
 credentials. Eight independent backup snapshots verified successfully and backup
 health remained current. The production deployment has no authentication or
 rate-limit bypass bindings.
+
+## Change-locality release (2026-10-18)
+
+Released commit `93d58637` from `refactor/change-locality` (PR #1): shared route
+and account command tables, contract-derived record types, the `index.tsx` split,
+and UUID-only column IDs in server stored records. A read-only audit beforehand
+found no non-UUID column IDs in production. Validation passed: 326 unit/Worker
+tests, all 27 browser tests, the staging passkey test, and the full staging
+recovery/rollback drill on the same commit.
+
+The verified frozen production version is
+`c053f08d-2623-4c63-b254-f712cec7c249`; the writable version is
+`347c72df-4b31-4211-8e11-54940ecc02cb`. Preflight, frozen verification, and live
+verification preserved all four accounts, four documents, and their credentials.
+Eight independent backup snapshots verified and backup health is current.

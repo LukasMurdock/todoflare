@@ -3,29 +3,15 @@ import type {
 	ReplayReport,
 } from "./contracts";
 import { shouldApplyAccessLossPolicy } from "./replay-response";
-
-function assertNever(value: never): never {
-	throw new Error(`Unhandled account command: ${JSON.stringify(value)}`);
-}
+import { ACCOUNT_COMMANDS } from "../api/account-commands";
 
 export function columnIdForAccountCommand(
 	command: AccountCommandDescriptor,
 ): string | null {
-	switch (command.opType) {
-		case "column.create":
-		case "column.delete":
-		case "column.restore":
-		case "column.share":
-		case "column.revoke":
-		case "column.public.enable":
-		case "column.public.disable":
-			return command.payload.columnId;
-		case "column.reorder":
-		case "column.hide_shared":
-			return null;
-		default:
-			return assertNever(command);
-	}
+	const { affectedColumnId } = ACCOUNT_COMMANDS[command.opType] as {
+		affectedColumnId(payload: AccountCommandDescriptor["payload"]): string | null;
+	};
+	return affectedColumnId(command.payload);
 }
 
 export interface ReplayReconciliationSummary {

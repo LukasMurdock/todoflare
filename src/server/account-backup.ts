@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { Bindings } from "../index";
+import type { Bindings } from "./bindings";
 import { normalizeAccountId } from "../lib/account";
 import { accountRecordStore } from "./account-record-store";
 import { parseAccountRecord, parseDeletedColumnRecords, parseSharedColumnIndex } from "./persistence-records";

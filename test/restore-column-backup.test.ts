@@ -6,7 +6,7 @@ import {
 
 const ownerId = "1111 2222 3333 4444";
 const collaboratorId = "9999 8888 7777 6666";
-const columnId = "column-1";
+const columnId = "00000000-0000-4000-8000-000000000001";
 
 async function payload(): Promise<ColumnBackupPayload> {
 	const base = {

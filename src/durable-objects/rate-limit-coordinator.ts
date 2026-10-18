@@ -25,7 +25,14 @@ export class RateLimitCoordinatorSql extends DurableObject<unknown> {
 	}
 
 	async fetch(request: Request): Promise<Response> {
-		if (request.method !== "POST" || new URL(request.url).pathname !== "/check") {
+		const pathname = new URL(request.url).pathname;
+		// Only staging controls call this; production code paths only check.
+		if (request.method === "POST" && pathname === "/reset") {
+			this.ctx.storage.sql.exec("DELETE FROM rate_limit_window WHERE id = 1");
+			await this.ctx.storage.deleteAlarm();
+			return Response.json({ success: true });
+		}
+		if (request.method !== "POST" || pathname !== "/check") {
 			return new Response("Not Found", { status: 404 });
 		}
 

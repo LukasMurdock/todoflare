@@ -63,7 +63,7 @@ function legacyAccountSnapshot(id = "account:1111111111111111") {
 		account: {
 			schemaVersion: 1,
 			id: "1111 1111 1111 1111",
-			columnOrder: ["column-1"],
+			columnOrder: ["00000000-0000-4000-8000-000000000001"],
 			hiddenSharedColumns: [],
 			createdAt: 100,
 		},
@@ -74,7 +74,7 @@ function legacyAccountSnapshot(id = "account:1111111111111111") {
 	};
 }
 
-function legacyMutation(queueId: string, payload: unknown = { columnId: "column-1" }) {
+function legacyMutation(queueId: string, payload: unknown = { columnId: "00000000-0000-4000-8000-000000000001" }) {
 	return {
 		id: queueId,
 		queueId,
@@ -158,7 +158,7 @@ describe("local-first IndexedDB record contract", () => {
 			schemaVersion: 2,
 			id: "future-yjs",
 			accountId: "1111 1111 1111 1111",
-			columnId: "column-1",
+			columnId: "00000000-0000-4000-8000-000000000001",
 			kind: "sync",
 			updateBytes: [1],
 		};
@@ -173,7 +173,7 @@ describe("local-first IndexedDB record contract", () => {
 			schemaVersion: 1,
 			id: "replacement",
 			accountId: "1111 1111 1111 1111",
-			columnId: "column-1",
+			columnId: "00000000-0000-4000-8000-000000000001",
 			kind: "sync",
 			updateBytes: [2],
 			stateVectorBytes: null,
@@ -200,7 +200,7 @@ describe("local-first IndexedDB record contract", () => {
 				entries: [["bad-yjs", {
 					id: "bad-yjs",
 					accountId: "1111 1111 1111 1111",
-					columnId: "column-1",
+					columnId: "00000000-0000-4000-8000-000000000001",
 					kind: "sync",
 					updateBytes: [999],
 					stateVectorBytes: null,

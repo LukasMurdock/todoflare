@@ -18,53 +18,20 @@ import { deriveSyncMode, type SyncMode } from "@/lib/sync/mode-machine";
 import { getLocalFirstDb } from "@/lib/local-first/database";
 import type { QuarantinedRecord } from "@/lib/local-first/collections";
 import { readAllLocalStorageQuarantine } from "@/lib/local-first/local-storage-quarantine";
-import {
-	createLocalFirstMutationQueueStorage,
-	LocalMutationQueueService,
-} from "@/lib/sync/mutation-queue-service";
+import { createLocalFirstMutationQueueStorage, LocalMutationQueueService } from "@/lib/sync/mutation-queue-service";
 import { columnIdForAccountCommand } from "@/lib/sync/account-command-reconciliation";
-import {
-	LOCAL_COLUMNS_STORAGE_KEY,
-	parseLocalColumns,
-} from "@/lib/local-column-storage";
+import { LOCAL_COLUMNS_STORAGE_KEY, parseLocalColumns } from "@/lib/local-column-storage";
 import { createAccountCommandExecutor } from "@/lib/sync/account-command-executor";
-import {
-	LocalYjsUpdateOutbox,
-	createLocalFirstYjsOutboxStorage,
-	type YjsOutboxKind,
-} from "@/lib/sync/yjs-update-outbox";
-import {
-	encodeDurableSyncSubmission,
-	encodeWsFrame,
-	WS_OP_AWARENESS,
-} from "@/lib/collaboration/websocket-protocol";
+import { LocalYjsUpdateOutbox, createLocalFirstYjsOutboxStorage, type YjsOutboxKind } from "@/lib/sync/yjs-update-outbox";
+import { encodeDurableSyncSubmission, encodeWsFrame, WS_OP_AWARENESS } from "@/lib/collaboration/websocket-protocol";
 import { ColumnSessionManager } from "@/lib/sync/column-session-manager";
-import {
-	ColumnSocketAuthorizationError,
-	ColumnSocketProvisioningError,
-} from "@/lib/sync/column-session-machine";
-import type {
-	ColumnSocketFrame,
-	ColumnSocketLike,
-} from "@/lib/sync/column-socket-actor";
+import type { ColumnSocketFrame, ColumnSocketLike } from "@/lib/sync/column-socket-actor";
 import type { AccountConvergenceDependencies } from "@/lib/sync/account-convergence-machine";
-import {
-	accountConvergenceErrorMessage,
-	useAccountCommandSubmission,
-	useAccountConvergence,
-} from "@/hooks/use-account-convergence";
-import {
-	useSyncTelemetry,
-	type SyncStateSummary,
-} from "@/hooks/use-sync-telemetry";
+import { accountConvergenceErrorMessage, useAccountCommandSubmission, useAccountConvergence } from "@/hooks/use-account-convergence";
+import { useSyncTelemetry, type SyncStateSummary } from "@/hooks/use-sync-telemetry";
 import { projectionFromLocalSnapshot } from "@/lib/sync/account-projection";
-import {
-	createAccountProjection,
-	fetchAccountProjection,
-	signInWithPasskey,
-} from "@/lib/sync/account-api-client";
+import { createAccountProjection, fetchAccountProjection, signInWithPasskey } from "@/lib/sync/account-api-client";
 import { authClient, recoverAccount } from "@/lib/auth-client";
-import { accountRequestHeaders } from "@/lib/account-request-headers";
 import type { LocalFirstDatabase } from "@/lib/local-first/database";
 import type {
 	Account,
@@ -76,11 +43,10 @@ import type {
 	PublicLinkResponse,
 	AccountExportPayload,
 } from "@/types/account";
-import {
-	validateAccountId,
-	normalizeAccountId,
-	displayAccountId,
-} from "@/lib/account";
+import { normalizeAccountId, displayAccountId } from "@/lib/account";
+import { useAccountColumnCommands } from "@/hooks/use-account-column-commands";
+import { useAccountDataTransfer } from "@/hooks/use-account-data-transfer";
+import { fetchColumnSocketUrl } from "@/lib/sync/column-socket-ticket";
 
 const ACCOUNT_STORAGE_KEY = "todoflare-account";
 const E2E_REPLAY_WAKE_EVENT = "todoflare:e2e:replay-wake";
@@ -596,33 +562,20 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 				onAuthenticationRequired: () => accountConvergenceActor.send({ type: "AUTHENTICATION_REQUIRED" }),
 				createSocket: (url, protocols) =>
 					new WebSocket(url, protocols) as unknown as ColumnSocketLike,
-				getSocketUrl: async (activeAccountId, columnId, signal) => {
-					const response = await fetch(`/api/column/${columnId}/ws-ticket`, {
-						method: "POST",
+				getSocketUrl: (activeAccountId, columnId, signal) =>
+					fetchColumnSocketUrl({
+						accountId: activeAccountId,
+						columnId,
 						signal,
-						headers: accountRequestHeaders(activeAccountId),
-					});
-					const hasPendingCreate = mutationQueue
-						.getPending(activeAccountId)
-						.some(
-							(mutation) =>
-								mutation.opType === "column.create" &&
-								mutation.payload.columnId === columnId,
-						);
-					if ([403, 404].includes(response.status) && hasPendingCreate) {
-						throw new ColumnSocketProvisioningError(response.status);
-					}
-					if ([401, 403, 404].includes(response.status)) {
-						throw new ColumnSocketAuthorizationError(response.status);
-					}
-					if (!response.ok) throw new Error(`WebSocket ticket failed: ${response.status}`);
-					const payload = (await response.json()) as { ticket?: unknown };
-					if (typeof payload.ticket !== "string") {
-						throw new Error("WebSocket ticket response is invalid");
-					}
-					const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-					return `${protocol}//${window.location.host}/api/column/${columnId}/ws?ticket=${encodeURIComponent(payload.ticket)}`;
-				},
+						hasPendingCreate: () =>
+							mutationQueue
+								.getPending(activeAccountId)
+								.some(
+									(mutation) =>
+										mutation.opType === "column.create" &&
+										mutation.payload.columnId === columnId,
+								),
+					}),
 				persistUpdate: (activeAccountId, columnId, kind, update) => {
 					const outboxId = yjsOutbox.enqueue({
 						accountId: activeAccountId,
@@ -926,274 +879,31 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		[],
 	);
 
-	// Create a new column
-	const createColumn = useCallback(async () => {
-		if (!accountId) return null;
-
-		const columnId = crypto.randomUUID();
-		const provisionalColumn: ColumnMeta = {
-			schemaVersion: 1,
-			id: columnId,
-			ownerId: displayAccountId(accountId),
-			sharedWith: [],
-			publicId: null,
-			createdAt: Date.now(),
-		};
-
-		try {
-			const { outcome } = await submitAccountCommand(
-				"column.create",
-				{ columnId },
-			);
-
-			if (outcome === "terminal") {
-				detachColumnSync(columnId);
-				const droppedYjsCount = yjsOutbox.dropForColumn(accountId, columnId);
-				refreshYjsOutboxSummary();
-				toast.error(
-					droppedYjsCount > 0
-						? "Column could not be created. Unsynced changes were discarded."
-						: "Column could not be created.",
-				);
-				return null;
-			}
-
-			return provisionalColumn;
-		} catch (err) {
-			detachColumnSync(columnId);
-			const message = err instanceof Error ? err.message : "Unknown error";
-			setError(message);
-			return null;
-		}
-	}, [
+	const {
+		createColumn,
+		deleteColumn,
+		restoreColumn,
+		shareColumn,
+		revokeShare,
+		enablePublicLink,
+		disablePublicLink,
+		updateColumnOrder,
+		updateHiddenSharedColumns,
+	} = useAccountColumnCommands({
 		accountId,
-		detachColumnSync,
-		refreshYjsOutboxSummary,
+		accountConvergenceActor,
 		submitAccountCommand,
+		detachColumnSync,
 		yjsOutbox,
-	]);
+		refreshYjsOutboxSummary,
+		setError,
+	});
 
-	// Delete a column
-	const deleteColumn = useCallback(
-		async (columnId: string) => {
-			if (!accountId) return false;
-
-			detachColumnSync(columnId);
-
-			try {
-				const { outcome } = await submitAccountCommand(
-					"column.delete",
-					{ columnId },
-				);
-				if (outcome === "terminal") {
-					return false;
-				}
-				return true;
-			} catch (err) {
-				setError(err instanceof Error ? err.message : "Unknown error");
-				return false;
-			}
-		},
-		[accountId, detachColumnSync, submitAccountCommand],
-	);
-
-	const restoreColumn = useCallback(
-		async (columnId: string) => {
-			if (!accountId) return false;
-
-			try {
-				const { outcome } = await submitAccountCommand(
-					"column.restore",
-					{ columnId },
-				);
-				if (outcome === "terminal") {
-					return false;
-				}
-				return true;
-			} catch (err) {
-				setError(err instanceof Error ? err.message : "Unknown error");
-				return false;
-			}
-		},
-		[accountId, submitAccountCommand],
-	);
-
-	// Share a column
-	const shareColumn = useCallback(
-		async (columnId: string, targetAccountId: string) => {
-			if (!accountId) return false;
-			if (!validateAccountId(targetAccountId)) return false;
-
-			try {
-				const { outcome } = await submitAccountCommand(
-					"column.share",
-					{ columnId, targetAccountId },
-				);
-				if (outcome === "terminal") {
-					return false;
-				}
-				return true;
-			} catch (err) {
-				setError(err instanceof Error ? err.message : "Unknown error");
-				return false;
-			}
-		},
-		[accountId, submitAccountCommand],
-	);
-
-	// Revoke share
-	const revokeShare = useCallback(
-		async (columnId: string, targetAccountId: string) => {
-			if (!accountId) return false;
-			if (!validateAccountId(targetAccountId)) return false;
-
-			try {
-				const { outcome } = await submitAccountCommand(
-					"column.revoke",
-					{ columnId, targetAccountId },
-				);
-				if (outcome === "terminal") {
-					return false;
-				}
-				return true;
-			} catch (err) {
-				setError(err instanceof Error ? err.message : "Unknown error");
-				return false;
-			}
-		},
-		[accountId, submitAccountCommand],
-	);
-
-	// Enable public link
-	const enablePublicLink = useCallback(
-		async (columnId: string) => {
-			if (!accountId) return null;
-
-			try {
-				const { outcome } = await submitAccountCommand(
-					"column.public.enable",
-					{ columnId },
-				);
-				if (outcome === "terminal") {
-					return null;
-				}
-
-				return (
-					accountConvergenceActor.getSnapshot().context.projection
-						?.publicLinksByColumn[columnId] ?? null
-				);
-			} catch (err) {
-				setError(err instanceof Error ? err.message : "Unknown error");
-				return null;
-			}
-		},
-		[accountConvergenceActor, accountId, submitAccountCommand],
-	);
-
-	// Disable public link
-	const disablePublicLink = useCallback(
-		async (columnId: string) => {
-			if (!accountId) return false;
-
-			try {
-				const { outcome } = await submitAccountCommand(
-					"column.public.disable",
-					{ columnId },
-				);
-				if (outcome === "terminal") {
-					return false;
-				}
-				return true;
-			} catch (err) {
-				setError(err instanceof Error ? err.message : "Unknown error");
-				return false;
-			}
-		},
-		[accountId, submitAccountCommand],
-	);
-
-	// Update column order
-	const updateColumnOrder = useCallback(
-		async (columnOrder: string[]) => {
-			if (!accountId) return;
-
-			try {
-				await submitAccountCommand("column.reorder", { columnOrder });
-			} catch (err) {
-				console.error("Failed to update column order:", err);
-			}
-		},
-		[accountId, submitAccountCommand],
-	);
-
-	// Update hidden shared columns
-	const updateHiddenSharedColumns = useCallback(
-		async (hiddenSharedColumns: string[]) => {
-			if (!accountId) return;
-
-			try {
-				await submitAccountCommand("column.hide_shared", {
-					hiddenSharedColumns,
-				});
-			} catch (err) {
-				console.error("Failed to update hidden shared columns:", err);
-			}
-		},
-		[accountId, submitAccountCommand],
-	);
-
-	const exportAccountData = useCallback(async () => {
-		if (!accountId) return null;
-
-		try {
-			const response = await fetch("/api/account/export", {
-				headers: accountRequestHeaders(accountId),
-			});
-
-			if (!response.ok) {
-				throw new Error("Failed to export account data");
-			}
-
-			return (await response.json()) as AccountExportPayload;
-		} catch (err) {
-			setError(err instanceof Error ? err.message : "Unknown error");
-			toast.error("Failed to export data");
-			return null;
-		}
-	}, [accountId]);
-
-	const importAccountData = useCallback(
-		async (payload: AccountExportPayload) => {
-			if (!accountId) return false;
-
-			try {
-				const response = await fetch(
-					"/api/account/import",
-					{
-						method: "POST",
-							headers: {
-								...accountRequestHeaders(accountId),
-								"Content-Type": "application/json",
-						},
-						body: JSON.stringify(payload),
-					},
-				);
-
-				if (!response.ok) {
-					throw new Error("Failed to import account data");
-				}
-
-				await fetchAccount(accountId);
-				toast.success("Data imported successfully");
-				return true;
-			} catch (err) {
-				setError(err instanceof Error ? err.message : "Unknown error");
-				toast.error("Failed to import data");
-				return false;
-			}
-		},
-		[accountId, fetchAccount],
-	);
+	const { exportAccountData, importAccountData } = useAccountDataTransfer({
+		accountId,
+		fetchAccount,
+		setError,
+	});
 
 	// Check for existing localStorage data
 	const hasLocalData = useCallback(() => {

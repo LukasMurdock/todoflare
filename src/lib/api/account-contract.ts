@@ -1,34 +1,52 @@
 import { z } from "zod";
 import { normalizeAccountId, validateAccountId } from "../account";
 
-export const accountIdContractSchema = z.string().refine(validateAccountId);
-export const recordIdContractSchema = z.string().min(1).max(128);
+export const PUBLIC_ID_PATTERN = /^[0-9A-Za-z]{8}$/;
+export const COLUMN_ID_PATTERN =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export const accountIdContractSchema = z
+	.string()
+	.refine(validateAccountId, "Invalid account ID");
+export const columnIdContractSchema = z
+	.string()
+	.regex(COLUMN_ID_PATTERN, "Invalid column ID");
+export const publicIdContractSchema = z
+	.string()
+	.regex(PUBLIC_ID_PATTERN, "Invalid public ID");
 export const timestampContractSchema = z.number().finite().nonnegative();
 
+/** Account stored in KV; `id` is formatted with spaces ("4829 1047 3856 2019"). */
 export const accountContractSchema = z
 	.object({
 		schemaVersion: z.literal(1),
 		id: accountIdContractSchema,
-		columnOrder: z.array(recordIdContractSchema).max(100),
-		hiddenSharedColumns: z.array(recordIdContractSchema).max(100),
+		/** Column IDs in the user's preferred order. */
+		columnOrder: z.array(columnIdContractSchema).max(100),
+		/** Shared columns the user has hidden. */
+		hiddenSharedColumns: z.array(columnIdContractSchema).max(100),
 		createdAt: timestampContractSchema,
 	})
 	.strict();
 
+/** Column metadata stored in the column's Durable Object. */
 export const columnMetaContractSchema = z
 	.object({
 		schemaVersion: z.literal(1),
-		id: recordIdContractSchema,
+		id: columnIdContractSchema,
+		/** Account that created the column. */
 		ownerId: accountIdContractSchema,
+		/** Accounts with full edit access. */
 		sharedWith: z.array(accountIdContractSchema).max(100),
-		publicId: z.string().regex(/^[0-9A-Za-z]{8}$/).nullable(),
+		/** Short ID for the public read-only link, e.g. "x7Km9p2N". */
+		publicId: publicIdContractSchema.nullable(),
 		createdAt: timestampContractSchema,
 	})
 	.strict();
 
 export const deletedColumnContractSchema = z
 	.object({
-		columnId: recordIdContractSchema,
+		columnId: columnIdContractSchema,
 		deletedAt: timestampContractSchema,
 	})
 	.strict();
@@ -127,9 +145,11 @@ export const updateColumnSharingResponseSchema = successfulMutationSchema
 		}
 	});
 
-export const enablePublicColumnResponseSchema = z.object({
-	publicId: z.string().regex(/^[0-9A-Za-z]{8}$/),
+export const publicLinkContractSchema = z.object({
+	publicId: publicIdContractSchema,
 	url: z.url(),
 });
+
+export const enablePublicColumnResponseSchema = publicLinkContractSchema;
 
 export const disablePublicColumnResponseSchema = successfulMutationSchema;

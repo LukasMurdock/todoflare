@@ -4,6 +4,12 @@ import { requireAccountCredential } from "./lib/http-account-auth";
 import { accountRecordStore } from "./server/account-record-store";
 import { readAccountBackup } from "./server/account-backup";
 import { isReadOnlyMode } from "./server/read-only-mode";
+import {
+	getClientIP,
+	IP_RATE_LIMITED_ACTIONS,
+	ipRateLimitKey,
+	resetRateLimit,
+} from "./lib/rate-limit";
 export { AccountCoordinatorSql, ColumnRoomSql, IdempotencyCoordinatorSql, RateLimitCoordinatorSql, PublicIdCoordinatorSql } from "./index";
 
 type StagingBindings = Bindings & { ENVIRONMENT?: string };
@@ -21,6 +27,15 @@ export default {
 				{ ...ctx, waitUntil: (task: Promise<unknown>) => { tasks.push(task); } } as ExecutionContext);
 			await Promise.all(tasks);
 			return Response.json({ success: true, frozen: isReadOnlyMode(env) });
+		}
+		if (path === "/api/admin/staging/reset-rate-limits") {
+			// Repeated drills create fresh accounts from one workstation; staging keeps
+			// production limits, so the drill clears only its own IP's windows.
+			const ip = getClientIP(request);
+			for (const action of IP_RATE_LIMITED_ACTIONS) {
+				await resetRateLimit(env.RATE_LIMIT_COORDINATOR, ipRateLimitKey(action, ip));
+			}
+			return Response.json({ success: true, reset: IP_RATE_LIMITED_ACTIONS });
 		}
 		if (path === "/api/admin/staging/mark-drill") {
 			if (isReadOnlyMode(env)) return new Response("Frozen", { status: 409 });

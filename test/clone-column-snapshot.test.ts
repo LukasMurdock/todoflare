@@ -12,7 +12,7 @@ const account = {
 const snapshot = {
 	meta: {
 		schemaVersion: 1,
-		id: "source-column",
+		id: "00000000-0000-4000-8000-000000000001",
 		ownerId,
 		sharedWith: ["9999 8888 7777 6666"],
 		publicId: "AbCd1234",
@@ -67,12 +67,12 @@ describe("cloneColumnSnapshot", () => {
 			env: failed.env,
 			ownerId,
 			snapshot,
-			createColumnId: () => "new-column",
+			createColumnId: () => "00000000-0000-4000-8000-000000000002",
 			now: () => 2,
 		});
 		expect(result).toEqual({ ok: false, code: "column_import_failed" });
 		expect(failed.put).toHaveBeenCalledWith(
-			"column-registry:new-column",
+			"column-registry:00000000-0000-4000-8000-000000000002",
 			expect.any(String),
 		);
 
@@ -82,7 +82,7 @@ describe("cloneColumnSnapshot", () => {
 			env: successful.env,
 			ownerId,
 			snapshot,
-			createColumnId: () => "new-column",
+			createColumnId: () => "00000000-0000-4000-8000-000000000002",
 			now: () => 2,
 			afterWrite: (boundary) => {
 				writes.push(boundary);
@@ -91,7 +91,7 @@ describe("cloneColumnSnapshot", () => {
 		expect(cloned).toMatchObject({
 			ok: true,
 			column: {
-				id: "new-column",
+				id: "00000000-0000-4000-8000-000000000002",
 				ownerId,
 				sharedWith: [],
 				publicId: null,

@@ -20,6 +20,10 @@ export interface AccountSnapshotDoc {
 	reconciledAt: number | null;
 }
 
+export const YJS_OUTBOX_KINDS = ["sync", "awareness"] as const;
+
+export type YjsOutboxKind = (typeof YJS_OUTBOX_KINDS)[number];
+
 export interface ColumnDocumentDoc {
 	schemaVersion: 1;
 	id: string;
@@ -33,7 +37,7 @@ export interface YjsUpdateOutboxDoc {
 	id: string;
 	accountId: string;
 	columnId: string;
-	kind: "sync" | "awareness";
+	kind: YjsOutboxKind;
 	updateBytes: number[];
 	stateVectorBytes: number[] | null;
 	createdAt: number;

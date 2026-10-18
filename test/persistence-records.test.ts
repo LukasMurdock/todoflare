@@ -9,7 +9,7 @@ import {
 const account = {
 	schemaVersion: 1,
 	id: "1111 2222 3333 4444",
-	columnOrder: ["column-1"],
+	columnOrder: ["00000000-0000-4000-8000-000000000001"],
 	hiddenSharedColumns: [],
 	createdAt: 1,
 };
@@ -25,6 +25,7 @@ describe("persisted record schemas", () => {
 	it.each([
 		["wrong account array member", { ...account, columnOrder: [42] }],
 		["malformed account id", { ...account, id: "not-an-account" }],
+		["non-UUID column id", { ...account, columnOrder: ["column-1"] }],
 		["non-finite timestamp", { ...account, createdAt: null }],
 	])("rejects %s", (_label, value) => {
 		expect(parseAccountRecord(JSON.stringify(value))).toMatchObject({
@@ -37,7 +38,7 @@ describe("persisted record schemas", () => {
 		expect(
 			parseColumnMetaRecord({
 				schemaVersion: 2,
-				id: "column-1",
+				id: "00000000-0000-4000-8000-000000000001",
 				ownerId: account.id,
 				sharedWith: [],
 				publicId: null,
@@ -50,7 +51,7 @@ describe("persisted record schemas", () => {
 		});
 	});
 
-	it.each(["not-json", '["column-1", 2]', '{"column":"column-1"}'])(
+	it.each(["not-json", '["column-1"]', '["00000000-0000-4000-8000-000000000001", 2]', '{"column":"column-1"}'])(
 		"rejects corrupt shared indexes: %s",
 		(raw) => {
 			expect(parseSharedColumnIndex(raw).ok).toBe(false);
@@ -61,7 +62,13 @@ describe("persisted record schemas", () => {
 		expect(parseDeletedColumnRecords(null)).toEqual({ ok: true, value: [] });
 	});
 
-	it.each(["not-json", '{}', '[{"columnId":"column-1"}]', '[42]'])(
+	it.each([
+		"not-json",
+		'{}',
+		'[{"columnId":"00000000-0000-4000-8000-000000000001"}]',
+		'[{"columnId":"column-1","deletedAt":1}]',
+		'[42]',
+	])(
 		"rejects corrupt trash records: %s",
 		(raw) => {
 			expect(parseDeletedColumnRecords(raw).ok).toBe(false);

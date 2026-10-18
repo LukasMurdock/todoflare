@@ -5,6 +5,7 @@ import type {
 	GetAccountResponse,
 	PublicLinkResponse,
 } from "../../types/account";
+import { publicPageUrl } from "../api/routes";
 
 export interface LocalAccountProjectionSource {
 	account: Account;
@@ -47,7 +48,7 @@ export function projectionFromServer(
 				column.publicId
 					? {
 							publicId: column.publicId,
-							url: `${publicOrigin}/p/${column.publicId}`,
+							url: publicPageUrl(publicOrigin, column.publicId),
 						}
 					: null,
 			]),

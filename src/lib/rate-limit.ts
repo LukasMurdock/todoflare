@@ -61,6 +61,21 @@ export async function checkRateLimit<Id>(
 	return (await response.json()) as RateLimitResult;
 }
 
+/** Clears a rate-limit window. Used only by staging recovery controls. */
+export async function resetRateLimit<Id>(
+	coordinators: RateLimitCoordinatorNamespace<Id>,
+	key: string,
+): Promise<void> {
+	const stub = coordinators.get(coordinators.idFromName(key));
+	const response = await stub.fetch(new Request("http://rate-limit/reset", { method: "POST" }));
+	if (!response.ok) {
+		throw new Error(`Rate limit reset failed: ${response.status}`);
+	}
+}
+
+/** Actions limited per client IP; staging can reset all of them for a caller. */
+export const IP_RATE_LIMITED_ACTIONS = ["create-account", "account-lookup"] as const;
+
 /**
  * Get client IP from Cloudflare request
  */
@@ -75,7 +90,10 @@ export function getClientIP(request: Request): string {
 /**
  * Create rate limit key for IP-based limiting
  */
-export function ipRateLimitKey(action: string, ip: string): string {
+export function ipRateLimitKey(
+	action: (typeof IP_RATE_LIMITED_ACTIONS)[number],
+	ip: string,
+): string {
 	return `${action}:${ip}`;
 }
 

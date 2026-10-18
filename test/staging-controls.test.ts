@@ -2,6 +2,7 @@ import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:
 import { describe, expect, it } from "vitest";
 import staging from "../src/staging";
 import production from "../src/index";
+import { checkRateLimit, ipRateLimitKey } from "../src/lib/rate-limit";
 
 function request(path: string, token?: string, body: unknown = {}) {
 	return new Request(`https://staging.todo.tamesystems.org/api/admin/staging/${path}`, {
@@ -11,14 +12,18 @@ function request(path: string, token?: string, body: unknown = {}) {
 
 describe("staging recovery controls", () => {
 	it("does not expose staging controls from the production entry point", async () => {
-		const response = await production.fetch(request("lose-account", "secret"), env, createExecutionContext());
-		expect(response.status).toBe(404);
+		for (const path of ["lose-account", "reset-rate-limits"]) {
+			const response = await production.fetch(request(path, "secret"), env, createExecutionContext());
+			expect(response.status).toBe(404);
+		}
 	});
 	it("requires the staging environment and admin secret", async () => {
 		const ctx = createExecutionContext();
 		expect((await staging.fetch(request("scheduled", "secret"), { ...env, BACKUP_ADMIN_TOKEN: "secret" }, ctx)).status).toBe(404);
 		expect((await staging.fetch(request("scheduled"), { ...env, ENVIRONMENT: "staging", BACKUP_ADMIN_TOKEN: "secret" }, ctx)).status).toBe(401);
 		expect((await staging.fetch(request("scheduled", "wrong"), { ...env, ENVIRONMENT: "staging", BACKUP_ADMIN_TOKEN: "secret" }, ctx)).status).toBe(401);
+		expect((await staging.fetch(request("reset-rate-limits"), { ...env, ENVIRONMENT: "staging", BACKUP_ADMIN_TOKEN: "secret" }, ctx)).status).toBe(401);
+		expect((await staging.fetch(request("reset-rate-limits", "secret"), { ...env, BACKUP_ADMIN_TOKEN: "secret" }, ctx)).status).toBe(404);
 		await waitOnExecutionContext(ctx);
 	});
 	it("will not simulate account loss without a freeze and marked synthetic case", async () => {
@@ -42,6 +47,25 @@ describe("staging recovery controls", () => {
 			const response = await production.fetch(new Request(`http://localhost:5173/api/admin/backups/${path}`, { method }), { ...env, BACKUP_ADMIN_TOKEN: "secret" }, createExecutionContext());
 			expect(response.status).toBe(401);
 		}
+	});
+	it("resets only the caller's IP rate-limit windows", async () => {
+		const bindings = { ...env, ENVIRONMENT: "staging", BACKUP_ADMIN_TOKEN: "secret" };
+		const createAccount = { limit: 5, windowSeconds: 3600 };
+		const exhaust = async (key: string) => {
+			for (let i = 0; i < createAccount.limit; i++) await checkRateLimit(env.RATE_LIMIT_COORDINATOR, key, createAccount);
+			return (await checkRateLimit(env.RATE_LIMIT_COORDINATOR, key, createAccount)).allowed;
+		};
+		const callerKey = ipRateLimitKey("create-account", "203.0.113.9");
+		const otherKey = ipRateLimitKey("create-account", "198.51.100.4");
+		expect(await exhaust(callerKey)).toBe(false);
+		expect(await exhaust(otherKey)).toBe(false);
+
+		const reset = new Request("https://staging.todo.tamesystems.org/api/admin/staging/reset-rate-limits", {
+			method: "POST", headers: { Authorization: "Bearer secret", "CF-Connecting-IP": "203.0.113.9" },
+		});
+		expect((await staging.fetch(reset, bindings, createExecutionContext())).status).toBe(200);
+		expect((await checkRateLimit(env.RATE_LIMIT_COORDINATOR, callerKey, createAccount)).allowed).toBe(true);
+		expect((await checkRateLimit(env.RATE_LIMIT_COORDINATOR, otherKey, createAccount)).allowed).toBe(false);
 	});
 	it("runs the real frozen scheduled handler without changing backup state", async () => {
 		await env.BACKUPS.put("backup-state.json", JSON.stringify({ sentinel: "preserve" }));

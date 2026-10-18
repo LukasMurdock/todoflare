@@ -60,7 +60,7 @@ describe("independent browser tabs", () => {
 		const tabB = new LocalMutationQueueService({ executor, storage: createLocalStorageMutationQueueStorage("commands") });
 		await tabA.swapStorage(createLocalFirstMutationQueueStorage(a)); await tabB.swapStorage(createLocalFirstMutationQueueStorage(b));
 		const cmd = (columnId: string) => createAccountEditCommand("column.create", { columnId }, { entityId: accountId, idempotencyKey: crypto.randomUUID(), createdAt: 1, attemptCount: 0, nextRetryAt: 1 });
-		const idA = await tabA.enqueue(cmd("a")), idB = await tabB.enqueue(cmd("b"));
+		const idA = await tabA.enqueue(cmd("00000000-0000-4000-8000-000000000001")), idB = await tabB.enqueue(cmd("00000000-0000-4000-8000-000000000002"));
 		await Promise.all([a.flush(), b.flush()]);
 		await tabA.replay({ accountId }); await a.flush();
 		const c = await openDb();

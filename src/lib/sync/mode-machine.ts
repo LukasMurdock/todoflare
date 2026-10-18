@@ -1,12 +1,15 @@
 import type { ConnectionStatus } from "@/types/account";
 
-export type SyncMode =
-	| "guest_local"
-	| "account_offline"
-	| "account_syncing"
-	| "account_auth_required"
-	| "account_realtime"
-	| "public_readonly";
+export const SYNC_MODES = [
+	"guest_local",
+	"account_offline",
+	"account_syncing",
+	"account_auth_required",
+	"account_realtime",
+	"public_readonly",
+] as const;
+
+export type SyncMode = (typeof SYNC_MODES)[number];
 
 export interface SyncModeContext {
 	hasAccountSession: boolean;
