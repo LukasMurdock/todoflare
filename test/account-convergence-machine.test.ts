@@ -1,5 +1,5 @@
 import { createActor, waitFor } from "xstate";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	AccountConvergenceFailure,
 	createAccountConvergenceMachine,
@@ -69,6 +69,14 @@ function emptyReport(): ReplayReport {
 	};
 }
 
+// Actors left running keep scheduled retries alive into later tests (under
+// vitest 5 that broke the fake-timer tests), so every harness actor is stopped.
+const harnessActors = new Set<{ stop(): void }>();
+afterEach(() => {
+	for (const actor of harnessActors) actor.stop();
+	harnessActors.clear();
+});
+
 function harness(options?: {
 	online?: boolean;
 	local?: ReturnType<typeof projection> | null;
@@ -107,6 +115,7 @@ function harness(options?: {
 	const actor = createActor(createAccountConvergenceMachine(dependencies), {
 		input: { networkOnline: options?.online ?? true },
 	}).start();
+	harnessActors.add(actor);
 
 	return {
 		actor,

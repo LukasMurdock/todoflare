@@ -1,7 +1,7 @@
 import {
 	cloudflareTest,
 	readD1Migrations,
-} from "@cloudflare/vitest-pool-workers";
+} from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 
 const authMigrations = await readD1Migrations("./migrations");
