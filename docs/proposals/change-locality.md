@@ -1,4 +1,7 @@
-# Change locality: baseline and shortlist
+# Change locality: baseline, shortlist and results
+
+Shortlist items 1-5 were implemented on `refactor/change-locality`; see
+[Results](#results) at the end.
 
 Baseline commit: `ad9b078f`. Everything here is reproducible:
 
@@ -150,3 +153,47 @@ their final seams.
 - Server-side request validation and client-side response validation of the
   same contract on either side of the trust boundary. The goal is that both
   derive from one schema, not that one side stops validating.
+
+## Results
+
+Measured with `node scripts/analysis/change-cost.mjs` (HEAD) against
+`--rev ad9b078f` (baseline). Both revisions use the same seeds and sibling
+rules.
+
+| Scenario | Required src files | Silent | What remains silent |
+| --- | ---: | ---: | --- |
+| Add account command | 7 → **5** | 3 → **1** | The UI caller in `sync-context.tsx`; a new command always needs a trigger. |
+| Add `ColumnMeta` field | 10 → **4** | 2 → **0** | |
+| Add terminal replay reason | 4 → **3** | 3 → **2** | Only producers (`replay-response.ts`, executor), which a new reason needs anyway. No consumer rejects it any more. |
+| Add websocket message | 5 → 5 | 4 → 4 | Deferred (see above). |
+| Add HTTP route | 3 → 2 | 2 → 1 | The table entry itself; `test/route-registration.test.ts` fails if a declared route is not served. |
+| Add API error code | 2 → 2 | 1 → 1 | Producer only. |
+
+Other measures:
+
+- Route path literals in `src` outside the route modules (excluding
+  server-only admin routes): **42 → 0**, enforced by
+  `pnpm check:route-literals` in `verify:checks`. Mutation-tested: restoring
+  one literal fails the check.
+- Independent declarations of `Account` / `ColumnMeta`: **4 → 1** each.
+- `src/index.tsx`: **2,451 → 145 lines**. The largest file in `src` is now
+  `sync-context.tsx` (1,295).
+- A no-context reader given only `src/lib/api/account-commands.ts` answered
+  5/5 questions about it correctly (rated 4/5; its feedback fixed a misplaced
+  comment and added consumer pointers).
+- `pnpm verify`: all checks, 318 unit tests and 27 e2e tests pass.
+
+Behavior changes (deliberate):
+
+- Persisted outbox commands and locally cached account snapshots are now
+  validated with the server contract (UUID column IDs in commands, valid
+  account IDs, 8-character public IDs). Records that fail are quarantined
+  with their raw data kept, as before; nothing is deleted. Server-side
+  stored-record validation was **not** tightened, so production KV and
+  Durable Object data parse exactly as before.
+- Test fixtures that used IDs such as `"column-1"` now use UUIDs.
+
+Not done:
+
+- Websocket protocol exhaustiveness and splitting `sync-context.tsx`.
+
