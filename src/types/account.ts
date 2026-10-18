@@ -1,30 +1,20 @@
-/**
- * Account stored in KV
- */
-export interface Account {
-	schemaVersion: 1;
-	id: string; // "4829 1047 3856 2019" (formatted with spaces)
-	columnOrder: string[]; // Column IDs in user's preferred order
-	hiddenSharedColumns: string[]; // Shared columns user has hidden
-	createdAt: number;
-}
+import type { z } from "zod";
+import type {
+	accountContractSchema,
+	columnMetaContractSchema,
+	createAccountResponseSchema,
+	deletedColumnContractSchema,
+	getAccountResponseSchema,
+	publicLinkContractSchema,
+} from "../lib/api/account-contract";
 
-/**
- * Column metadata stored in Durable Object
+/*
+ * Account, column and response shapes are declared once, as zod schemas in
+ * src/lib/api/account-contract.ts; these types are derived from them.
  */
-export interface ColumnMeta {
-	schemaVersion: 1;
-	id: string;
-	ownerId: string; // Account ID that created this column
-	sharedWith: string[]; // Account IDs with full edit access
-	publicId: string | null; // Short ID for public read-only link (e.g., "x7Km9p2N")
-	createdAt: number;
-}
-
-export interface DeletedColumn {
-	columnId: string;
-	deletedAt: number;
-}
+export type Account = z.output<typeof accountContractSchema>;
+export type ColumnMeta = z.output<typeof columnMetaContractSchema>;
+export type DeletedColumn = z.output<typeof deletedColumnContractSchema>;
 
 /**
  * Presence user for real-time awareness
@@ -55,21 +45,9 @@ export type ConnectionStatus = "connected" | "connecting" | "offline";
 /**
  * API response types
  */
-export interface CreateAccountResponse {
-	account: Account;
-}
-
-export interface GetAccountResponse {
-	account: Account;
-	ownedColumns: ColumnMeta[]; // Authoritative metadata for owned columns
-	sharedColumns: ColumnMeta[]; // Columns shared TO this account
-	deletedColumns: DeletedColumn[];
-}
-
-export interface PublicLinkResponse {
-	publicId: string;
-	url: string;
-}
+export type CreateAccountResponse = z.output<typeof createAccountResponseSchema>;
+export type GetAccountResponse = z.output<typeof getAccountResponseSchema>;
+export type PublicLinkResponse = z.output<typeof publicLinkContractSchema>;
 
 export interface AccountExportColumn {
 	meta: ColumnMeta;

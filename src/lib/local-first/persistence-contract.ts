@@ -1,4 +1,11 @@
 import { z } from "zod";
+import {
+	accountContractSchema,
+	accountIdContractSchema,
+	columnMetaContractSchema,
+	deletedColumnContractSchema,
+	publicLinkContractSchema,
+} from "../api/account-contract";
 import { parseQueuedMutation } from "../sync/account-command-parser";
 import { TERMINAL_REPLAY_REASONS } from "../sync/contracts";
 import { SYNC_MODES } from "../sync/mode-machine";
@@ -18,47 +25,22 @@ const nonNegativeInteger = z.number().int().nonnegative();
 const nullableFiniteNumber = finiteNumber.nullable();
 const terminalReasonSchema = z.enum(TERMINAL_REPLAY_REASONS).nullable();
 
-const accountSchema = z
-	.object({
-		schemaVersion: z.literal(1),
-		id: z.string().min(1),
-		columnOrder: z.array(z.string()),
-		hiddenSharedColumns: z.array(z.string()),
-		createdAt: finiteNumber,
-	})
-	.strict();
-
-const columnMetaSchema = z
-	.object({
-		schemaVersion: z.literal(1),
-		id: z.string().min(1),
-		ownerId: z.string().min(1),
-		sharedWith: z.array(z.string()),
-		publicId: z.string().nullable(),
-		createdAt: finiteNumber,
-	})
-	.strict();
-
-const deletedColumnSchema = z
-	.object({ columnId: z.string().min(1), deletedAt: finiteNumber })
-	.strict();
-const publicLinkSchema = z
-	.object({ publicId: z.string().min(1), url: z.string().min(1) })
-	.strict();
-
 const accountSnapshotSchema = z
 	.object({
 		schemaVersion: z.literal(1),
 		id: z.string().min(1),
 		accountId: z.string().min(1),
-		account: accountSchema,
-		sharedColumns: z.array(columnMetaSchema),
-		deletedColumns: z.array(deletedColumnSchema),
+		account: accountContractSchema,
+		sharedColumns: z.array(columnMetaContractSchema),
+		deletedColumns: z.array(deletedColumnContractSchema),
 		sharedWithByColumn: z
-			.record(z.string(), z.union([z.array(z.string()), z.undefined()]))
+			.record(
+				z.string(),
+				z.union([z.array(accountIdContractSchema), z.undefined()]),
+			)
 			.optional(),
 		publicLinksByColumn: z
-			.record(z.string(), z.union([publicLinkSchema, z.null()]))
+			.record(z.string(), z.union([publicLinkContractSchema, z.null()]))
 			.optional(),
 		hydratedAt: finiteNumber,
 		reconciledAt: nullableFiniteNumber,
@@ -104,6 +86,22 @@ const syncStateSchema = z
 		updatedAt: finiteNumber,
 	})
 	.strict();
+
+/**
+ * Each schema is checked against its document interface in collections.ts, so
+ * a field added to the interface but not the schema is a compile error.
+ */
+const currentSchemas = {
+	accountSnapshot: accountSnapshotSchema,
+	columnDocument: columnDocumentSchema,
+	yjsUpdateOutbox: yjsUpdateOutboxSchema,
+	syncState: syncStateSchema,
+} satisfies {
+	accountSnapshot: z.ZodType<AccountSnapshotDoc>;
+	columnDocument: z.ZodType<ColumnDocumentDoc>;
+	yjsUpdateOutbox: z.ZodType<YjsUpdateOutboxDoc>;
+	syncState: z.ZodType<SyncStateDoc>;
+};
 
 type PersistedDoc =
 	| ColumnDocumentDoc
@@ -196,12 +194,7 @@ function parseCurrent(
 		return { value, reason: value ? "" : "record: invalid queued mutation" };
 	}
 
-	const schema = {
-		accountSnapshot: accountSnapshotSchema,
-		columnDocument: columnDocumentSchema,
-		yjsUpdateOutbox: yjsUpdateOutboxSchema,
-		syncState: syncStateSchema,
-	}[collection];
+	const schema = currentSchemas[collection];
 	const parsed = schema.safeParse(raw);
 	return parsed.success
 		? { value: parsed.data as PersistedDoc, reason: "" }

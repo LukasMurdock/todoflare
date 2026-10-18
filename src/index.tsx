@@ -32,8 +32,11 @@ import { AccountCoordinatorSql } from "./durable-objects/account-coordinator";
 import { PublicIdCoordinatorSql } from "./durable-objects/public-id-coordinator";
 import type { ApiErrorCode } from "./lib/api/errors";
 import {
+	accountContractSchema,
 	accountIdContractSchema,
 	columnIdContractSchema,
+	columnMetaContractSchema,
+	publicIdContractSchema,
 } from "./lib/api/account-contract";
 import {
 	ACCOUNT_COMMAND_TYPES,
@@ -630,31 +633,17 @@ async function sha256Hex(value: string): Promise<string> {
 	return toHex(digest);
 }
 
-const publicIdValueSchema = z
-	.string()
-	.regex(/^[0-9A-Za-z]{8}$/, "Invalid public ID");
-const columnMetaInputSchema = z
-	.object({
-		schemaVersion: z.literal(COLUMN_META_SCHEMA_VERSION),
-		id: columnIdContractSchema,
-		ownerId: accountIdContractSchema,
-		sharedWith: z.array(accountIdContractSchema).max(100),
-		publicId: publicIdValueSchema.nullable(),
-		createdAt: z.number().finite().nonnegative(),
-	})
-	.strict();
-const accountInputSchema = z
-	.object({
-		schemaVersion: z.literal(ACCOUNT_SCHEMA_VERSION),
-		id: accountIdContractSchema,
-		columnOrder: z.array(columnIdContractSchema).max(100),
-		hiddenSharedColumns: z.array(columnIdContractSchema).max(100),
-		createdAt: z.number().finite().nonnegative(),
-	})
-	.strict();
+/** Imports accept only server-issued UUID column IDs. */
+const columnMetaInputSchema = columnMetaContractSchema.extend({
+	id: columnIdContractSchema,
+});
+const accountInputSchema = accountContractSchema.extend({
+	columnOrder: z.array(columnIdContractSchema).max(100),
+	hiddenSharedColumns: z.array(columnIdContractSchema).max(100),
+});
 
 const columnPathSchema = z.object({ id: columnIdContractSchema }).strict();
-const publicPathSchema = z.object({ publicId: publicIdValueSchema }).strict();
+const publicPathSchema = z.object({ publicId: publicIdContractSchema }).strict();
 const backupListQuerySchema = z
 	.object({ limit: z.coerce.number().int().min(1).max(100).default(20) })
 	.strict();
