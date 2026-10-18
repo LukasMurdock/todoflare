@@ -1,4 +1,8 @@
-import type { YjsUpdateOutboxDoc } from "@/lib/local-first/collections";
+import {
+	YJS_OUTBOX_KINDS,
+	type YjsOutboxKind,
+	type YjsUpdateOutboxDoc,
+} from "../local-first/collections";
 import {
 	replaceLocalFirstCollection,
 	type LocalFirstDatabase,
@@ -8,7 +12,7 @@ import { createOutboxJournal } from "../local-first/outbox-journal";
 const DEFAULT_STORAGE_KEY = "todoflare-yjs-update-outbox-v1";
 const DEFAULT_AWARENESS_MAX_AGE_MS = 30_000;
 
-export type YjsOutboxKind = "sync" | "awareness";
+export type { YjsOutboxKind };
 
 export interface YjsOutboxEntry extends Omit<YjsUpdateOutboxDoc, "schemaVersion"> {}
 
@@ -57,7 +61,7 @@ function mergeEntriesById(
 }
 
 function isValidKind(value: unknown): value is YjsOutboxKind {
-	return value === "sync" || value === "awareness";
+	return (YJS_OUTBOX_KINDS as readonly unknown[]).includes(value);
 }
 
 function normalizeEntry(raw: unknown): YjsOutboxEntry | null {

@@ -1,21 +1,22 @@
 import { z } from "zod";
 import { parseQueuedMutation } from "../sync/account-command-parser";
-import type {
-	AccountSnapshotDoc,
-	ColumnDocumentDoc,
-	DurableCollectionName,
-	MutationOutboxDoc,
-	QuarantinedRecord,
-	SyncStateDoc,
-	YjsUpdateOutboxDoc,
+import { TERMINAL_REPLAY_REASONS } from "../sync/contracts";
+import { SYNC_MODES } from "../sync/mode-machine";
+import {
+	YJS_OUTBOX_KINDS,
+	type AccountSnapshotDoc,
+	type ColumnDocumentDoc,
+	type DurableCollectionName,
+	type MutationOutboxDoc,
+	type QuarantinedRecord,
+	type SyncStateDoc,
+	type YjsUpdateOutboxDoc,
 } from "./collections";
 
 const finiteNumber = z.number().finite();
 const nonNegativeInteger = z.number().int().nonnegative();
 const nullableFiniteNumber = finiteNumber.nullable();
-const terminalReasonSchema = z
-	.enum(["revoked", "not_owner", "not_found", "validation_failed"])
-	.nullable();
+const terminalReasonSchema = z.enum(TERMINAL_REPLAY_REASONS).nullable();
 
 const accountSchema = z
 	.object({
@@ -75,7 +76,7 @@ const yjsUpdateOutboxSchema = z
 		id: z.string().min(1),
 		accountId: z.string().min(1),
 		columnId: z.string().min(1),
-		kind: z.enum(["sync", "awareness"]),
+		kind: z.enum(YJS_OUTBOX_KINDS),
 		updateBytes: byteArraySchema,
 		stateVectorBytes: byteArraySchema.nullable(),
 		createdAt: finiteNumber,
@@ -92,14 +93,7 @@ const syncStateSchema = z
 		schemaVersion: z.literal(1),
 		id: z.string().min(1),
 		accountId: z.string().nullable(),
-		mode: z.enum([
-			"guest_local",
-			"account_offline",
-			"account_syncing",
-			"account_auth_required",
-			"account_realtime",
-			"public_readonly",
-		]),
+		mode: z.enum(SYNC_MODES),
 		queueDepth: nonNegativeInteger,
 		yjsQueueDepth: nonNegativeInteger,
 		lastServerHydrationAt: nullableFiniteNumber,

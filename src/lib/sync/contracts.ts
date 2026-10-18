@@ -10,11 +10,14 @@ export interface ObservableLike<T> {
 
 export type DropReason = "revoked" | "column_deleted" | "manual";
 
-export type TerminalReplayReason =
-	| "revoked"
-	| "not_owner"
-	| "not_found"
-	| "validation_failed";
+export const TERMINAL_REPLAY_REASONS = [
+	"revoked",
+	"not_owner",
+	"not_found",
+	"validation_failed",
+] as const;
+
+export type TerminalReplayReason = (typeof TERMINAL_REPLAY_REASONS)[number];
 
 export {
 	ACCOUNT_COMMAND_TYPES,
