@@ -24,14 +24,20 @@ async function deploy(freeze) {
     let errors = ''; child.stderr.on('data', chunk => { errors += chunk; });
     child.on('exit', code => code === 0 ? resolve(output) : reject(new Error(`Staging deploy failed: ${errors}`)));
   });
-  // A successful upload precedes propagation to the custom domain. Do not
-  // begin destructive work until the domain reports the requested write mode.
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const clock = await api('/api/clock');
-    if (clock.readOnlyMode === freeze) return output.match(/Current Version ID: ([0-9a-f-]{36})/)?.[1];
+  await waitForWriteMode(freeze);
+  return output.match(/Current Version ID: ([0-9a-f-]{36})/)?.[1];
+}
+// A successful upload precedes propagation, and for a while requests can reach
+// isolates on either version. One matching response is not enough; do not
+// continue until several consecutive requests report the requested write mode.
+async function waitForWriteMode(freeze, consecutive = 5) {
+  let matched = 0;
+  for (let attempt = 0; attempt < 60; attempt++) {
+    matched = (await api('/api/clock')).readOnlyMode === freeze ? matched + 1 : 0;
+    if (matched >= consecutive) return;
     await new Promise(resolve => setTimeout(resolve, 2000));
   }
-  throw new Error('Staging write mode did not propagate within 60 seconds');
+  throw new Error(`Staging write mode ${freeze ? 'frozen' : 'writable'} did not settle within 120 seconds`);
 }
 async function registerPasskey() {
     const encode = value => btoa(String.fromCharCode(...new Uint8Array(value))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -109,7 +115,8 @@ try {
   for (const path of ['sign-in/anonymous', 'passkey/verify-registration', 'passkey/delete-passkey', 'recovery-code/generate', 'recovery-code/recover']) {
     await api(`/api/auth/${path}`, 'POST', {}, false, 503);
   }
-  await api('/api/admin/staging/scheduled', 'POST', {}, true);
+  const frozenRun = await api('/api/admin/staging/scheduled', 'POST', {}, true);
+  assert.equal(frozenRun.frozen, true, 'Scheduled run reached a writable isolate after the freeze settled');
   const scheduledFrozen = await api('/api/admin/backups/status', 'GET', undefined, true);
   assert.deepEqual(scheduledFrozen, scheduledBefore);
   await api('/api/admin/staging/lose-account', 'POST', { accountId, key: snapshot.key }, true);
@@ -141,6 +148,9 @@ try {
   results.push('original passkey signed in after recovery; account order, metadata, content, trash timestamps, collaborator access, and public link recovered');
   console.log('Staging recovery drill: thawing writes.');
   await deploy(false);
+  // Park both browsers so the app cannot open the next column in its editor and
+  // write to it between the rollback snapshots. Requests keep their sessions.
+  await Promise.all([page.goto('about:blank'), collaboratorPage.goto('about:blank')]);
   await api('/api/column', 'POST', {});
   results.push('writes resumed after thaw');
   const rollbackData = await api('/api/account/export');
@@ -150,11 +160,7 @@ try {
     let errors = ''; child.stderr.on('data', chunk => { errors += chunk; });
     child.on('exit', code => code === 0 ? resolve() : reject(new Error(`Staging rollback failed: ${errors}`)));
   });
-  for (let attempt = 0; attempt < 30; attempt++) {
-    if ((await api('/api/clock')).readOnlyMode) break;
-    await new Promise(resolve => setTimeout(resolve, 2000));
-  }
-  assert.equal((await api('/api/clock')).readOnlyMode, true);
+  await waitForWriteMode(true);
   const rolledBackData = await api('/api/account/export');
   assert.deepEqual(rolledBackData.account, rollbackData.account);
   assert.deepEqual(rolledBackData.ownedColumns, rollbackData.ownedColumns);

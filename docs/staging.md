@@ -95,6 +95,11 @@ It reloads, tests a failed reconnect, and reconnects with the original passkey.
 It checks that cached content survives and both document edits and queued metadata
 reach a separate browser session after reconnecting.
 
+Version changes propagate gradually, so after every deploy or rollback the
+drill waits for five consecutive `/api/clock` responses in the requested write
+mode. Before the rollback rehearsal it parks both browsers on `about:blank`, so
+the app cannot write to the comparison column between snapshots.
+
 The successful report is saved at `.wrangler/staging-drill-report.json`.
 The initial remote drill completed successfully on 2026-10-01, including original
 passkey sign-in, restored account/document metadata and content, collaborator
