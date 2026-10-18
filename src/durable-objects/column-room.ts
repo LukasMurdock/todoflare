@@ -2,7 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import * as Y from "yjs";
 import { encodeStateAsUpdate, applyUpdate } from "yjs";
 import * as awarenessProtocol from "y-protocols/awareness";
-import type { ColumnMeta, PresenceUser } from "../types/account";
+import type { ColumnMeta, PresenceUser, SyncMessage } from "../types/account";
 import { getAccountColor, normalizeAccountId } from "../lib/account";
 import {
 	hasColumnAccess,
@@ -20,16 +20,8 @@ import {
 import {
 	decodeDurableSyncSubmission,
 	decodeWsFrame,
-	encodeDurableSyncAck,
-	encodeWsFrame,
-	encodeWsJsonFrame,
-	encodeWsTextFrame,
-	WS_OP_ACCESS_REVOKED,
+	encodeServerMessage,
 	WS_OP_AWARENESS,
-	WS_OP_COLUMN_DELETED,
-	WS_OP_ERROR,
-	WS_OP_PRESENCE,
-	WS_OP_SYNC,
 	WS_OP_SYNC_SUBMIT,
 	WS_PROTOCOL_V1,
 	MAX_WS_FRAME_BYTES,
@@ -609,7 +601,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 	}
 
 	private closeDeletedSessions() {
-		this.broadcastBinary(WS_OP_COLUMN_DELETED);
+		this.broadcast({ type: "column-deleted" });
 		for (const ws of this.sessions.keys()) ws.close(1000, "Column deleted");
 		this.sessions.clear();
 		this.destroyAwareness();
@@ -699,14 +691,14 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 
 	private sendInitialSync(ws: WebSocket) {
 		const update = encodeStateAsUpdate(this.doc);
-		ws.send(encodeWsFrame(WS_OP_SYNC, update));
+		ws.send(encodeServerMessage({ type: "sync", data: update }));
 
 		const awareness = this.getAwareness();
 		const awarenessUpdate = awarenessProtocol.encodeAwarenessUpdate(
 			awareness,
 			Array.from(awareness.getStates().keys()),
 		);
-		ws.send(encodeWsFrame(WS_OP_AWARENESS, awarenessUpdate));
+		ws.send(encodeServerMessage({ type: "awareness", data: awarenessUpdate }));
 
 		this.sendPresence(ws);
 	}
@@ -714,7 +706,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 	private rejectWritableSocket(ws: WebSocket) {
 		const message = readOnlyModeWebSocketMessage();
 		if (ws.readyState === WebSocket.OPEN) {
-			ws.send(encodeWsTextFrame(WS_OP_ERROR, message));
+			ws.send(encodeServerMessage({ type: "error", message }));
 		}
 		ws.close(1013, "Read-only mode");
 	}
@@ -738,7 +730,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		}
 
 		if (typeof message === "string") {
-			ws.send(encodeWsTextFrame(WS_OP_ERROR, "Binary WebSocket required"));
+			ws.send(encodeServerMessage({ type: "error", message: "Binary WebSocket required" }));
 			ws.close(1003, "Binary WebSocket required");
 			return;
 		}
@@ -763,7 +755,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 						const submission = decodeDurableSyncSubmission(payload);
 						if (!submission) {
 							ws.send(
-								encodeWsTextFrame(WS_OP_ERROR, "Malformed sync submission"),
+								encodeServerMessage({ type: "error", message: "Malformed sync submission" }),
 							);
 							break;
 						}
@@ -785,7 +777,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 					}
 					break;
 				default:
-					ws.send(encodeWsTextFrame(WS_OP_ERROR, `Unknown opcode: ${op}`));
+					ws.send(encodeServerMessage({ type: "error", message: `Unknown opcode: ${op}` }));
 			}
 		} catch (err) {
 			console.error("Error handling binary message:", err);
@@ -806,7 +798,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		try {
 			Y.decodeUpdate(update);
 		} catch {
-			origin.send(encodeWsTextFrame(WS_OP_ERROR, "Malformed Yjs update"));
+			origin.send(encodeServerMessage({ type: "error", message: "Malformed Yjs update" }));
 			origin.close(1007, "Malformed Yjs update");
 			return;
 		}
@@ -845,13 +837,13 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		if (outcome === "duplicate") {
 			// Replaying into a fresh tab must hydrate that tab too, even when
 			// this delivery was already durable before its previous socket closed.
-			origin.send(encodeWsFrame(WS_OP_SYNC, update));
-			origin.send(encodeDurableSyncAck(outboxId));
+			origin.send(encodeServerMessage({ type: "sync", data: update }));
+			origin.send(encodeServerMessage({ type: "sync-ack", outboxId }));
 			return;
 		}
 		if (outcome === "conflict") {
 			origin.send(
-				encodeWsTextFrame(WS_OP_ERROR, "Sync delivery ID reused with different content"),
+				encodeServerMessage({ type: "error", message: "Sync delivery ID reused with different content" }),
 			);
 			origin.close(1008, "Conflicting sync delivery ID");
 			return;
@@ -864,11 +856,11 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 			if (ws.readyState === WebSocket.OPEN) {
 				// Echo before acknowledging: a new tab replaying another tab
 				// has not applied these bytes to its own in-memory Y.Doc yet.
-				ws.send(encodeWsFrame(WS_OP_SYNC, update));
+				ws.send(encodeServerMessage({ type: "sync", data: update }));
 			}
 		}
 
-		origin.send(encodeDurableSyncAck(outboxId));
+		origin.send(encodeServerMessage({ type: "sync-ack", outboxId }));
 	}
 
 	private applyAwareness(update: Uint8Array, origin: WebSocket) {
@@ -886,7 +878,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 
 		for (const [ws] of this.sessions) {
 			if (ws.readyState === WebSocket.OPEN) {
-				ws.send(encodeWsFrame(WS_OP_AWARENESS, update));
+				ws.send(encodeServerMessage({ type: "awareness", data: update }));
 			}
 		}
 	}
@@ -937,14 +929,14 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 
 	private sendPresence(ws: WebSocket) {
 		const users = this.getPresenceUsers();
-		ws.send(encodeWsJsonFrame(WS_OP_PRESENCE, { users }));
+		ws.send(encodeServerMessage({ type: "presence", users }));
 	}
 
 	private broadcastPresence() {
 		const users = this.getPresenceUsers();
 		for (const [ws] of this.sessions) {
 			if (ws.readyState === WebSocket.OPEN) {
-				ws.send(encodeWsJsonFrame(WS_OP_PRESENCE, { users }));
+				ws.send(encodeServerMessage({ type: "presence", users }));
 			}
 		}
 	}
@@ -959,16 +951,17 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 				(!this.meta || !isColumnOwner(this.meta, session.accountId)) &&
 				!newSet.has(normalizeAccountId(session.accountId))
 			) {
-				ws.send(encodeWsFrame(WS_OP_ACCESS_REVOKED));
+				ws.send(encodeServerMessage({ type: "access-revoked" }));
 				ws.close(1000, "Access revoked");
 			}
 		}
 	}
 
-	private broadcastBinary(op: number, payload?: Uint8Array) {
+	private broadcast(message: SyncMessage) {
+		const frame = encodeServerMessage(message);
 		for (const [ws] of this.sessions) {
 			if (ws.readyState === WebSocket.OPEN) {
-				ws.send(encodeWsFrame(op, payload));
+				ws.send(frame);
 			}
 		}
 	}

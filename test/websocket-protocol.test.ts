@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
+import type { SyncMessage } from "../src/types/account";
 import {
 	decodeDurableSyncSubmission,
 	decodeWsFrame,
 	decodeWsMessage,
 	encodeDurableSyncAck,
 	encodeDurableSyncSubmission,
+	encodeServerMessage,
 	encodeWsFrame,
 	encodeWsJsonFrame,
 	encodeWsTextFrame,
@@ -34,6 +36,24 @@ describe("WebSocket protocol", () => {
 			WS_OP_SYNC_SUBMIT,
 			WS_OP_SYNC_ACK,
 		]).toEqual([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+	});
+
+	it("encodes every server message byte-for-byte as the raw frame helpers do", () => {
+		const users = [{ accountId: "1111 1111 1111 1111", color: "#000", connectedAt: 1 }];
+		const cases: Array<[SyncMessage, ArrayBuffer]> = [
+			[{ type: "sync", data: new Uint8Array([1, 2]) }, encodeWsFrame(WS_OP_SYNC, new Uint8Array([1, 2]))],
+			[{ type: "sync-ack", outboxId: "delivery-1" }, encodeDurableSyncAck("delivery-1")],
+			[{ type: "awareness", data: new Uint8Array([3]) }, encodeWsFrame(WS_OP_AWARENESS, new Uint8Array([3]))],
+			[{ type: "presence", users }, encodeWsJsonFrame(WS_OP_PRESENCE, { users })],
+			[{ type: "column-deleted" }, encodeWsFrame(WS_OP_COLUMN_DELETED)],
+			[{ type: "access-revoked" }, encodeWsFrame(WS_OP_ACCESS_REVOKED)],
+			[{ type: "error", message: "failed" }, encodeWsTextFrame(WS_OP_ERROR, "failed")],
+		];
+		for (const [message, rawFrame] of cases) {
+			const frame = encodeServerMessage(message);
+			expect(new Uint8Array(frame)).toEqual(new Uint8Array(rawFrame));
+			expect(decodeWsMessage(frame)).toEqual(message);
+		}
 	});
 
 	it("round-trips durable sync submissions and acknowledgements", () => {
