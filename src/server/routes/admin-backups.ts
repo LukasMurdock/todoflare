@@ -15,7 +15,7 @@ import { type Bindings } from "../bindings";
 import { apiErrorResponse, schemaErrorResponse } from "../http/responses";
 import { columnPathSchema, validateJsonBody, validateRequestInput } from "../http/request-validation";
 import {
-	collectBackupInventory,
+	collectRegisteredColumns,
 	createColumnBackupSnapshot,
 	createPreRestoreColumnBackup,
 	isAutoBackupEnabled,
@@ -104,17 +104,19 @@ export function registerAdminBackupRoutes(app: App) {
 		const body = await validateJsonBody(c, accountAdminBodySchema);
 		if (!body.ok) return body.response;
 		const accountId = normalizeAccountId(body.data.accountId);
-		const inventory = await collectBackupInventory(c.env);
+		// Only this account's registered columns: scanning every account made one
+		// account's backup cost grow with the whole system.
+		const registered = await collectRegisteredColumns(c.env);
 		const record = await accountRecordStore(c.env).get(`account:${accountId}`);
 		if (!record) return c.json({ error: "account_not_found" }, 404);
 		const parsed = parseAccountRecord(record);
 		const trash = parseDeletedColumnRecords(await accountRecordStore(c.env).get(`trash:${accountId}`));
 		if (!parsed.ok || !trash.ok) return c.json({ error: "account_invalid" }, 400);
-		for (const columnId of new Set([...parsed.value.columnOrder, ...trash.value.map(row => row.columnId), ...(inventory.columnsByOwner.get(accountId) ?? [])])) {
+		for (const columnId of new Set([...parsed.value.columnOrder, ...trash.value.map(row => row.columnId), ...(registered.columnsByOwner.get(accountId) ?? [])])) {
 			const column = await createColumnBackupSnapshot(c.env, columnId);
 			if (column.checksum === "raw-recovery-source") return c.json({ error: "column_corrupt", columnId }, 503);
 		}
-		const snapshot = await createAccountBackup(c.env, accountId, inventory.columnsByOwner.get(accountId));
+		const snapshot = await createAccountBackup(c.env, accountId, registered.columnsByOwner.get(accountId));
 		if (!snapshot) return c.json({ error: "account_not_found" }, 404);
 		return c.json({ success: true, key: snapshot.key, columnIds: snapshot.payload.columnIds });
 	});

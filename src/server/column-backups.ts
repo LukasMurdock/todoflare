@@ -1,3 +1,4 @@
+import { mapWithConcurrency } from "./bounded-concurrency";
 import { createAccountBackup } from "./account-backup";
 import type { ColumnMeta } from "../types/account";
 import { normalizeAccountId } from "../lib/account";
@@ -159,41 +160,72 @@ export async function createPreRestoreColumnBackup(env: Bindings, columnId: stri
 	return createColumnBackupSnapshot(env, columnId, "pre-restore/columns");
 }
 
+/** Concurrent KV and Durable Object reads per scan; keeps scans from scaling with sequential round trips. */
+const INVENTORY_READ_CONCURRENCY = 16;
+/** Concurrent account and column backups in a scheduled run (each writes to R2). */
+const BACKUP_CONCURRENCY = 6;
+
+async function listKeys(env: Bindings, prefix: string): Promise<string[]> {
+	const names: string[] = [];
+	let cursor: string | undefined;
+	do {
+		const page = await env.ACCOUNTS.list({ prefix, cursor, limit: 1000 });
+		names.push(...page.keys.map((key) => key.name));
+		if (page.list_complete) break;
+		cursor = page.cursor;
+	} while (cursor);
+	return names;
+}
+
+/** Every registered column and its owner, from the column registry alone. */
+export async function collectRegisteredColumns(env: Bindings) {
+	const keys = await listKeys(env, "column-registry:");
+	const metas = await mapWithConcurrency(keys, INVENTORY_READ_CONCURRENCY, async (key) => {
+		const raw = await env.ACCOUNTS.get(key);
+		if (!raw) return null;
+		try {
+			const meta = parseColumnMetaRecord(JSON.parse(raw));
+			return meta.ok ? meta.value : "invalid";
+		} catch {
+			return "invalid";
+		}
+	});
+	const columnsByOwner = new Map<string, string[]>();
+	const columnIds: string[] = [];
+	let invalid = 0;
+	for (const meta of metas) {
+		if (meta === null) continue;
+		if (meta === "invalid") { invalid++; continue; }
+		columnIds.push(meta.id);
+		const ownerId = normalizeAccountId(meta.ownerId);
+		columnsByOwner.set(ownerId, [...(columnsByOwner.get(ownerId) ?? []), meta.id]);
+	}
+	return { columnIds, columnsByOwner, invalid };
+}
+
+/** Every account and column known to storage, for the scheduled full backup. */
 export async function collectBackupInventory(env: Bindings) {
 	const columnIds = new Set<string>();
-	const columnsByOwner = new Map<string, string[]>();
 	const accountIds: string[] = [];
 	let invalidAccounts = 0;
-	for (const prefix of ["account:", "column-registry:"]) {
-		let cursor: string | undefined;
-		do {
-			const page = await env.ACCOUNTS.list({ prefix, cursor, limit: 1000 });
-			for (const key of page.keys) {
-				if (prefix === "account:") {
-					const raw = await accountRecordStore(env).get(key.name);
-					const account = raw === null ? null : parseAccountRecord(raw);
-					const id = key.name.slice(prefix.length);
-					const trash = parseDeletedColumnRecords(await accountRecordStore(env).get(`trash:${id}`));
-					if (!account?.ok || !trash.ok) { invalidAccounts++; continue; }
-					accountIds.push(id);
-					for (const columnId of [...account.value.columnOrder, ...trash.value.map(row => row.columnId)]) columnIds.add(columnId);
-				} else {
-					const raw = await env.ACCOUNTS.get(key.name);
-					if (!raw) continue;
-					try {
-						const meta = parseColumnMetaRecord(JSON.parse(raw));
-						if (!meta.ok) { invalidAccounts++; continue; }
-						columnIds.add(meta.value.id);
-						const ownerId = normalizeAccountId(meta.value.ownerId);
-						columnsByOwner.set(ownerId, [...(columnsByOwner.get(ownerId) ?? []), meta.value.id]);
-					} catch { invalidAccounts++; }
-				}
-			}
-			if (page.list_complete) break;
-			cursor = page.cursor;
-		} while (cursor);
+	const records = accountRecordStore(env);
+	const accountKeys = await listKeys(env, "account:");
+	const accounts = await mapWithConcurrency(accountKeys, INVENTORY_READ_CONCURRENCY, async (key) => {
+		const id = key.slice("account:".length);
+		const raw = await records.get(key);
+		const account = raw === null ? null : parseAccountRecord(raw);
+		const trash = parseDeletedColumnRecords(await records.get(`trash:${id}`));
+		return { id, account, trash };
+	});
+	for (const { id, account, trash } of accounts) {
+		if (!account?.ok || !trash.ok) { invalidAccounts++; continue; }
+		accountIds.push(id);
+		for (const columnId of [...account.value.columnOrder, ...trash.value.map(row => row.columnId)]) columnIds.add(columnId);
 	}
-	return { columnIds: Array.from(columnIds).sort(), columnsByOwner, accountIds, invalidAccounts };
+	const registered = await collectRegisteredColumns(env);
+	for (const columnId of registered.columnIds) columnIds.add(columnId);
+	invalidAccounts += registered.invalid;
+	return { columnIds: Array.from(columnIds).sort(), columnsByOwner: registered.columnsByOwner, accountIds, invalidAccounts };
 }
 
 export async function runScheduledBackups(env: Bindings) {
@@ -206,17 +238,19 @@ export async function runScheduledBackups(env: Bindings) {
 	const ordered = split < 0 ? inventory.columnIds : [...inventory.columnIds.slice(split), ...inventory.columnIds.slice(0, split)];
 	const selected = ordered.slice(0, parseBackupMaxColumns(env));
 	let backedUp = 0, failed = 0, accountsBackedUp = 0, rawCopies = 0;
-	for (const accountId of inventory.accountIds) {
+	// Backups of different accounts and columns are independent; running a few at
+	// once keeps a run's duration from growing with sequential round trips.
+	await mapWithConcurrency(inventory.accountIds, BACKUP_CONCURRENCY, async (accountId) => {
 		try { await createAccountBackup(env, accountId, inventory.columnsByOwner.get(accountId)); accountsBackedUp++; }
 		catch { failed++; }
-	}
-	for (const columnId of selected) {
+	});
+	await mapWithConcurrency(selected, BACKUP_CONCURRENCY, async (columnId) => {
 		try {
 			const snapshot = await createColumnBackupSnapshot(env, columnId);
 			if (snapshot.checksum === "raw-recovery-source") { rawCopies++; failed++; } else backedUp++;
 		}
 		catch { failed++; }
-	}
+	});
 	const result = {
 		skipped: false, completedAt: Date.now(),
 		columnsDiscovered: inventory.columnIds.length, columnsSelected: selected.length,
