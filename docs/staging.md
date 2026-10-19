@@ -312,3 +312,18 @@ The verified frozen production version is
 verification preserved all four accounts, six documents, and their
 credentials. Ten independent backup snapshots verified and backup health is
 current.
+
+## xstate 5.33 release (2026-10-19)
+
+Released merge commit `0edd4ea5`: xstate 5.33.3 with the matching vendored
+reference (PR #8), plus the tooling updates ESLint 10 (PR #9) and pnpm 12
+(PR #10). Validation: `pnpm verify` under pnpm 12, CI, and on staging version
+`38d1485d-9aeb-4339-9417-2ad26dedf127` the passkey test and the full
+recovery/rollback drill.
+
+The verified frozen production version is
+`1634749c-d49d-4f46-91a5-5ef7968bfab5`; the writable version is
+`dc997098-d059-4f52-8f82-8e6bd19aed86`. Preflight, frozen verification, and live
+verification preserved all four accounts, seven documents, and their
+credentials. Eleven independent backup snapshots verified and backup health is
+current.
