@@ -141,7 +141,7 @@ handler must opt in.
 | Account order, hidden columns, trash list | KV `account:<id>`, `trash:<id>` via `AccountCoordinatorSql` | IndexedDB account snapshot |
 | Users, passkeys, sessions, recovery-code hash | D1 (Better Auth) | Account backups include users/passkeys, not sessions |
 | Agent connections, grants, token hashes, OAuth | D1 | None; deliberately not backed up |
-| Agent change log | `ColumnRoomSql` `agent_changes` | None |
+| Agent change log (30 days, at most 1000) | `ColumnRoomSql` `agent_changes` | None |
 | Guest columns | `localStorage` `todoflare-columns` | Hourly rolling `todoflare-backup-*` checkpoints |
 
 Projections are repaired, never trusted: account hydration drops `shared:`
@@ -351,8 +351,6 @@ Breaking one of these is a bug even if every test passes.
 
 Recorded so they are not mistaken for intent:
 
-- `ColumnRoomSql.pruneAgentChanges` (30 days / 1000 rows) is defined but never
-  called, so the agent change log is not pruned. Listing is capped at 200.
 - There is no OAuth token revocation endpoint (RFC 7009); disconnecting in the
   Agents dialog revokes everything for a connection.
 - A column session actor that ends through access loss stays in
