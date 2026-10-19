@@ -289,7 +289,7 @@ export function AccountBadge() {
 		<>
 			<CredentialManager open={showCredentials} onOpenChange={setShowCredentials} />
 			<Dialog open={showGarbageCan} onOpenChange={setShowGarbageCan}>
-				<DialogContent>
+				<DialogContent className="max-h-[calc(100dvh-2rem)] grid-rows-[auto_minmax(0,1fr)]">
 					<DialogHeader>
 						<DialogTitle>Recently Deleted</DialogTitle>
 						<DialogDescription>
@@ -299,7 +299,7 @@ export function AccountBadge() {
 					{deletedColumns.length === 0 ? (
 						<p className="text-sm text-muted-foreground">No recently deleted columns.</p>
 					) : (
-						<div className="space-y-2">
+						<div className="min-h-0 space-y-2 overflow-y-auto">
 							{deletedColumns.map((item) => {
 								const expiresAt = item.deletedAt + 30 * 24 * 60 * 60 * 1000;
 								const remainingDays = Math.max(
