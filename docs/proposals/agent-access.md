@@ -6,8 +6,8 @@ see what the agent did, undo it, and cut it off immediately. Column content
 is untrusted input to the agent, so every boundary is enforced by the server
 and none depends on the model behaving.
 
-Status: all four steps are implemented. Agent access is off in production
-(`AGENT_ACCESS_ENABLED`) and on in staging.
+Status: all four steps are implemented. Agent access is on in staging and
+production (`AGENT_ACCESS_ENABLED`); see [Production](#production).
 
 ## Model
 
@@ -65,8 +65,9 @@ An account can grant only a column it can reach itself at that moment.
 Revoking a connection and removing a grant stay available in read-only mode,
 because narrowing access is never the write an incident needs to stop.
 
-The whole surface is behind `AGENT_ACCESS_ENABLED` (`"false"` in production,
-`"true"` in staging and tests).
+The whole surface is behind `AGENT_ACCESS_ENABLED` (`"true"` in production,
+staging and tests). Setting it to `"false"` turns every agent route into a 404
+without touching stored grants.
 
 ## Plan
 

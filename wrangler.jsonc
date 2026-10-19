@@ -24,7 +24,7 @@
 		"AUTO_BACKUP_ENABLED": "true",
 		"BACKUP_MAX_COLUMNS": "1000",
 		"ENVIRONMENT": "production",
-		"AGENT_ACCESS_ENABLED": "false"
+		"AGENT_ACCESS_ENABLED": "true"
 	},
 	"d1_databases": [
 		{
