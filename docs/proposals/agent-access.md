@@ -294,6 +294,9 @@ documents), writable `574cabbb-c6e2-487e-82c6-7593d53e39d0` verified live.
 ChatGPT setup steps in the Agents dialog (`cd3c7a8`): frozen
 `c6375df9-2c22-4502-b544-f7827901a87d` verified unchanged (4 accounts, 17
 documents), writable `a753eaec-f098-4c3b-96e6-7c3dccc65b55` verified live.
+Change diffs and the all-columns control (`d6d1a22`): frozen
+`7ff5a0b6-aa36-4a65-9690-b97cabd1d020` verified unchanged (4 accounts, 17
+documents), writable `e299b61b-abdf-4eb2-ac91-3f7f1d3e47f1` verified live.
 
 ## Connecting an agent
 
