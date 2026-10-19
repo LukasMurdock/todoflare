@@ -17,6 +17,7 @@ export default defineConfig({
 	],
 	test: {
 		include: ["test/**/*.test.ts"],
+		setupFiles: ["./test/setup-auth-db.ts"],
 		exclude: ["e2e/**"],
 	},
 });
