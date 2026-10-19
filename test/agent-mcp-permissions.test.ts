@@ -15,7 +15,9 @@ import {
 	callTool,
 	commandRoute,
 	createAgent,
+	MCP_ERAS,
 	mcp,
+	type McpEra,
 	routeForRevoke,
 	seedColumn,
 	setGrant,
@@ -82,20 +84,26 @@ beforeAll(async () => {
 	expect((await call(granter.id, commandRoute("column.delete", columns.trashed))).ok).toBe(true);
 });
 
-const cells: OracleCell[] = [];
-for (const connection of CONNECTION_STATES)
-	for (const grant of GRANT_STATES)
-		for (const column of COLUMN_STATES)
-			for (const readOnlyMode of [false, true]) cells.push({ connection, grant, column, required: "read", readOnlyMode });
+// Access must not depend on which protocol revision the agent speaks.
+const cells: Array<OracleCell & { era: McpEra }> = [];
+for (const era of MCP_ERAS)
+	for (const connection of CONNECTION_STATES)
+		for (const grant of GRANT_STATES)
+			for (const column of COLUMN_STATES)
+				for (const readOnlyMode of [false, true]) cells.push({ era, connection, grant, column, required: "read", readOnlyMode });
 
-const options = (readOnlyMode: boolean) => (readOnlyMode ? { env: { READ_ONLY_MODE: "true" } } : undefined);
+const options = (era: McpEra, readOnlyMode: boolean) => ({ era, ...(readOnlyMode ? { env: { READ_ONLY_MODE: "true" } } : {}) });
 
 describe("MCP permission table: read_column", () => {
-	it.each(cells.map((cell) => [`${cell.connection} / ${cell.grant} / ${cell.column}${cell.readOnlyMode ? " / read-only" : ""}`, cell] as const))(
+	it.each(cells.map((cell) => [`${cell.era} / ${cell.connection} / ${cell.grant} / ${cell.column}${cell.readOnlyMode ? " / read-only" : ""}`, cell] as const))(
 		"%s",
 		async (_name, cell) => {
-			const response = await callTool(tokens[cell.connection][cell.grant], "read_column", { columnId: columns[cell.column] }, options(cell.readOnlyMode));
+			const response = await callTool(tokens[cell.connection][cell.grant], "read_column", { columnId: columns[cell.column] }, options(cell.era, cell.readOnlyMode));
 			const { outcome } = expectedOutcome(cell);
+			if (outcome !== "unauthorized") {
+				// Proves each era took its own path: only modern results carry resultType.
+				expect(response.body?.result?.resultType).toBe(cell.era === "modern" ? "complete" : undefined);
+			}
 			switch (outcome) {
 				case "unauthorized":
 					expect(response.status).toBe(401);
@@ -118,13 +126,15 @@ describe("MCP permission table: read_column", () => {
 });
 
 describe("MCP permission table: list_columns", () => {
-	const listCells = CONNECTION_STATES.flatMap((connection) =>
-		GRANT_STATES.flatMap((grant) => [false, true].map((readOnlyMode) => ({ connection, grant, readOnlyMode }))),
+	const listCells = MCP_ERAS.flatMap((era) =>
+		CONNECTION_STATES.flatMap((connection) =>
+			GRANT_STATES.flatMap((grant) => [false, true].map((readOnlyMode) => ({ era, connection, grant, readOnlyMode }))),
+		),
 	);
-	it.each(listCells.map((cell) => [`${cell.connection} / ${cell.grant}${cell.readOnlyMode ? " / read-only" : ""}`, cell] as const))(
+	it.each(listCells.map((cell) => [`${cell.era} / ${cell.connection} / ${cell.grant}${cell.readOnlyMode ? " / read-only" : ""}`, cell] as const))(
 		"%s",
-		async (_name, { connection, grant, readOnlyMode }) => {
-			const response = await callTool(tokens[connection][grant], "list_columns", {}, options(readOnlyMode));
+		async (_name, { era, connection, grant, readOnlyMode }) => {
+			const response = await callTool(tokens[connection][grant], "list_columns", {}, options(era, readOnlyMode));
 			if (connection !== "active") {
 				expect(response.status).toBe(401);
 				return;

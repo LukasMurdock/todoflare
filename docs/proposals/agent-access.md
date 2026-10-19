@@ -107,16 +107,35 @@ claude mcp add --transport http todoflare https://todo.tamesystems.org/api/mcp \
 
 ### Protocol notes
 
-- Legacy, stateless Streamable HTTP: one JSON-RPC message per `POST`, JSON
-  responses only. `GET` and `DELETE` are `405`. Protocol versions
-  `2025-11-25`, `2025-06-18` and `2025-03-26` are supported.
-- Clients that speak the stateless `2026-07-28` revision (Claude Code
-  2.1.303 does) probe with `server/discover` first. Per that revision's
-  compatibility rules, a legacy server answers `400` with a non-modern error
-  and the client falls back to `initialize`. A test pins this: answering with
-  the modern `UnsupportedProtocolVersionError` (`-32022`) would make clients
-  retry instead of falling back. Serving `2026-07-28` natively is a natural
-  follow-up because this server is already stateless.
+The endpoint is dual-era Streamable HTTP with JSON responses only, and keeps
+no state between requests in either era.
+
+- **Modern, `2026-07-28`:** any request carrying
+  `_meta["io.modelcontextprotocol/protocolVersion"]`. Implements
+  `server/discover`. Results carry `resultType` and `serverInfo`, and
+  `server/discover` and `tools/list` carry `ttlMs`/`cacheScope: "public"`.
+  Tools are identical for every agent; access is decided per call, never by
+  listing. Validation order:
+  1. Version header present and equal to `_meta`, else `-32020`.
+  2. Supported version, else `-32022` with the supported list. This is
+     checked before anything else a newer revision might change, so newer
+     clients can always learn what to retry with.
+  3. `clientCapabilities` present, else `-32602`.
+  4. `Mcp-Method`, and for `tools/call` `Mcp-Name` (with base64 sentinel
+     decoding), must match the body, else `-32020`.
+  5. Unknown and removed methods (`ping`, `logging/setLevel`) answer
+     `404` with `-32601`.
+- **Legacy, `2025-11-25`, `2025-06-18`, `2025-03-26`:** `initialize`, then
+  requests without per-request metadata. Kept because the official
+  TypeScript SDK (1.32.1) and clients built on it are legacy-only. An
+  unknown version on a legacy-shaped request is answered with `-32600`, not
+  the modern `-32022`, so dual-era clients fall back rather than retry.
+- `GET` and `DELETE` answer `405` in both eras, and `Mcp-Session-Id` is
+  never minted or echoed.
+
+Claude Code 2.1.303 speaks `2026-07-28` with this server for the whole
+conversation: `server/discover`, `tools/list` and `tools/call`, with no
+handshake.
 
 ### Verification against a real client
 
