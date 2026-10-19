@@ -9,6 +9,7 @@ interface BoardColumn {
     collapsed?: boolean;
     readOnly?: boolean;
     removal?: "none" | "delete" | "hide";
+    deleteNotice?: string;
     label?: string;
     snapshot?: Value;
 }

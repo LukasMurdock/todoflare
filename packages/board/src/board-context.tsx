@@ -17,6 +17,8 @@ export interface BoardContextValue {
 	reportError(error: unknown, context: { columnId?: string; operation: string }): void;
 	editorPlugins: readonly PlatePlugin<AnyPluginConfig>[];
 	registerEditor(columnId: string, editor: OpenEditor): () => void;
+	/** The column's live content, or null while its editor is not open. */
+	getEditorContent(columnId: string): Value | null;
 }
 
 export function defaultOpenLink(url: string) {
@@ -34,6 +36,7 @@ const BoardContext = React.createContext<BoardContextValue>({
 	reportError: defaultReportError,
 	editorPlugins: noPlugins,
 	registerEditor: () => () => {},
+	getEditorContent: () => null,
 });
 
 export const BoardContextProvider = BoardContext.Provider;
@@ -68,6 +71,7 @@ export function useBoardContextValue({
 					if (editors.get(columnId) === editor) editors.delete(columnId);
 				};
 			},
+			getEditorContent: (columnId) => editors.get(columnId)?.getContent() ?? null,
 		}),
 		[editors, editorPlugins],
 	);

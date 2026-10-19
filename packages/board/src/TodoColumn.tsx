@@ -6,6 +6,7 @@ import { CSS } from "@dnd-kit/utilities";
 
 import type { Value } from "platejs";
 import { ColumnEditor } from "./ColumnEditor";
+import { useBoardContext } from "./board-context";
 import type { BoardColumn } from "./types";
 import { isEmptyContent } from "./content";
 import { cn } from "./ui/cn";
@@ -51,8 +52,8 @@ export function TodoColumn({
 		transition,
 	};
 
+	const { getEditorContent } = useBoardContext();
 	const removal = onRemove ? (column.removal ?? "none") : "none";
-	const hasContent = column.snapshot !== undefined && !isEmptyContent(column.snapshot);
 
 	const handleRemove = () => {
 		onRemove?.(column);
@@ -60,6 +61,19 @@ export function TodoColumn({
 	// Controlled rather than a Radix Trigger: the trigger's useId-based
 	// aria-controls would differ between a server render and island hydration.
 	const [confirmOpen, setConfirmOpen] = React.useState(false);
+	const [contentKnown, setContentKnown] = React.useState(true);
+
+	// Decided on click from the live document: hosts that sync through Yjs pass
+	// no snapshot. Content we cannot see yet counts as content.
+	const handleRemoveClick = () => {
+		const content = getEditorContent(column.id) ?? column.snapshot;
+		if (removal === "delete" && (content === undefined || !isEmptyContent(content))) {
+			setContentKnown(content !== undefined);
+			setConfirmOpen(true);
+		} else {
+			handleRemove();
+		}
+	};
 
 	const handleToggleCollapse = () => {
 		onToggleCollapse?.(column);
@@ -145,42 +159,33 @@ export function TodoColumn({
 					{/* Delete/Hide button */}
 					{removal !== "none" && (
 						<>
-							{removal === "hide" || !hasContent ? (
-								<button
-									onClick={handleRemove}
-									className="rounded p-1 hover:bg-muted"
-									title={removal === "delete" ? "Delete column" : "Hide column"}
-								>
-									<XIcon className="h-4 w-4 text-muted-foreground" />
-								</button>
-							) : (
-								<>
-									<button
-										type="button"
-										aria-label="Delete column"
-										title="Delete column"
-										aria-haspopup="dialog"
-										aria-expanded={confirmOpen}
-										onClick={() => setConfirmOpen(true)}
-										className="rounded p-1 hover:bg-muted"
-									>
-										<XIcon className="h-4 w-4 text-muted-foreground" />
-									</button>
-									<AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-										<AlertDialogContent>
-											<AlertDialogHeader>
-												<AlertDialogTitle>Delete column?</AlertDialogTitle>
-												<AlertDialogDescription>
-													This column has content. This action cannot be undone.
-												</AlertDialogDescription>
-											</AlertDialogHeader>
-											<AlertDialogFooter>
-												<AlertDialogCancel>Cancel</AlertDialogCancel>
-												<AlertDialogAction onClick={handleRemove}>Delete</AlertDialogAction>
-											</AlertDialogFooter>
-										</AlertDialogContent>
-									</AlertDialog>
-								</>
+							<button
+								type="button"
+								aria-label={removal === "delete" ? "Delete column" : "Hide column"}
+								title={removal === "delete" ? "Delete column" : "Hide column"}
+								aria-haspopup={removal === "delete" ? "dialog" : undefined}
+								aria-expanded={removal === "delete" ? confirmOpen : undefined}
+								onClick={handleRemoveClick}
+								className="rounded p-1 hover:bg-muted"
+							>
+								<XIcon className="h-4 w-4 text-muted-foreground" />
+							</button>
+							{removal === "delete" && (
+								<AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+									<AlertDialogContent>
+										<AlertDialogHeader>
+											<AlertDialogTitle>Delete column?</AlertDialogTitle>
+											<AlertDialogDescription>
+												{contentKnown ? "This column has content." : "This column may have content."}{" "}
+												{column.deleteNotice ?? "This action cannot be undone."}
+											</AlertDialogDescription>
+										</AlertDialogHeader>
+										<AlertDialogFooter>
+											<AlertDialogCancel>Cancel</AlertDialogCancel>
+											<AlertDialogAction onClick={handleRemove}>Delete</AlertDialogAction>
+										</AlertDialogFooter>
+									</AlertDialogContent>
+								</AlertDialog>
 							)}
 						</>
 					)}
