@@ -162,6 +162,10 @@ and creates checksummed admin account/document copies, including passkeys and
 other provider credentials. Verification compares account roots, sharing/trash,
 credential identities, metadata and normalized Yjs state against those fresh
 snapshots. Passkey counters may increase during sign-in but cannot regress.
+Like the drill, the verifier waits for five consecutive `/api/clock` responses
+in the expected write mode before checking anything; a single response can
+come from the new version while the next still reaches the old one. A failed
+request names its method, path and status.
 The verifier checks anonymous access fails, retired login is unavailable, staging
 controls are absent, writes are frozen, and the backup run completes successfully.
 It saves verified snapshots independently under `Todoflare Recovery/releases`.

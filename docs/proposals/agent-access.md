@@ -279,6 +279,11 @@ The note that column access can change later followed: frozen
 Showing the server's message instead of an error code: frozen
 `41c1f05e-bdfe-48eb-b583-c7af33a25f0f`, writable
 `95f64341-72f7-4787-a8dd-0bbaeab4630f`, both verified.
+Accepting ChatGPT (its metadata document lists `none` among its methods):
+frozen `2acf6222-ef7c-42ca-b908-e693a5b37da0`, writable
+`8ecf7e34-5a34-44a1-b91d-4d6dd7cfad9a`. The first frozen verification failed
+on one request and the second passed; the likely cause was the verifier
+trusting a single `/api/clock` response during propagation, now fixed.
 
 ## Connecting an agent
 
