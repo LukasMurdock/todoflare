@@ -71,21 +71,30 @@ export function readColumnBlocks(doc: Y.Doc): ColumnBlock[] {
 	return blocks;
 }
 
-function base64Url(bytes: Uint8Array): string {
-	let binary = "";
-	for (const byte of bytes) binary += String.fromCharCode(byte);
-	return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+/** 64-bit FNV-1a over UTF-16 code units. */
+function fnv1a64(text: string): bigint {
+	let hash = 0xcbf29ce484222325n;
+	for (let index = 0; index < text.length; index++) {
+		hash ^= BigInt(text.charCodeAt(index));
+		hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
+	}
+	return hash;
 }
 
-export async function columnContentVersion(blocks: readonly ColumnBlock[]): Promise<string> {
+/**
+ * An optimistic-concurrency token, not a security boundary. Synchronous on
+ * purpose: a Durable Object can interleave other events at any await, so the
+ * check against an agent's expected version and the write it guards must run
+ * without yielding.
+ */
+export function columnContentVersion(blocks: readonly ColumnBlock[]): string {
 	const canonical = JSON.stringify(blocks.map((b) => [b.id, b.type, b.list, b.depth, b.checked, b.text]));
-	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
-	return base64Url(new Uint8Array(digest)).slice(0, 16);
+	return fnv1a64(canonical).toString(36).padStart(13, "0");
 }
 
-export async function readColumnContent(doc: Y.Doc): Promise<ColumnContent> {
+export function readColumnContent(doc: Y.Doc): ColumnContent {
 	const blocks = readColumnBlocks(doc);
-	return { blocks, version: await columnContentVersion(blocks) };
+	return { blocks, version: columnContentVersion(blocks) };
 }
 
 export function isEmptyBlock(block: ColumnBlock): boolean {

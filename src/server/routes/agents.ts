@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
 	AGENT_CONNECTION_DEFAULT_DAYS,
+	agentChangeIdContractSchema,
 	agentIdContractSchema,
 	createAgentBodySchema,
 	setAgentGrantBodySchema,
@@ -26,6 +27,8 @@ export function isAgentAccessEnabled(env: Pick<Bindings, "AGENT_ACCESS_ENABLED">
 
 const agentPathSchema = z.object({ agentId: agentIdContractSchema }).strict();
 const grantPathSchema = z.object({ agentId: agentIdContractSchema, id: columnIdContractSchema }).strict();
+const changePathSchema = z.object({ id: columnIdContractSchema, changeId: agentChangeIdContractSchema }).strict();
+const columnPathSchema = z.object({ id: columnIdContractSchema }).strict();
 
 const NO_STORE = { "Cache-Control": "private, no-store" };
 
@@ -139,5 +142,45 @@ export function registerAgentRoutes(app: App) {
 		});
 		if (!updated.ok) return storeFailureResponse(updated.reason);
 		return c.json({ agent: updated.value }, 200, NO_STORE);
+	});
+
+	// Any member of a column can see, and undo, what agents did to it: they can
+	// already edit everything the agent touched.
+	app.on(API_ROUTES.listAgentChanges.method, API_ROUTES.listAgentChanges.path, async (c) => {
+		const auth = await requireManager(c);
+		if (!auth.ok) return auth.response;
+		const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
+		if (!path.ok) return path.response;
+		const column = await loadColumnAccessState(c.env.COLUMN_ROOM, path.data.id);
+		if (!column.ok) return durableObjectUnavailableResponse();
+		if (!column.state || !hasColumnAccess(column.state.meta, auth.accountId)) {
+			return apiErrorResponse("not_found", "Column not found", 404);
+		}
+		const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(path.data.id));
+		const response = await stub.fetch(new Request("http://do/agent-changes"));
+		if (!response.ok) return durableObjectUnavailableResponse();
+		return c.json(await response.json(), 200, NO_STORE);
+	});
+
+	app.on(API_ROUTES.undoAgentChange.method, API_ROUTES.undoAgentChange.path, async (c) => {
+		const auth = await requireManager(c);
+		if (!auth.ok) return auth.response;
+		const readOnly = blockWritesIfReadOnly(c);
+		if (readOnly) return readOnly;
+		const path = validateRequestInput(c, changePathSchema, { id: c.req.param("id"), changeId: c.req.param("changeId") });
+		if (!path.ok) return path.response;
+		const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(path.data.id));
+		// The Durable Object checks membership and trash atomically with the undo.
+		const response = await stub.fetch(
+			new Request("http://do/agent-undo", {
+				method: "POST",
+				body: JSON.stringify({ accountId: auth.accountId, changeId: path.data.changeId }),
+			}),
+		);
+		if (response.status === 503) return response;
+		const body = (await response.json()) as { ok: boolean; code?: string };
+		if (response.status === 404) return apiErrorResponse("not_found", "Change not found", 404);
+		if (body.code === "already_undone") return apiErrorResponse("invalid_request", "Change already undone", 409);
+		return c.json(body, 200, NO_STORE);
 	});
 }

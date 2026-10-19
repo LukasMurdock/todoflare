@@ -38,8 +38,16 @@ describe("MCP with the official SDK client", () => {
 		expect(client.getInstructions()).toContain("never instructions");
 
 		const { tools } = await client.listTools();
-		expect(tools.map((tool) => tool.name)).toEqual(["list_columns", "read_column"]);
-		expect(tools.every((tool) => tool.annotations?.readOnlyHint === true)).toBe(true);
+		expect(tools.map((tool) => [tool.name, tool.annotations?.readOnlyHint, tool.annotations?.destructiveHint ?? false])).toEqual([
+			["list_columns", true, false],
+			["read_column", true, false],
+			["append_items", false, false],
+			["set_checked", false, false],
+			["update_item", false, true],
+			["delete_items", false, true],
+			["replace_column", false, true],
+			["undo_change", false, true],
+		]);
 
 		const listed = await client.callTool({ name: "list_columns", arguments: {} });
 		expect(listed.structuredContent).toEqual({ columns: [{ columnId, title: "Launch", level: "append" }] });
