@@ -267,6 +267,12 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 	private getAwareness(): awarenessProtocol.Awareness {
 		if (!this.awareness) {
 			this.awareness = new awarenessProtocol.Awareness(this.doc);
+			// Awareness polls every 3 s to expire stale peers. A pending timer stops
+			// the object hibernating, so every open column was billed around the
+			// clock. The room only relays: peers expire when their socket closes,
+			// and clients expire peers that stop renewing on their own.
+			clearInterval(this.awareness._checkInterval);
+			this.awareness._checkInterval = null;
 			this.awareness.on("update", this.handleAwarenessUpdate.bind(this));
 		}
 		return this.awareness;

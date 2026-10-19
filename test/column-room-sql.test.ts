@@ -1,5 +1,6 @@
 import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import * as awarenessProtocol from "y-protocols/awareness";
 import * as Y from "yjs";
 import { applyUpdate, encodeStateAsUpdate } from "yjs";
 import type { ColumnMeta } from "../src/types/account";
@@ -438,6 +439,76 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 		expect(ops).toEqual([WS_OP_SYNC, WS_OP_AWARENESS, WS_OP_PRESENCE]);
 
 		ws.close();
+	});
+
+	it("relays awareness without a timer that would block hibernation", async () => {
+		const columnId = "00000000-0000-4000-8000-000000000127"; // ws-awareness-hibernation
+		const stub = getColumnRoomStub(columnId);
+		const ownerId = "1111 1111 1111 1111";
+		const sharedId = "2222 2222 2222 2222";
+		const meta: ColumnMeta = {
+			schemaVersion: 1,
+			id: columnId,
+			ownerId,
+			sharedWith: [sharedId],
+			publicId: null,
+			createdAt: Date.now(),
+		};
+		await stub.fetch(
+			new Request("http://do/init", { method: "POST", body: JSON.stringify(meta) }),
+		);
+
+		async function connect(accountId: string) {
+			const ticket = await issueWsTicket(stub, accountId);
+			const res = await stub.fetch(
+				new Request(`http://do/?ticket=${encodeURIComponent(ticket)}`, {
+					headers: { Upgrade: "websocket" },
+				}),
+			);
+			const ws = getResponseWebSocket(res);
+			acceptWebSocket(ws);
+			await drainInitialFrames(ws);
+			return ws;
+		}
+
+		const sender = await connect(ownerId);
+		const receiver = await connect(sharedId);
+
+		await runInDurableObject(stub, async (instance) => {
+			const awareness = (
+				instance as unknown as { awareness: awarenessProtocol.Awareness | null }
+			).awareness;
+			expect(awareness).not.toBeNull();
+			expect(awareness?._checkInterval).toBeNull();
+		});
+
+		const peerDoc = new Y.Doc();
+		const peer = new awarenessProtocol.Awareness(peerDoc);
+		peer.setLocalState({ cursor: "item-1" });
+		const relayed = waitForPayloadWithOp(receiver, WS_OP_AWARENESS);
+		sender.send(
+			encodeWsFrame(
+				WS_OP_AWARENESS,
+				awarenessProtocol.encodeAwarenessUpdate(peer, [peer.clientID]),
+			),
+		);
+		const seen = new awarenessProtocol.Awareness(new Y.Doc());
+		awarenessProtocol.applyAwarenessUpdate(seen, await relayed, "server");
+		expect(seen.getStates().get(peer.clientID)).toEqual({ cursor: "item-1" });
+
+		// Without the timer, the room drops a peer when its socket closes, and
+		// its next snapshot omits it.
+		const snapshot = waitForPayloadWithOp(receiver, WS_OP_AWARENESS);
+		sender.close();
+		const afterClose = new awarenessProtocol.Awareness(new Y.Doc());
+		awarenessProtocol.applyAwarenessUpdate(afterClose, await snapshot, "server");
+		expect(afterClose.getStates().has(peer.clientID)).toBe(false);
+
+		peer.destroy();
+		peerDoc.destroy();
+		seen.destroy();
+		afterClose.destroy();
+		receiver.close();
 	});
 
 	it("revokes access over WebSocket when /share removes a user", async () => {
