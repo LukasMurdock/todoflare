@@ -276,6 +276,9 @@ documents), writable `39b94ce0-9e69-433f-b967-d0f8ad6de794` verified live.
 The note that column access can change later followed: frozen
 `6ecbac7e-ec46-40bb-b7a7-d1d1bb3928ef`, writable
 `d2e3bc65-9f0c-4057-b66f-8d57914aa2e1`, both verified.
+Showing the server's message instead of an error code: frozen
+`41c1f05e-bdfe-48eb-b583-c7af33a25f0f`, writable
+`95f64341-72f7-4787-a8dd-0bbaeab4630f`, both verified.
 
 ## Connecting an agent
 
