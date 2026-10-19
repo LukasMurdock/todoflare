@@ -2,6 +2,13 @@ import { DurableObject } from "cloudflare:workers";
 
 const RECORD_ID = 1;
 
+/**
+ * How long a claim may stay pending. A request that dies mid-handler never
+ * finishes its claim; past the lease its outcome is unknown rather than in
+ * progress, so clients stop waiting and reconcile with the server instead.
+ */
+export const IDEMPOTENCY_PENDING_LEASE_MS = 2 * 60 * 1000;
+
 type IdempotencyState = "pending" | "completed" | "indeterminate";
 
 interface IdempotencyRow extends Record<string, SqlStorageValue> {
@@ -11,11 +18,14 @@ interface IdempotencyRow extends Record<string, SqlStorageValue> {
 	status: number | null;
 	body: string | null;
 	expires_at: number;
+	/** Null for claims recorded before leases existed; those count as expired. */
+	claimed_at: number | null;
 }
 
 interface BeginRequest {
 	fingerprint: string;
 	pendingExpiresAt: number;
+	pendingLeaseMs?: number;
 }
 
 interface CompleteRequest {
@@ -48,13 +58,19 @@ export class IdempotencyCoordinatorSql extends DurableObject<unknown> {
 				expires_at INTEGER NOT NULL
 			)
 		`);
+		const columns = this.ctx.storage.sql
+			.exec<{ name: string }>("PRAGMA table_info(idempotency_record)")
+			.toArray();
+		if (!columns.some((column) => column.name === "claimed_at")) {
+			this.ctx.storage.sql.exec("ALTER TABLE idempotency_record ADD COLUMN claimed_at INTEGER");
+		}
 	}
 
 	private load(): IdempotencyRow | null {
 		return (
 			this.ctx.storage.sql
 				.exec<IdempotencyRow>(
-					"SELECT fingerprint, state, owner_token, status, body, expires_at FROM idempotency_record WHERE id = ?",
+					"SELECT fingerprint, state, owner_token, status, body, expires_at, claimed_at FROM idempotency_record WHERE id = ?",
 					RECORD_ID,
 				)
 				.toArray()[0] ?? null
@@ -65,7 +81,9 @@ export class IdempotencyCoordinatorSql extends DurableObject<unknown> {
 		if (
 			typeof request.fingerprint !== "string" ||
 			request.fingerprint.length === 0 ||
-			!Number.isFinite(request.pendingExpiresAt)
+			!Number.isFinite(request.pendingExpiresAt) ||
+			(request.pendingLeaseMs !== undefined &&
+				(!Number.isFinite(request.pendingLeaseMs) || request.pendingLeaseMs < 0))
 		) {
 			return jsonError("Invalid idempotency begin request");
 		}
@@ -83,11 +101,12 @@ export class IdempotencyCoordinatorSql extends DurableObject<unknown> {
 		if (!row) {
 			const ownerToken = crypto.randomUUID();
 			this.ctx.storage.sql.exec(
-				"INSERT INTO idempotency_record (id, fingerprint, state, owner_token, status, body, expires_at) VALUES (?, ?, 'pending', ?, NULL, NULL, ?)",
+				"INSERT INTO idempotency_record (id, fingerprint, state, owner_token, status, body, expires_at, claimed_at) VALUES (?, ?, 'pending', ?, NULL, NULL, ?, ?)",
 				RECORD_ID,
 				request.fingerprint,
 				ownerToken,
 				request.pendingExpiresAt,
+				now,
 			);
 			await this.ctx.storage.setAlarm(request.pendingExpiresAt);
 			return Response.json({ kind: "acquired", ownerToken });
@@ -108,6 +127,15 @@ export class IdempotencyCoordinatorSql extends DurableObject<unknown> {
 			});
 		}
 
+		const leaseMs = request.pendingLeaseMs ?? IDEMPOTENCY_PENDING_LEASE_MS;
+		if (row.state === "pending" && (row.claimed_at === null || now - row.claimed_at >= leaseMs)) {
+			this.ctx.storage.sql.exec(
+				"UPDATE idempotency_record SET state = 'indeterminate' WHERE id = ? AND state = 'pending'",
+				RECORD_ID,
+			);
+			return Response.json({ kind: "indeterminate" });
+		}
+
 		return Response.json({ kind: row.state });
 	}
 
@@ -120,8 +148,13 @@ export class IdempotencyCoordinatorSql extends DurableObject<unknown> {
 			return jsonError("Invalid idempotency completion request");
 		}
 
+		// A slow owner may finish after its lease lapsed; its real result still wins.
 		const row = this.load();
-		if (!row || row.state !== "pending" || row.owner_token !== request.ownerToken) {
+		if (
+			!row ||
+			(row.state !== "pending" && row.state !== "indeterminate") ||
+			row.owner_token !== request.ownerToken
+		) {
 			return Response.json({ stored: false }, { status: 409 });
 		}
 
@@ -148,7 +181,11 @@ export class IdempotencyCoordinatorSql extends DurableObject<unknown> {
 		}
 
 		const row = this.load();
-		if (!row || row.state !== "pending" || row.owner_token !== request.ownerToken) {
+		if (
+			!row ||
+			(row.state !== "pending" && row.state !== "indeterminate") ||
+			row.owner_token !== request.ownerToken
+		) {
 			return Response.json({ stored: false }, { status: 409 });
 		}
 

@@ -44,6 +44,7 @@ describe("replay response contract", () => {
 	it.each([
 		["not_found", 404, "not_found"],
 		["invalid_request", 400, "validation_failed"],
+		["idempotency_outcome_unknown", 409, "outcome_unknown"],
 	] as const)("maps %s to its terminal outcome", async (code, status, reason) => {
 		expect(await mutationResultFromResponse(errorResponse(status, code))).toMatchObject({
 			kind: "drop",

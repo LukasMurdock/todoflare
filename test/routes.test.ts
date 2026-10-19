@@ -1,4 +1,4 @@
-import { SELF, env } from "cloudflare:test";
+import { SELF, env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import * as Y from "yjs";
 import {
@@ -911,6 +911,47 @@ describe("Worker routes", () => {
 		expect(await response.json()).toMatchObject({
 			error: "idempotency_request_in_progress",
 		});
+	});
+
+	it("reports an unknown outcome for a claim left pending by a request that died", async () => {
+		const accountId = await createAccount();
+		const normalizedAccountId = normalizeAccountId(accountId);
+		const columnId = await createColumn(accountId);
+		const idempotencyKey = crypto.randomUUID();
+
+		const path = `/api/column/${columnId}`;
+		const scope = `account:${normalizedAccountId}:column:${columnId}:delete`;
+		const cacheKey = `idempotency:${scope}:${normalizedAccountId}:${idempotencyKey}`;
+		const coordinator = env.IDEMPOTENCY_COORDINATOR.get(
+			env.IDEMPOTENCY_COORDINATOR.idFromName(cacheKey),
+		);
+		const claim = await coordinator.fetch(
+			new Request("http://idempotency/begin", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					fingerprint: await sha256Hex(`DELETE ${path}\n`),
+					pendingExpiresAt: Date.now() + 24 * 60 * 60 * 1000,
+				}),
+			}),
+		);
+		expect(claim.ok).toBe(true);
+		// Claims written before leases existed carry no claim time, like the
+		// ones production requests left behind; they must not block for a day.
+		await runInDurableObject(coordinator, async (_instance, state) => {
+			state.storage.sql.exec("UPDATE idempotency_record SET claimed_at = NULL");
+		});
+
+		const response = await SELF.fetch(`http://example.com${path}`, {
+			method: "DELETE",
+			headers: {
+				...accountHeaders(accountId),
+				"X-Idempotency-Key": idempotencyKey,
+			},
+		});
+
+		expect(response.status).toBe(409);
+		expect(await response.json()).toMatchObject({ code: "idempotency_outcome_unknown" });
 	});
 
 	it("returns backup service misconfiguration error when admin backups unavailable", async () => {

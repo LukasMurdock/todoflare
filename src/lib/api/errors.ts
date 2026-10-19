@@ -10,6 +10,7 @@ export const API_ERROR_CODES = [
 	"server_contract_invalid",
 	"idempotency_conflict",
 	"idempotency_in_progress",
+	"idempotency_outcome_unknown",
 ] as const;
 
 export type ApiErrorCode = (typeof API_ERROR_CODES)[number];
