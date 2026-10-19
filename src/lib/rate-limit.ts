@@ -32,6 +32,8 @@ export const RATE_LIMITS = {
 	accountLookup: { limit: 20, windowSeconds: 60 },
 	/** Public link views: 100 per column per minute */
 	publicView: { limit: 100, windowSeconds: 60 },
+	/** Agent MCP requests: 120 per agent connection per minute */
+	agentRequest: { limit: 120, windowSeconds: 60 },
 } as const;
 
 /**

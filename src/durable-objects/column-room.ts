@@ -418,6 +418,11 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 			return Response.json({ meta: this.meta, trashed: this.isTrashed() });
 		}
 
+		if (request.method === "GET" && url.pathname === "/yjs-state") {
+			if (!this.meta) return new Response("Column not found", { status: 404 });
+			return new Response(toArrayBuffer(encodeStateAsUpdate(this.doc)), { headers: { "Content-Type": "application/octet-stream" } });
+		}
+
 		if (request.method === "GET" && url.pathname === "/export") {
 			if (!this.meta) return new Response("Column not found", { status: 404 });
 			const snapshot = encodeStateAsUpdate(this.doc);

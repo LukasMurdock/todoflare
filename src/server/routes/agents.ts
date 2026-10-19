@@ -16,8 +16,12 @@ import { blockWritesIfReadOnly } from "../http/guards";
 import { validateJsonBody, validateRequestInput } from "../http/request-validation";
 import type { App, AppContext, Bindings } from "../bindings";
 
+declare const __TODOFLARE_E2E__: boolean;
+
+/** On when configured, and always in E2E builds, which exercise every feature. */
 export function isAgentAccessEnabled(env: Pick<Bindings, "AGENT_ACCESS_ENABLED">): boolean {
-	return env.AGENT_ACCESS_ENABLED === "true";
+	const compiledE2E = typeof __TODOFLARE_E2E__ !== "undefined" && __TODOFLARE_E2E__;
+	return env.AGENT_ACCESS_ENABLED === "true" || compiledE2E;
 }
 
 const agentPathSchema = z.object({ agentId: agentIdContractSchema }).strict();
