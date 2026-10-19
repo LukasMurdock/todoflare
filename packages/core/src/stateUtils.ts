@@ -39,7 +39,8 @@ import {
   AnyTransitionConfig,
   AnyActorScope,
   ActionExecutor,
-  AnyStateMachine
+  AnyStateMachine,
+  MetaObject
 } from './types.ts';
 import {
   resolveOutput,
@@ -53,18 +54,18 @@ import {
 type StateNodeIterable<
   TContext extends MachineContext,
   TE extends EventObject
-> = Iterable<StateNode<TContext, TE>>;
+> = Iterable<StateNode<TContext, TE, any, any>>;
 type AnyStateNodeIterable = StateNodeIterable<any, any>;
 
 type AdjList = Map<AnyStateNode, Array<AnyStateNode>>;
 
-export function isAtomicStateNode(stateNode: StateNode<any, any>): boolean {
+export function isAtomicStateNode(stateNode: AnyStateNode): boolean {
   return stateNode.type === 'atomic' || stateNode.type === 'final';
 }
 
 function getChildren<TContext extends MachineContext, TE extends EventObject>(
-  stateNode: StateNode<TContext, TE>
-): Array<StateNode<TContext, TE>> {
+  stateNode: StateNode<TContext, TE, any, any>
+): Array<StateNode<TContext, TE, any, any>> {
   return Object.values(stateNode.states).filter((sn) => sn.type !== 'history');
 }
 
@@ -210,9 +211,9 @@ export function isInFinalState(
 export const isStateId = (str: string) => str[0] === STATE_IDENTIFIER;
 
 export function getCandidates<TEvent extends EventObject>(
-  stateNode: StateNode<any, TEvent>,
+  stateNode: StateNode<any, TEvent, any, any>,
   receivedEventType: TEvent['type']
-): Array<TransitionDefinition<any, TEvent>> {
+): Array<TransitionDefinition<any, TEvent, any>> {
   const exactMatch = stateNode.transitions.get(receivedEventType);
   const wildcardCandidates = [...stateNode.transitions.keys()]
     .filter(
@@ -231,7 +232,7 @@ export function getCandidates<TEvent extends EventObject>(
 /** All delayed transitions from the config. */
 export function getDelayedTransitions(
   stateNode: AnyStateNode
-): Array<DelayedTransitionDefinition<MachineContext, EventObject>> {
+): Array<DelayedTransitionDefinition<MachineContext, EventObject, any>> {
   const afterConfig = stateNode.config.after;
   if (!afterConfig) {
     return [];
@@ -317,10 +318,10 @@ export function formatTransitions<
   TEvent extends EventObject
 >(
   stateNode: AnyStateNode
-): Map<string, TransitionDefinition<TContext, TEvent>[]> {
+): Map<string, TransitionDefinition<TContext, TEvent, any>[]> {
   const transitions = new Map<
     string,
-    TransitionDefinition<TContext, AnyEventObject>[]
+    TransitionDefinition<TContext, AnyEventObject, any>[]
   >();
   if (stateNode.config.on) {
     for (const descriptor of Object.keys(stateNode.config.on)) {
@@ -384,7 +385,7 @@ export function formatTransitions<
     }
     existing.push(delayedTransition);
   }
-  return transitions as Map<string, TransitionDefinition<TContext, any>[]>;
+  return transitions as Map<string, TransitionDefinition<TContext, any, any>[]>;
 }
 
 /**
@@ -424,14 +425,24 @@ export function formatRouteTransitions(rootStateNode: AnyStateNode): void {
 
 export function formatInitialTransition<
   TContext extends MachineContext,
-  TEvent extends EventObject
+  TEvent extends EventObject,
+  TTransitionMeta extends MetaObject
 >(
-  stateNode: AnyStateNode,
+  stateNode: StateNode<TContext, TEvent, any, TTransitionMeta>,
   _target:
     | string
     | undefined
-    | InitialTransitionConfig<TContext, TEvent, TODO, TODO, TODO, TODO>
-): InitialTransitionDefinition<TContext, TEvent> {
+    | InitialTransitionConfig<
+        TContext,
+        TEvent,
+        TODO,
+        TODO,
+        TODO,
+        TODO,
+        TODO,
+        TTransitionMeta
+      >
+): InitialTransitionDefinition<TContext, TEvent, TTransitionMeta> {
   const resolvedTarget =
     typeof _target === 'string'
       ? stateNode.states[_target]
@@ -440,17 +451,23 @@ export function formatInitialTransition<
         : undefined;
   if (!resolvedTarget && _target) {
     throw new Error(
-      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions, @typescript-eslint/no-base-to-string
+      // oxlint-disable-next-line typescript/restrict-template-expressions, typescript/no-base-to-string
       `Initial state node "${_target}" not found on parent state node #${stateNode.id}`
     );
   }
-  const transition: InitialTransitionDefinition<TContext, TEvent> = {
+  const transition: InitialTransitionDefinition<
+    TContext,
+    TEvent,
+    TTransitionMeta
+  > = {
     source: stateNode,
     actions:
       !_target || typeof _target === 'string' ? [] : toArray(_target.actions),
     eventType: null as any,
     reenter: false,
     target: resolvedTarget ? [resolvedTarget] : [],
+    meta: typeof _target === 'object' ? _target.meta : undefined,
+    description: typeof _target === 'object' ? _target.description : undefined,
     toJSON: () => ({
       ...transition,
       source: `#${stateNode.id}`,
@@ -667,7 +684,7 @@ function transitionAtomicNode<
     any // TStateSchema
   >,
   event: TEvent
-): Array<TransitionDefinition<TContext, TEvent>> | undefined {
+): Array<TransitionDefinition<TContext, TEvent, any>> | undefined {
   const childStateNode = getStateNode(stateNode, stateValue);
   const next = childStateNode.next(snapshot, event);
 
@@ -695,7 +712,7 @@ function transitionCompoundNode<
     any // TStateSchema
   >,
   event: TEvent
-): Array<TransitionDefinition<TContext, TEvent>> | undefined {
+): Array<TransitionDefinition<TContext, TEvent, any>> | undefined {
   const subStateKeys = Object.keys(stateValue);
 
   const childStateNode = getStateNode(stateNode, subStateKeys[0]);
@@ -730,8 +747,10 @@ function transitionParallelNode<
     any // TStateSchema
   >,
   event: TEvent
-): Array<TransitionDefinition<TContext, TEvent>> | undefined {
-  const allInnerTransitions: Array<TransitionDefinition<TContext, TEvent>> = [];
+): Array<TransitionDefinition<TContext, TEvent, any>> | undefined {
+  const allInnerTransitions: Array<
+    TransitionDefinition<TContext, TEvent, any>
+  > = [];
 
   for (const subStateKey of Object.keys(stateValue)) {
     const subStateValue = stateValue[subStateKey];
@@ -775,7 +794,7 @@ export function transitionNode<
     any // TStateSchema
   >,
   event: TEvent
-): Array<TransitionDefinition<TContext, TEvent>> | undefined {
+): Array<TransitionDefinition<TContext, TEvent, any>> | undefined {
   // leaf node
   if (typeof stateValue === 'string') {
     return transitionAtomicNode(stateNode, stateValue, snapshot, event);
@@ -1091,7 +1110,7 @@ function microstep(
       );
     }
 
-    // eslint-disable-next-line no-useless-catch
+    // oxlint-disable no-useless-catch
     try {
       if (
         historyValue === currentSnapshot.historyValue &&
@@ -1111,6 +1130,7 @@ function microstep(
       // See https://github.com/statelyai/rfcs/pull/4
       throw e;
     }
+    // oxlint-enable no-useless-catch
   } finally {
     actorScope.actionExecutor = originalExecutor;
   }
@@ -1712,10 +1732,13 @@ export function macrostep(
       // TODO: we should likely only allow transitions selected by very explicit descriptors
       // `*` shouldn't be matched, likely `xstate.error.*` shouldn't be either
       // similarly `xstate.error.actor.*` and `xstate.error.actor.todo.*` have to be considered too
-      nextSnapshot = cloneMachineSnapshot<typeof snapshot>(snapshot, {
-        status: 'error',
-        error: currentEvent.error
-      });
+      nextSnapshot = cloneMachineSnapshot<typeof snapshot>(
+        stopChildren(nextSnapshot, currentEvent, actorScope),
+        {
+          status: 'error',
+          error: currentEvent.error
+        }
+      );
       addMicrostep([nextSnapshot, []], currentEvent, []);
       return {
         snapshot: nextSnapshot,
