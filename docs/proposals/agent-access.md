@@ -285,6 +285,9 @@ frozen `2acf6222-ef7c-42ca-b908-e693a5b37da0`, writable
 `8ecf7e34-5a34-44a1-b91d-4d6dd7cfad9a`. The first frozen verification failed
 on one request and the second passed; the likely cause was the verifier
 trusting a single `/api/clock` response during propagation, now fixed.
+Pruning the change log to 30 days and 1000 entries (`50d927e`): frozen
+`5b81aa39-3246-48f4-a997-d641726622e9` verified unchanged (4 accounts, 17
+documents), writable `574cabbb-c6e2-487e-82c6-7593d53e39d0` verified live.
 
 ## Connecting an agent
 
