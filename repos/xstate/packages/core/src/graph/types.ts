@@ -1,14 +1,14 @@
 import {
+  AnyStateNode,
   EventObject,
-  StateNode,
-  TransitionDefinition,
+  AnyTransitionDefinition,
   Snapshot,
   MachineContext,
   ActorLogic,
   MachineSnapshot
 } from '..';
 
-export type AnyStateNode = StateNode<any, any>;
+export type { AnyStateNode };
 
 type JSONSerializable<T extends object, U> = T & {
   toJSON: () => U;
@@ -29,7 +29,7 @@ export type DirectedGraphEdge = JSONSerializable<
     source: AnyStateNode;
     target: AnyStateNode;
     label: DirectedGraphLabel;
-    transition: TransitionDefinition<any, any>;
+    transition: AnyTransitionDefinition;
   },
   {
     source: string;
@@ -42,7 +42,7 @@ export type DirectedGraphEdge = JSONSerializable<
 export type DirectedGraphNode = JSONSerializable<
   {
     id: string;
-    stateNode: StateNode;
+    stateNode: AnyStateNode;
     children: DirectedGraphNode[];
     /** The edges representing all transitions from this `stateNode`. */
     edges: DirectedGraphEdge[];
