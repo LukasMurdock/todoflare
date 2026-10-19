@@ -41,6 +41,7 @@
     "auth:migrate:staging": "wrangler d1 migrations apply AUTH_DB --remote --env staging",
     "test:staging": "node scripts/staging-drill.mjs",
     "test:staging:auth": "TODOFLARE_PASSKEY_ORIGIN=https://staging.todo.tamesystems.org playwright test --config playwright.staging.config.ts",
+    "test:staging:agents": "playwright test --config playwright.staging-agents.config.ts",
     "build:production": "node scripts/build-production.mjs"
   },
   "dependencies": {

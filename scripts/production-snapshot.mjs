@@ -7,7 +7,7 @@ export const origin = 'https://todo.tamesystems.org';
 const { BACKUP_ADMIN_TOKEN: token } = JSON.parse(await readFile('.wrangler/production-secrets.json', 'utf8'));
 export async function api(path, method = 'GET', body, admin = true, expected = 200) {
  const response = await fetch(origin + path, { method, signal: AbortSignal.timeout(30000), headers: { ...(admin ? { Authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), Origin: origin }, body: body === undefined ? undefined : JSON.stringify(body) });
- assert.equal(response.status, expected, 'Production verification request failed');
+ assert.equal(response.status, expected, `Production verification request failed: ${method} ${path} returned ${response.status}, expected ${expected}`);
  return response.status === 200 ? response.json() : null;
 }
 async function download(key) {

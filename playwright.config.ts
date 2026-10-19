@@ -2,6 +2,8 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
 	testDir: "./e2e",
+	// Runs against deployed staging with the real Claude CLI: `pnpm test:staging:agents`.
+	testIgnore: ["agents-staging.spec.ts"],
 	fullyParallel: true,
 	forbidOnly: true,
 	retries: process.env.CI ? 2 : 0,

@@ -18,6 +18,7 @@ import {
 	type JsonRpcMessage,
 } from "../agent-access/mcp-protocol";
 import { agentStore } from "../agent-access/store";
+import { protectedResourceMetadataUrl } from "../oauth/authorization-server";
 import { agentToolDescriptors, callAgentTool, type AgentToolContext } from "../agent-access/tools";
 import { isAgentAccessEnabled } from "./agents";
 import type { App } from "../bindings";
@@ -35,10 +36,12 @@ function bearerToken(header: string | undefined): string | null {
 	return match?.[1] ?? null;
 }
 
-function unauthorized(): Response {
+/** Points clients at the protected resource metadata, which starts OAuth discovery. */
+function unauthorized(origin: string, invalidToken: boolean): Response {
+	const challenge = [`resource_metadata="${protectedResourceMetadataUrl(origin)}"`, ...(invalidToken ? ['error="invalid_token"'] : [])].join(", ");
 	return Response.json(
 		{ error: "unauthorized", code: "unauthorized" },
-		{ status: 401, headers: { ...NO_STORE, "WWW-Authenticate": 'Bearer realm="todoflare"' } },
+		{ status: 401, headers: { ...NO_STORE, "WWW-Authenticate": `Bearer ${challenge}` } },
 	);
 }
 
@@ -139,7 +142,7 @@ export function registerMcpRoutes(app: App) {
 		const token = bearerToken(c.req.header("Authorization"));
 		const store = agentStore(c.env.AUTH_DB);
 		const agent = token ? await store.resolveToken(token, now) : null;
-		if (!agent) return unauthorized();
+		if (!agent) return unauthorized(new URL(c.req.url).origin, token !== null);
 
 		if (!shouldSkipRateLimit(c)) {
 			const limit = await checkRateLimit(

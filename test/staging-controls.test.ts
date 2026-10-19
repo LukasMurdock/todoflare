@@ -4,6 +4,8 @@ import staging from "../src/staging";
 import production from "../src/index";
 import { checkRateLimit, ipRateLimitKey } from "../src/lib/rate-limit";
 import { resetStagingData } from "../src/staging-reset";
+import { agentStore } from "../src/server/agent-access/store";
+import { oauthClients } from "../src/server/oauth/authorization-server";
 
 function request(path: string, token?: string, body: unknown = {}) {
 	return new Request(`https://staging.todo.tamesystems.org/api/admin/staging/${path}`, {
@@ -78,6 +80,19 @@ describe("staging recovery controls", () => {
 	it("refuses to reset data while frozen", async () => {
 		const bindings = { ...env, ENVIRONMENT: "staging", BACKUP_ADMIN_TOKEN: "secret", READ_ONLY_MODE: "true" };
 		expect((await staging.fetch(request("reset-data", "secret"), bindings, createExecutionContext())).status).toBe(409);
+	});
+	it("resets agent connections, tokens, grants and OAuth clients with the accounts", async () => {
+		const store = agentStore(env.AUTH_DB);
+		const created = await store.create({ userId: "1234567890123456", name: "agent", expiresInDays: 1, now: Date.now() });
+		if (!created.ok) throw new Error("setup");
+		await store.setGrant({ userId: "1234567890123456", connectionId: created.value.agent.id, columnId: crypto.randomUUID(), level: "read", expiresAt: null, now: Date.now() });
+		await oauthClients(env.AUTH_DB, () => Promise.reject(new Error("no fetch"))).register({ redirect_uris: ["https://app.example/cb"] }, Date.now());
+		for (let done = false; !done; ) done = (await resetStagingData(env, 50)).done;
+		for (const table of ["agent_connection", "agent_token", "agent_grant", "oauth_client", "oauth_code"]) {
+			const row = await env.AUTH_DB.prepare(`SELECT COUNT(*) AS count FROM "${table}"`).first<{ count: number }>();
+			expect([table, row?.count]).toEqual([table, 0]);
+		}
+		expect(await store.resolveToken(created.value.token, Date.now())).toBeNull();
 	});
 	it("resets every account, column, record, backup and credential, in bounded batches", async () => {
 		const accounts: string[] = [];

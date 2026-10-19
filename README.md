@@ -2,7 +2,8 @@
 
 A local-first, collaborative rich-text todo app. You can use Todoflare entirely
 in one browser or create an account session to sync columns, collaborate, share
-read-only public links, and recover deleted data.
+read-only public links, recover deleted data, and let AI agents read or edit
+the columns you choose.
 
 ## How data works
 
@@ -23,7 +24,8 @@ read-only public links, and recover deleted data.
   per column stores the shared document and relays content and presence over
   WebSockets.
 - **Server storage:** Cloudflare D1 stores Better Auth users, passkeys, sessions,
-  and recovery-code hashes. Cloudflare KV stores domain accounts and indexes, SQLite-backed
+  recovery-code hashes, and agent connections, grants, token hashes and OAuth
+  state. Cloudflare KV stores domain accounts and indexes, SQLite-backed
   Durable Objects store column state, and R2 stores administrative backups.
   Durable Object metadata is authoritative for column ownership, sharing, and
   public-link identity. Account KV owns account order, hidden columns, and trash;
@@ -38,13 +40,27 @@ account. Cached documents remain editable, and metadata commands and Yjs edits
 stay queued across reloads until reconnection. Account IDs in request headers
 only bind queued work to the expected cookie identity; they cannot authenticate.
 
+## Agent access
+
+Signed-in accounts can connect MCP clients (Claude Code, Claude.ai, ChatGPT,
+or any other MCP client) to `/api/mcp` and give each one chosen columns at a
+level: **read**, **append** (also add items) or **edit** (also change, check
+off and delete). Open **Account menu → Agents** for step-by-step setup.
+Claude Code uses a personal token; Claude.ai, ChatGPT and other OAuth clients
+add `https://todo.tamesystems.org/api/mcp` as a connector and approve columns
+on a consent page. Access can be changed or revoked at any time, and agent
+edits can be undone. Agents never get sharing, deletion, trash or account
+capabilities. The server enforces every limit, and column text is treated as
+data, not instructions. See [the agent access design](docs/proposals/agent-access.md).
+
 The browser persistence layer is a project-owned IndexedDB-backed `PersistedMap`.
 The project does not currently use RxDB or TanStack DB.
 
 ## Stack
 
 - **Frontend:** React 19, Tailwind CSS, Plate, Yjs, and dnd-kit
-- **Backend:** Hono on Cloudflare Workers
+- **Backend:** Hono on Cloudflare Workers, Better Auth, and an MCP server with
+  OAuth 2.1
 - **Storage:** D1, KV, SQLite-backed Durable Objects, R2, IndexedDB, and localStorage
 - **Build:** Vite with `@cloudflare/vite-plugin`
 - **Tests:** Vitest in the Workers runtime and Playwright in Chromium
@@ -69,16 +85,17 @@ Cloudflare Vite plugin runs Worker APIs, KV, and Durable Objects locally through
 
 ## Verification
 
-Run the fast gate while developing. It typechecks application and test code,
-runs Vitest once, and builds the production bundle:
+Run the fast gate while developing. It runs the architecture, route, boundary
+and observability checks, lints hooks, typechecks application, test and example
+code, runs Vitest once, and builds the bundle:
 
 ```bash
 pnpm verify:fast
 ```
 
 Before considering a change complete, run the authoritative full gate. It adds
-the Playwright browser suite and performs exactly one E2E-enabled production
-build:
+one E2E-enabled build, the bundle-size budget, the Playwright browser suite and
+the embedded-board host tests:
 
 ```bash
 pnpm verify
@@ -89,7 +106,8 @@ Browser tests reset only `.wrangler/e2e-state`; normal development data under
 `.wrangler/state` is never touched by verification.
 
 Individual checks are also available as `pnpm typecheck`,
-`pnpm typecheck:test`, `pnpm test:run`, `pnpm build`, and `pnpm test:e2e`.
+`pnpm typecheck:test`, `pnpm test:run`, `pnpm build`, `pnpm test:e2e`, and
+`pnpm test:hosts`.
 The standalone E2E command performs its own E2E-enabled build.
 
 ## Building
@@ -119,19 +137,24 @@ This serves the built application through the local Workers runtime.
 
 The isolated staging environment is available at
 [staging.todo.tamesystems.org](https://staging.todo.tamesystems.org). Run
-`pnpm deploy:staging` to build and deploy it, and `pnpm test:staging` for the
-remote passkey and account recovery drill. See [the staging runbook](docs/staging.md)
+`pnpm deploy:staging` to build and deploy it, `pnpm test:staging` for the
+remote passkey and account recovery drill, and `pnpm test:staging:agents` to
+connect a real Claude Code and an OAuth MCP client to staging. See [the staging runbook](docs/staging.md)
 for resource isolation, write freeze/thaw commands and the verified production rollout.
 
 ## Deployment
 
 Production at [todo.tamesystems.org](https://todo.tamesystems.org) uses its own
-auth database and signing/admin secrets. Auth migrations are already applied.
+auth database and signing/admin secrets. Migrations through
+`0004_oauth.sql` are already applied.
 Apply any new migrations before deploying code that depends on them:
 
 ```bash
 pnpm auth:migrate:remote
 ```
+
+If your Cloudflare login can see more than one account, set
+`CLOUDFLARE_ACCOUNT_ID` for `wrangler` commands.
 
 For local development, run `pnpm auth:migrate:local` after creating or resetting
 local D1 state. Do not recreate the existing production database or rotate its
@@ -148,18 +171,26 @@ for a fresh admin snapshot, frozen verification and guarded thaw. The custom dom
 
 ```
 ├── .github/workflows/  # Authoritative CI verification
-├── docs/               # Engineering reports and increment definitions
+├── agent-patterns/     # Project conventions for agents (XState)
+├── docs/               # Runbooks, reports and design proposals
 ├── e2e/                # Playwright user journeys and helpers
+├── examples/           # Hosts embedding the board (minimal, void)
+├── hosts-e2e/          # Playwright tests for the example hosts
+├── migrations/         # D1 auth, agent and OAuth schema
+├── packages/board/     # @todoflare/board embeddable component
+├── repos/xstate/       # Read-only XState source reference
+├── scripts/            # Build, deploy, release and backup tooling
 ├── index.html           # SPA entry point
 ├── wrangler.jsonc       # Cloudflare Worker configuration
 ├── vite.config.ts       # Vite and local Workers configuration
 ├── src/
 │   ├── client.tsx       # React and public-route entry point
 │   ├── index.tsx        # Hono Worker entry point
+│   ├── components/      # React UI, including agents and OAuth consent
 │   ├── contexts/        # React sync orchestration and projections
 │   ├── durable-objects/ # ColumnRoomSql collaboration runtime
 │   ├── lib/             # Browser-safe protocols, queues, and local persistence
-│   └── server/          # Persistence contracts and named server workflows
+│   └── server/          # Persistence, agent access, OAuth, routes and workflows
 ├── test/                # Workers-runtime and unit tests
 └── dist/                # Generated build output
 ```
@@ -283,6 +314,8 @@ A raw copy preserves forensic bytes but does not establish a usable backup.
 
 Account restore accepts an optional `accounts/<id>/<timestamp>-<uuid>.json` key
 and recovers account records and credentials even if their originals are gone.
+Agent connections and OAuth grants are not backed up; after a restore,
+reconnect agents from the Agents dialog.
 It uses the latest validated column copies and restores the saved trash state.
 In-place column and account restore require a completed read-only deployment.
 Pre-restore copies live under `pre-restore/` and do not become the latest recovery

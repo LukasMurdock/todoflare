@@ -6,10 +6,13 @@ import { api, captureProductionSnapshot } from './production-snapshot.mjs';
 const frozen = !process.argv.includes('--live');
 const baseline = JSON.parse(await readFile('.wrangler/production-preflight/snapshot.json', 'utf8'));
 assert.equal(baseline.schemaVersion, 1, 'Take a fresh production preflight snapshot');
-for (let attempt = 0; attempt < 30; attempt++) {
- if ((await api('/api/clock')).readOnlyMode === frozen) break;
- if (attempt === 29) throw new Error('Production write mode did not propagate');
- await new Promise(resolve => setTimeout(resolve, 2000));
+// A new version reaches the edge gradually: one response in the new write
+// mode does not mean the next request reaches it. Wait for several in a row,
+// as the staging drill does.
+for (let attempt = 0, matched = 0; matched < 5; attempt++) {
+ if (attempt === 60) throw new Error('Production write mode did not propagate');
+ matched = (await api('/api/clock')).readOnlyMode === frozen ? matched + 1 : 0;
+ if (matched < 5) await new Promise(resolve => setTimeout(resolve, matched > 0 ? 500 : 2000));
 }
 assert.equal((await api('/api/clock')).autoBackupEnabled, true);
 await api('/api/account', 'GET', undefined, false, 401);

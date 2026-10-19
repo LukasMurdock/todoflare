@@ -205,9 +205,15 @@ function newId(taken: Set<string>): string {
 	}
 }
 
+/**
+ * A new block, not yet in any document. Yjs forbids reading a type before it
+ * is integrated, so attributes are only set here, never compared.
+ */
 function createBlock(item: NewItem, id: string): Y.XmlText {
 	const xml = new Y.XmlText();
-	setAttributes(xml, { id, ...styleAttributes(item.style, item.depth ?? 0, item.checked ?? false) });
+	for (const [key, value] of Object.entries({ id, ...styleAttributes(item.style, item.depth ?? 0, item.checked ?? false) })) {
+		if (value !== null) xml.setAttribute(key, value as never);
+	}
 	if (item.text) xml.insert(0, item.text);
 	return xml;
 }
