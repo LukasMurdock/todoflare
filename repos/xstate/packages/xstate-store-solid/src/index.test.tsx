@@ -1,3 +1,4 @@
+/* @jsxRuntime automatic */
 /* @jsxImportSource solid-js */
 import { fireEvent, render, screen } from '@solidjs/testing-library';
 import {
@@ -239,4 +240,15 @@ describe('@xstate/store-solid', () => {
       expect(atom.get()).toBe(123);
     });
   });
+});
+
+it('observes updates between setup and effect subscription', () => {
+  const atom = createAtom(0);
+  function View() {
+    const value = useSelector(atom, (n) => n);
+    atom.set(1);
+    return <div data-testid="setup-value">{value()}</div>;
+  }
+  render(() => <View />);
+  expect(screen.getByTestId('setup-value').textContent).toBe('1');
 });

@@ -26,8 +26,8 @@ When working with XState:
 ## Keeping the reference synchronized
 
 The installed package versions and vendored source revision must be updated
-together. The current reference is the `xstate@5.32.5` tag, which contains
-`xstate@5.32.5` and `@xstate/react@6.1.0`.
+together. The current reference is the `xstate@5.33.3` tag, which contains
+`xstate@5.33.3` and `@xstate/react@6.1.0`.
 
 Update it with:
 

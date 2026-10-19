@@ -82,7 +82,7 @@ importers:
         version: link:packages/board
       '@xstate/react':
         specifier: 6.1.0
-        version: 6.1.0(@types/react@19.3.0)(react@19.3.1)(xstate@5.32.5)
+        version: 6.1.0(@types/react@19.3.0)(react@19.3.1)(xstate@5.33.3)
       better-auth:
         specifier: 1.7.10
         version: 1.7.10(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(vitest@5.0.5(@types/node@26.6.5)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0)))
@@ -126,8 +126,8 @@ importers:
         specifier: ^1.4.0
         version: 1.4.0
       xstate:
-        specifier: 5.32.5
-        version: 5.32.5
+        specifier: 5.33.3
+        version: 5.33.3
       y-protocols:
         specifier: ^1.0.7
         version: 1.0.7(yjs@13.6.33)
@@ -3421,8 +3421,8 @@ packages:
       utf-8-validate:
         optional: true
 
-  xstate@5.32.5:
-    resolution: {integrity: sha512-ULazi1oe6wGrXl0Frb6otSlkm5HLifbbVTkMk5kkSKqz4TkxJaVpnl6jOJwKeid3ORPxYyZQgNLUSYX9q65SIA==}
+  xstate@5.33.3:
+    resolution: {integrity: sha512-AnDRjS/GyKHmbA1PyhVCYBqYsA7EGe3KGgeD0ht3NFsXzoz7leX/HQDFX9QlHFJ/ltLHPsgChJYwPzRvB/0b4g==}
 
   y-indexeddb@9.0.12:
     resolution: {integrity: sha512-9oCFRSPPzBK7/w5vOkJBaVCQZKHXB/v6SIT+WYhnJxlEC61juqG0hBrAf+y3gmSMLFLwICNH9nQ53uscuse6Hg==}
@@ -5098,13 +5098,13 @@ snapshots:
 
   '@vitest/spy@5.0.5': {}
 
-  '@xstate/react@6.1.0(@types/react@19.3.0)(react@19.3.1)(xstate@5.32.5)':
+  '@xstate/react@6.1.0(@types/react@19.3.0)(react@19.3.1)(xstate@5.33.3)':
     dependencies:
       react: 19.3.1
       use-isomorphic-layout-effect: 1.2.1(@types/react@19.3.0)(react@19.3.1)
       use-sync-external-store: 1.6.0(react@19.3.1)
     optionalDependencies:
-      xstate: 5.32.5
+      xstate: 5.33.3
     transitivePeerDependencies:
       - '@types/react'
 
@@ -6608,7 +6608,7 @@ snapshots:
 
   ws@8.21.0: {}
 
-  xstate@5.32.5: {}
+  xstate@5.33.3: {}
 
   y-indexeddb@9.0.12(yjs@13.6.33):
     dependencies:

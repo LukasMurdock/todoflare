@@ -1,5 +1,61 @@
 # xstate
 
+## 5.33.3
+
+### Patch Changes
+
+- [#5792](https://github.com/statelyai/xstate/pull/5792) [`78431d6`](https://github.com/statelyai/xstate/commit/78431d69939969cf9355ec55439b53413bd404a1) Thanks [@saadkhantareen](https://github.com/saadkhantareen)! - Fixed child actors not being stopped when a machine errors because of an unhandled error from an invoked actor. The remaining invoked and spawned actors are now stopped (and their cleanup functions are called) before the machine settles in the error state, instead of being left running as orphans.
+
+## 5.33.2
+
+### Patch Changes
+
+- [#5718](https://github.com/statelyai/xstate/pull/5718) [`015dc23`](https://github.com/statelyai/xstate/commit/015dc23d82fbb8f98e483281503cf97ea9974b2b) Thanks [@davidkpiano](https://github.com/davidkpiano)! - Fixed metadata types in generic history values, snapshot nodes, and directed graph results. These containers now accept arbitrary state and transition metadata consistently with `AnyStateNode` and `AnyTransitionDefinition`, avoiding unsafe-type warnings when inspecting machines through generic APIs.
+
+## 5.33.1
+
+### Patch Changes
+
+- [#5712](https://github.com/statelyai/xstate/pull/5712) [`8614c4d`](https://github.com/statelyai/xstate/commit/8614c4d4bfb6a5b7340acd33ca462d89b9527708) Thanks [@crishoj](https://github.com/crishoj)! - `AnyStateNode` and `AnyStateNodeDefinition` now widen the `TStateMeta` and `TTransitionMeta` parameters that were added to `StateNode` and `StateNodeDefinition` in 5.33.0. Those parameters default to `MetaObject`, while the nodes of an `AnyStateMachine` have them as `any`, so tooling that tracks `any` (such as `@typescript-eslint`'s `no-unsafe-argument` and `no-unsafe-return`) reported every node read off an untyped machine as unsafe:
+  
+  ```ts
+  declare const machine: AnyStateMachine;
+  
+  // StateNode<any, any, any, any> passed to StateNode<any, any, MetaObject, MetaObject>
+  takesStateNode(machine.root);
+  ```
+  
+  `AnyTransitionDefinition` was widened along with the new parameters; these two were missed.
+
+## 5.33.0
+
+### Minor Changes
+
+- [#5700](https://github.com/statelyai/xstate/pull/5700) [`6d8c317`](https://github.com/statelyai/xstate/commit/6d8c317cf6d35b30e498007cc11a22be4c439c25) Thanks [@davidkpiano](https://github.com/davidkpiano)! - State and transition metadata can now use separate types:
+  
+  ```ts
+  const machine = setup({
+    types: {
+      meta: {} as { label: string },
+      transitionMeta: {} as { trackingId: number }
+    }
+  }).createMachine({
+    meta: { label: 'Root' },
+    on: {
+      NEXT: { meta: { trackingId: 42 } }
+    }
+  });
+  ```
+  
+  When `transitionMeta` is omitted, `types.meta` continues to apply its type to
+  both state and transition metadata.
+
+## 5.32.6
+
+### Patch Changes
+
+- [#5678](https://github.com/statelyai/xstate/pull/5678) [`397b425`](https://github.com/statelyai/xstate/commit/397b42536f53b899e6914219ac829616d5100823) Thanks [@davidkpiano](https://github.com/davidkpiano)! - Machine snapshots now retain their machine-specific methods when initialization fails, so methods such as `snapshot.matches(...)` remain available on error snapshots.
+
 ## 5.32.5
 
 ### Patch Changes
@@ -1331,9 +1387,7 @@
 - [#4616](https://github.com/statelyai/xstate/pull/4616) [`e8c0b15b2`](https://github.com/statelyai/xstate/commit/e8c0b15b2ed385b233c75d79def2a7e9fe99a597) Thanks [@Andarist](https://github.com/Andarist)! - `context` factories receive `self` now so you can immediately pass that as part of the input to spawned actors.
 
   ```ts
-  setup({
-    /* ... */
-  }).createMachine({
+  setup({/* ... */}).createMachine({
     context: ({ spawn, self }) => {
       return {
         childRef: spawn('child', { input: { parent: self } })
@@ -2402,10 +2456,10 @@
   - ✅ `"*"`
   - ✅ `"event.*"`
   - ✅ `"event.something.*"`
-  - ❌ ~`"event.*.something"`~
-  - ❌ ~`"event*"`~
-  - ❌ ~`"event*.some*thing"`~
-  - ❌ ~`"*.something"`~
+  - ❌ ~~`"event.*.something"`~~
+  - ❌ ~~`"event*"`~~
+  - ❌ ~~`"event*.some*thing"`~~
+  - ❌ ~~`"*.something"`~~
 
 - d3d6149c7: The interface for guard objects has changed. Notably, all guard parameters should be placed in the `params` property of the guard object:
 
@@ -2552,8 +2606,7 @@
   createMachine({
     types: {} as {
       actions:
-        | { type: 'greet'; params: { surname: string } }
-        | { type: 'poke' };
+        { type: 'greet'; params: { surname: string } } | { type: 'poke' };
     },
     entry: {
       type: 'greet',
@@ -3729,8 +3782,7 @@
   createMachine({
     types: {} as {
       actions:
-        | { type: 'greet'; params: { surname: string } }
-        | { type: 'poke' };
+        { type: 'greet'; params: { surname: string } } | { type: 'poke' };
     },
     entry: {
       type: 'greet',
@@ -5283,10 +5335,10 @@
   - ✅ `"*"`
   - ✅ `"event.*"`
   - ✅ `"event.something.*"`
-  - ❌ ~`"event.*.something"`~
-  - ❌ ~`"event*"`~
-  - ❌ ~`"event*.some*thing"`~
-  - ❌ ~`"*.something"`~
+  - ❌ ~~`"event.*.something"`~~
+  - ❌ ~~`"event*"`~~
+  - ❌ ~~`"event*.some*thing"`~~
+  - ❌ ~~`"*.something"`~~
 
 * [#1456](https://github.com/statelyai/xstate/pull/1456) [`8fcbddd51`](https://github.com/statelyai/xstate/commit/8fcbddd51d66716ab1d326d934566a7664a4e175) Thanks [@davidkpiano](https://github.com/davidkpiano)! - The interface for guard objects has changed. Notably, all guard parameters should be placed in the `params` property of the guard object:
 
@@ -5902,15 +5954,11 @@
 
   ```ts
   createMachine({
-    context: {
-      /* ... */
-    }, // ✅ This is allowed
+    context: {/* ... */}, // ✅ This is allowed
     initial: 'inner',
     states: {
       inner: {
-        context: {
-          /* ... */
-        } // ❌ This will no longer compile
+        context: {/* ... */} // ❌ This will no longer compile
       }
     }
   });
@@ -6072,8 +6120,10 @@
 - [`99bc5fb9`](https://github.com/statelyai/xstate/commit/99bc5fb9d1d7be35f4c767dcbbf5287755b306d0) [#2275](https://github.com/statelyai/xstate/pull/2275) Thanks [@davidkpiano](https://github.com/statelyai)! - The `SpawnedActorRef` TypeScript interface has been deprecated in favor of a unified `ActorRef` interface, which contains the following:
 
   ```ts
-  interface ActorRef<TEvent extends EventObject, TEmitted = any>
-    extends Subscribable<TEmitted> {
+  interface ActorRef<
+    TEvent extends EventObject,
+    TEmitted = any
+  > extends Subscribable<TEmitted> {
     send: (event: TEvent) => void;
     id: string;
     subscribe(observer: Observer<T>): Subscription;
@@ -6351,12 +6401,8 @@
     states: {
       active: {
         on: {
-          updateName: {
-            /* ... */
-          },
-          updateAge: {
-            /* ... */
-          }
+          updateName: {/* ... */},
+          updateAge: {/* ... */}
         }
       }
     }

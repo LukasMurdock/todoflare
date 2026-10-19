@@ -5,6 +5,7 @@ export {
   createAtom,
   createAtomConfig,
   createAsyncAtom,
+  createSourceAtom,
   createReducerAtom
 } from './atom.ts';
 export type { AsyncAtomOptions, AsyncAtomState } from './atom.ts';
@@ -21,6 +22,7 @@ export type {
   ResolveStoreEmittedPayloadMap,
   StoreEffect,
   StoreEffectEnqueue,
+  EnqueueObject,
   TriggerObject,
   CanObject,
   StoreAssigner,
@@ -59,6 +61,7 @@ export type {
   InputFromAtomConfig,
   ReducerAtom,
   AtomOptions,
+  SourceAtomConfig,
   AnyAtom,
   ReadonlyAtom,
   AnyStoreConfig,
