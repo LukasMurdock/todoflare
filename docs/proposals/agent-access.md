@@ -288,6 +288,9 @@ trusting a single `/api/clock` response during propagation, now fixed.
 Pruning the change log to 30 days and 1000 entries (`50d927e`): frozen
 `5b81aa39-3246-48f4-a997-d641726622e9` verified unchanged (4 accounts, 17
 documents), writable `574cabbb-c6e2-487e-82c6-7593d53e39d0` verified live.
+ChatGPT setup steps in the Agents dialog (`cd3c7a8`): frozen
+`c6375df9-2c22-4502-b544-f7827901a87d` verified unchanged (4 accounts, 17
+documents), writable `a753eaec-f098-4c3b-96e6-7c3dccc65b55` verified live.
 
 ## Connecting an agent
 
