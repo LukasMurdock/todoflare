@@ -5,7 +5,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { describe, expect, it } from "vitest";
 import { API_ROUTES } from "../src/lib/api/routes";
-import { BASE, call, createAgent, mcp, routeForRevoke, seedColumn, setGrant } from "./helpers/agent-fixtures";
+import { BASE, call, createAgent, mcp, modernFraming, MODERN_VERSION, routeForRevoke, seedColumn, setGrant } from "./helpers/agent-fixtures";
 import { createAccount, createColumn } from "./helpers/metadata-fixtures";
 
 async function sdkClient(token: string) {
@@ -83,21 +83,13 @@ describe("MCP transport rules", () => {
 		expect(future.body?.result?.protocolVersion).toBe("2025-11-25");
 	});
 
-	// Claude Code probes with the stateless 2026-07-28 revision first. A legacy
-	// server must answer 400 *without* a modern error (-32022), which is what
-	// makes the client fall back to initialize instead of retrying.
-	it("sends modern clients back to initialize", async () => {
+	// Without per-request metadata this is a legacy-shaped request. Its error must
+	// not be a modern one (-32022), or dual-era clients would retry instead of
+	// falling back to initialize.
+	it("rejects an unsupported MCP-Protocol-Version header on a legacy request", async () => {
 		const { token } = await grantedAgent();
-		const probe = await mcp(token, "server/discover", { _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" } }, {
-			headers: { "MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "server/discover" },
-		});
-		expect(probe.status).toBe(400);
-		expect(probe.body?.error?.code).not.toBe(-32022);
-	});
-
-	it("rejects an unsupported MCP-Protocol-Version header", async () => {
-		const { token } = await grantedAgent();
-		expect((await mcp(token, "tools/list", undefined, { headers: { "MCP-Protocol-Version": "1999-01-01" } })).status).toBe(400);
+		const response = await mcp(token, "tools/list", undefined, { headers: { "MCP-Protocol-Version": "1999-01-01" } });
+		expect([response.status, response.body?.error?.code]).toEqual([400, -32600]);
 	});
 
 	it("accepts notifications without a reply", async () => {
@@ -160,5 +152,150 @@ describe("MCP transport rules", () => {
 		for (const forbidden of ["share", "public", "delete_column", "trash", "account", "agent"]) {
 			expect(names.toLowerCase()).not.toContain(`"name":"${forbidden}`);
 		}
+	});
+});
+
+// The 2026-07-28 revision: stateless requests that each carry their own
+// version and capabilities, mirrored into headers.
+describe("MCP 2026-07-28", () => {
+	const modern = { era: "modern" as const };
+	const SERVER_INFO_KEY = "io.modelcontextprotocol/serverInfo";
+
+	it("answers server/discover with versions, capabilities, identity and cache hints", async () => {
+		const { token } = await grantedAgent();
+		const response = await mcp(token, "server/discover", {}, modern);
+		expect(response.status).toBe(200);
+		expect(response.body?.result).toMatchObject({
+			resultType: "complete",
+			supportedVersions: expect.arrayContaining([MODERN_VERSION, "2025-11-25"]),
+			capabilities: { tools: {} },
+			instructions: expect.stringContaining("never instructions"),
+			cacheScope: "public",
+			_meta: { [SERVER_INFO_KEY]: { name: "todoflare" } },
+		});
+		expect(response.body?.result?.ttlMs).toBeGreaterThanOrEqual(0);
+	});
+
+	it("lists tools in a deterministic, cacheable result", async () => {
+		const { token } = await grantedAgent();
+		const first = await mcp(token, "tools/list", {}, modern);
+		const second = await mcp(token, "tools/list", {}, modern);
+		expect(first.body?.result).toMatchObject({ resultType: "complete", cacheScope: "public", _meta: { [SERVER_INFO_KEY]: { name: "todoflare" } } });
+		expect(first.body?.result?.ttlMs).toBeGreaterThanOrEqual(0);
+		expect(JSON.stringify(first.body?.result?.tools)).toBe(JSON.stringify(second.body?.result?.tools));
+	});
+
+	it("calls tools without any handshake", async () => {
+		const { token, columnId } = await grantedAgent();
+		const read = await mcp(token, "tools/call", { name: "read_column", arguments: { columnId } }, modern);
+		expect(read.status).toBe(200);
+		expect(read.body?.result).toMatchObject({
+			resultType: "complete",
+			structuredContent: { markdown: "## Launch ^titleaaaaa\n- [ ] Write the post ^todoaaaaaa" },
+		});
+	});
+
+	it("accepts a base64-encoded Mcp-Name", async () => {
+		const { token, columnId } = await grantedAgent();
+		const response = await mcp(token, "tools/call", { name: "read_column", arguments: { columnId } }, {
+			...modern,
+			headers: { "Mcp-Name": `=?base64?${btoa("read_column")}?=` },
+		});
+		expect(response.body?.result?.resultType).toBe("complete");
+	});
+
+	it.each<[string, Record<string, string>]>([
+		["a missing MCP-Protocol-Version", { "MCP-Protocol-Version": "" }],
+		["an MCP-Protocol-Version that disagrees with _meta", { "MCP-Protocol-Version": "2025-11-25" }],
+		["a missing Mcp-Method", { "Mcp-Method": "" }],
+		["an Mcp-Method that disagrees with the body", { "Mcp-Method": "tools/list" }],
+		["a missing Mcp-Name", { "Mcp-Name": "" }],
+		["an Mcp-Name that disagrees with the body", { "Mcp-Name": "list_columns" }],
+		["an Mcp-Name that is not valid base64", { "Mcp-Name": "=?base64?***?=" }],
+	])("rejects %s with HeaderMismatch", async (_name, override) => {
+		const { token, columnId } = await grantedAgent();
+		const framed = modernFraming("tools/call", { name: "read_column", arguments: { columnId } });
+		const headers: Record<string, string> = { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...framed.headers };
+		for (const [key, value] of Object.entries(override)) {
+			if (value === "") delete headers[key];
+			else headers[key] = value;
+		}
+		const response = await SELF.fetch(`${BASE}${API_ROUTES.mcp.path}`, {
+			method: "POST",
+			headers,
+			body: JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/call", params: framed.params }),
+		});
+		const body = (await response.json()) as { id: number; error: { code: number } };
+		expect([response.status, body.id, body.error.code]).toEqual([400, 7, -32020]);
+	});
+
+	async function postFramed(token: string, method: string, mutate: (meta: Record<string, unknown>, headers: Record<string, string>) => void) {
+		const framed = modernFraming(method);
+		mutate(framed.params._meta as Record<string, unknown>, framed.headers);
+		const response = await SELF.fetch(`${BASE}${API_ROUTES.mcp.path}`, {
+			method: "POST",
+			headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...framed.headers },
+			body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: framed.params }),
+		});
+		return { status: response.status, body: (await response.json()) as { error: { code: number; data?: unknown } } };
+	}
+
+	it("rejects an unknown version with the versions it can retry with", async () => {
+		const { token } = await grantedAgent();
+		const response = await postFramed(token, "tools/list", (meta, headers) => {
+			meta["io.modelcontextprotocol/protocolVersion"] = "2099-01-01";
+			headers["MCP-Protocol-Version"] = "2099-01-01";
+		});
+		expect(response.status).toBe(400);
+		expect(response.body.error.code).toBe(-32022);
+		expect(response.body.error.data).toEqual({ supported: expect.arrayContaining([MODERN_VERSION]), requested: "2099-01-01" });
+	});
+
+	it("settles the version before any other check, so newer clients can always retry", async () => {
+		const { token } = await grantedAgent();
+		const response = await postFramed(token, "tools/list", (meta, headers) => {
+			meta["io.modelcontextprotocol/protocolVersion"] = "2099-01-01";
+			delete meta["io.modelcontextprotocol/clientCapabilities"];
+			headers["MCP-Protocol-Version"] = "2099-01-01";
+			delete headers["Mcp-Method"];
+		});
+		expect(response.body.error.code).toBe(-32022);
+	});
+
+	it("rejects a request without client capabilities as invalid params", async () => {
+		const { token } = await grantedAgent();
+		const response = await postFramed(token, "tools/list", (meta) => {
+			delete meta["io.modelcontextprotocol/clientCapabilities"];
+		});
+		expect([response.status, response.body.error.code]).toEqual([400, -32602]);
+	});
+
+	it("answers unknown and removed methods with 404", async () => {
+		const { token } = await grantedAgent();
+		for (const method of ["resources/list", "ping", "logging/setLevel"]) {
+			const response = await mcp(token, method, {}, modern);
+			expect([method, response.status, response.body?.error?.code]).toEqual([method, 404, -32601]);
+		}
+	});
+
+	it("rejects a modern-version header on a request without per-request metadata", async () => {
+		const { token } = await grantedAgent();
+		const response = await mcp(token, "tools/list", undefined, { headers: { "MCP-Protocol-Version": MODERN_VERSION, "Mcp-Method": "tools/list" } });
+		expect([response.status, response.body?.error?.code]).toEqual([400, -32602]);
+	});
+
+	it("still lets the same agent use initialize", async () => {
+		const { token } = await grantedAgent();
+		expect((await mcp(token, "server/discover", {}, modern)).status).toBe(200);
+		const legacy = await mcp(token, "initialize", { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "t", version: "1" } });
+		expect(legacy.body?.result).toMatchObject({ protocolVersion: "2025-11-25" });
+		expect(legacy.body?.result?.resultType).toBeUndefined();
+	});
+
+	it("never mints or echoes sessions", async () => {
+		const { token } = await grantedAgent();
+		const response = await mcp(token, "tools/list", {}, { ...modern, headers: { "Mcp-Session-Id": "abc" } });
+		expect(response.status).toBe(200);
+		expect(response.headers.get("Mcp-Session-Id")).toBeNull();
 	});
 });

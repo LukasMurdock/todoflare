@@ -83,22 +83,47 @@ export interface ToolCallResult {
 
 let rpcId = 0;
 
+export type McpEra = "legacy" | "modern";
+export const MCP_ERAS: McpEra[] = ["legacy", "modern"];
+export const MODERN_VERSION = "2026-07-28";
+
+/** The per-request metadata and mirrored headers a 2026-07-28 client sends. */
+export function modernFraming(method: string, params: Record<string, unknown> = {}) {
+	return {
+		params: {
+			...params,
+			_meta: {
+				"io.modelcontextprotocol/protocolVersion": MODERN_VERSION,
+				"io.modelcontextprotocol/clientInfo": { name: "todoflare-test", version: "1.0.0" },
+				"io.modelcontextprotocol/clientCapabilities": {},
+			},
+		},
+		headers: {
+			"MCP-Protocol-Version": MODERN_VERSION,
+			"Mcp-Method": method,
+			...(typeof params.name === "string" ? { "Mcp-Name": params.name } : {}),
+		} as Record<string, string>,
+	};
+}
+
 /** One JSON-RPC request to the MCP endpoint, as an agent would send it. */
 export async function mcp(
 	token: string | null,
 	method: string,
 	params?: Record<string, unknown>,
-	options: { env?: Partial<Bindings>; headers?: Record<string, string> } = {},
+	options: { env?: Partial<Bindings>; headers?: Record<string, string>; era?: McpEra } = {},
 ): Promise<McpResponse> {
+	const framed = options.era === "modern" ? modernFraming(method, params) : { params, headers: {} };
 	const request = new Request(`${BASE}${API_ROUTES.mcp.path}`, {
 		method: "POST",
 		headers: {
 			"Content-Type": "application/json",
 			Accept: "application/json, text/event-stream",
 			...(token ? { Authorization: `Bearer ${token}` } : {}),
+			...framed.headers,
 			...options.headers,
 		},
-		body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params }),
+		body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params: framed.params }),
 	});
 	const response = options.env ? await fetchWithEnv(request, options.env) : await SELF.fetch(request);
 	const text = await response.text();
