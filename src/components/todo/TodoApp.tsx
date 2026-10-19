@@ -75,6 +75,10 @@ export function TodoApp() {
 					collapsed: column.collapsed,
 					readOnly,
 					removal: columns.length > 1 ? (owned ? "delete" : "hide") : "none",
+					// Synced deletes go to the account's trash; guest deletes are final.
+					deleteNotice: isSyncedMode
+						? "You can restore it from Recently Deleted in the account menu for 30 days."
+						: undefined,
 					label: !owned && owner ? `Shared by ${truncateAccountId(owner)}` : undefined,
 					// Guest columns seed their document from saved content; synced ones load theirs.
 					snapshot: isSyncedMode ? undefined : column.value,

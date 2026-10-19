@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
-import { LOCAL_COLUMNS_KEY, WELCOME_KEY } from "./helpers/ui-session";
+import { createAccount, createColumn } from "./helpers/account-api";
+import { bootstrapAuthenticatedPage, LOCAL_COLUMNS_KEY, WELCOME_KEY } from "./helpers/ui-session";
 
 test("holding Cmd/Ctrl highlights links in the editor and releasing clears it", async ({ page }) => {
 	await page.addInitScript(({ columnsKey, welcomeKey }) => {
@@ -36,6 +37,42 @@ test("dialogs render inside the board, not in document.body", async ({ page }) =
 
 	await board.locator("div.w-80").first().locator("div.h-10 button").last().click();
 	await expect(board.getByRole("alertdialog")).toBeVisible();
+	await expect(board.getByRole("alertdialog")).toContainText("This column has content. This action cannot be undone.");
+});
+
+test("signed-in columns confirm deletion only when they have content", async ({ page, request, baseURL }) => {
+	const appUrl = baseURL ?? "http://127.0.0.1:4173";
+	const accountId = await createAccount(request, appUrl);
+	await createColumn(request, appUrl, accountId);
+	await createColumn(request, appUrl, accountId);
+	await createColumn(request, appUrl, accountId);
+	await bootstrapAuthenticatedPage(page, accountId);
+
+	const editors = page.getByRole("textbox", { name: "Todo editor" });
+	const deleteButtons = page.getByRole("button", { name: "Delete column" });
+	const confirm = page.getByRole("alertdialog", { name: "Delete column?" });
+	await expect(editors).toHaveCount(3, { timeout: 15000 });
+
+	await editors.first().click();
+	await page.keyboard.type("Keep me");
+	await expect(editors.first()).toContainText("Keep me");
+
+	await deleteButtons.first().click();
+	await expect(confirm).toBeVisible();
+	await expect(confirm).toContainText("This column has content. You can restore it from Recently Deleted");
+	await confirm.getByRole("button", { name: "Cancel" }).click();
+	await expect(confirm).toBeHidden();
+	await expect(editors).toHaveCount(3);
+
+	await deleteButtons.first().click();
+	await confirm.getByRole("button", { name: "Delete" }).click();
+	await expect(editors).toHaveCount(2);
+	await expect(page.getByText("Keep me")).toHaveCount(0);
+
+	// An empty column goes without asking.
+	await deleteButtons.first().click();
+	await expect(editors).toHaveCount(1);
+	await expect(confirm).toHaveCount(0);
 });
 
 test("guest edits persist across reloads and can be undone", async ({ page }) => {

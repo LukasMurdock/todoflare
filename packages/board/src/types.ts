@@ -12,9 +12,15 @@ export interface BoardColumn {
 	readOnly?: boolean;
 	/**
 	 * The header's remove control. "delete" asks for confirmation when the
-	 * column's snapshot has content; "hide" removes it from this board only.
+	 * column's open document (or, before it opens, its snapshot) has content,
+	 * or when neither is known; "hide" removes it from this board only.
 	 */
 	removal?: "none" | "delete" | "hide";
+	/**
+	 * What deleting means, shown in the delete confirmation after the board's
+	 * note on the column's content. Defaults to "This action cannot be undone."
+	 */
+	deleteNotice?: string;
 	/** Short header text, for example "Shared by 1234...5678". */
 	label?: string;
 	/**

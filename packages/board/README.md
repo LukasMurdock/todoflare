@@ -109,7 +109,8 @@ interface BoardColumn {
 	id: string;                              // stable; you choose the format
 	collapsed?: boolean;
 	readOnly?: boolean;                      // e.g. storage failed, offline freeze
-	removal?: "none" | "delete" | "hide";    // header control; "delete" confirms if the snapshot has content
+	removal?: "none" | "delete" | "hide";    // header control; "delete" confirms if the column has content
+	deleteNotice?: string;                   // what deleting means; default "This action cannot be undone."
 	label?: string;                          // short header text, e.g. "Shared by …"
 	snapshot?: Value;                        // last known content (Plate JSON)
 }
