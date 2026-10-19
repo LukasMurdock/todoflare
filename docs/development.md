@@ -45,6 +45,13 @@ refuse a build that would honour it.
 fix it rather than re-running. `--repeat-each 40 --retries 0` reproduces most
 races. Confirm a fix by showing the test fails when the behavior breaks.
 
+A request that comes back as the SPA's HTML instead of the Worker's answer,
+with `TypeError: fetch failed` (`ECONNRESET`) from `[WebServer]`, is the local
+runtime, not the app: Miniflare reuses a connection workerd closed because a
+response left the request body unread (workers-sdk #16199). E2E builds read
+any unread body after every response (`src/server/http/drain-unread-body.ts`);
+`e2e/unread-request-body.spec.ts` guards it.
+
 ## Debug
 
 - **Which build is running**: `GET /api/clock` returns `build` and

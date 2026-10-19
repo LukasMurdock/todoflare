@@ -201,6 +201,33 @@ test.describe("agents", () => {
 		await expect(page.getByRole("dialog", { name: "Agents" })).toContainText("No agents connected.");
 	});
 
+	test("the ChatGPT steps give everything its custom MCP server form asks for", async ({ page, request, baseURL }) => {
+		const appUrl = baseURL ?? "http://127.0.0.1:4173";
+		const accountId = await createAccount(request, appUrl);
+		await bootstrapAuthenticatedPage(page, accountId);
+		await openAgentsDialog(page, accountId);
+		const dialog = page.getByRole("dialog", { name: "Agents" });
+		await dialog.getByRole("button", { name: /^ChatGPT/ }).click();
+		await expect(dialog.getByRole("heading", { name: "Connect ChatGPT" })).toBeVisible();
+		await expect(dialog.getByRole("link", { name: "Open ChatGPT plugins" })).toHaveAttribute("href", "https://chatgpt.com/plugins");
+		const values = (await dialog.locator("code").allTextContents()).map((text) => text.trim());
+		expect(values).toEqual(["Todoflare", "Read and update my Todoflare todo columns", `${appUrl}/api/mcp`]);
+		await expect(dialog).toContainText("Leave Authentication on OAuth.");
+
+		// ChatGPT accepts a PNG icon of at most 10 KB; 256 px or larger looks best.
+		const downloadPromise = page.waitForEvent("download");
+		await dialog.getByRole("link", { name: "Download icon" }).click();
+		expect((await downloadPromise).suggestedFilename()).toBe("todoflare-icon.png");
+		const icon = await request.get(`${appUrl}/todoflare-icon.png`);
+		expect(icon.headers()["content-type"]).toBe("image/png");
+		const bytes = await icon.body();
+		expect(bytes.byteLength).toBeLessThanOrEqual(10 * 1024);
+		expect([bytes.readUInt32BE(16), bytes.readUInt32BE(20)]).toEqual([256, 256]);
+
+		await dialog.getByRole("button", { name: "Done" }).click();
+		await expect(dialog.getByRole("button", { name: /^ChatGPT/ })).toBeVisible();
+	});
+
 	test("an untrustworthy request never redirects", async ({ page }) => {
 		await page.goto(`/oauth/authorize?response_type=code&client_id=tfc_unknown&redirect_uri=${encodeURIComponent("https://evil.example/cb")}`);
 		await expect(page.getByText("This connection can’t continue")).toBeVisible();
