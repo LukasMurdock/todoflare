@@ -412,6 +412,12 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 			return Response.json(this.meta);
 		}
 
+		// Agent access is decided against authoritative membership and trash state.
+		if (request.method === "GET" && url.pathname === "/access-state") {
+			if (!this.meta) return new Response("Column not found", { status: 404 });
+			return Response.json({ meta: this.meta, trashed: this.isTrashed() });
+		}
+
 		if (request.method === "GET" && url.pathname === "/export") {
 			if (!this.meta) return new Response("Column not found", { status: 404 });
 			const snapshot = encodeStateAsUpdate(this.doc);

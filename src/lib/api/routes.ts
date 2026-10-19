@@ -25,6 +25,11 @@ export const API_ROUTES = {
 	columnWs: { method: "GET", path: "/api/column/:id/ws" },
 	publicColumn: { method: "GET", path: "/api/p/:publicId" },
 	publicColumnWs: { method: "GET", path: "/api/p/:publicId/ws" },
+	listAgents: { method: "GET", path: "/api/agents" },
+	createAgent: { method: "POST", path: "/api/agents" },
+	revokeAgent: { method: "DELETE", path: "/api/agents/:agentId" },
+	setAgentGrant: { method: "PUT", path: "/api/agents/:agentId/grants/:id" },
+	removeAgentGrant: { method: "DELETE", path: "/api/agents/:agentId/grants/:id" },
 	clock: { method: "GET", path: "/api/clock" },
 } as const satisfies Record<string, ApiRoute>;
 
