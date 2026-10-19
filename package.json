@@ -98,7 +98,7 @@
     "@types/react-dom": "^19.3.0",
     "@typescript-eslint/parser": "8.71.2",
     "@typescript/native": "npm:typescript@^7.0.2",
-    "eslint": "^9.39.5",
+    "eslint": "^10.13.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "fake-indexeddb": "^6.2.6",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
