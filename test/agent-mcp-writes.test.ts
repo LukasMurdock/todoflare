@@ -265,6 +265,52 @@ describe("agent changes and column lifecycle", () => {
 		expect((await personUndo(friend.id, columnId, String(added.structuredContent!.changeId))).status).toBe(200);
 	});
 
+	it("keeps the change log to 30 days and 1000 entries", async () => {
+		const { owner, columnId, token } = await setup();
+		const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
+		type Sql = { ctx: { storage: { sql: SqlStorage } } };
+		const count = () =>
+			runInDurableObject(stub, (instance) => (instance as unknown as Sql).ctx.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM agent_changes").one().n);
+		const seed = (rows: Array<{ id: string; createdAt: number }>) =>
+			runInDurableObject(stub, (instance) => {
+				for (const row of rows)
+					(instance as unknown as Sql).ctx.storage.sql.exec(
+						`INSERT INTO agent_changes (id, connection_id, account_id, agent_name, tool, required_level, summary, item_ids, undo, created_at)
+						 VALUES (?, ?, ?, 'Seed', 'append_items', 'append', 'seeded', '[]', '{}', ?)`,
+						row.id, `agt_${"seed".padEnd(22, "x")}`, owner.id.replace(/\s/g, ""), row.createdAt,
+					);
+			});
+		// Seeded rows use well-formed IDs, since listing validates them.
+		const changeId = (name: string) => `chg_${name.padEnd(22, "x")}`;
+		const now = Date.now();
+		const day = 24 * 60 * 60 * 1000;
+		await seed([
+			{ id: changeId("expired"), createdAt: now - 31 * day },
+			...Array.from({ length: 1000 }, (_, index) => ({ id: changeId(`seed_${index}_`), createdAt: now - 2 * day + index })),
+		]);
+
+		// Recording a change prunes in the same transaction.
+		const added = result(await callTool(token, "append_items", { columnId, items: [{ text: "Bread" }] }));
+		expect(await count()).toBe(1000);
+		const newest = await listChanges(owner.id, columnId);
+		expect(newest[0]!.id).toBe(added.structuredContent!.changeId);
+		const ids = await runInDurableObject(stub, (instance) =>
+			(instance as unknown as Sql).ctx.storage.sql.exec<{ id: string }>("SELECT id FROM agent_changes").toArray().map((row) => row.id),
+		);
+		expect(ids).not.toContain(changeId("expired"));
+		expect(ids).not.toContain(changeId("seed_0_"));
+		expect(ids).toContain(changeId("seed_1_"));
+
+		// Compaction prunes expired entries even when no agent writes again, and
+		// below the row cap, so only the age rule can remove this one.
+		await runInDurableObject(stub, (instance) => (instance as unknown as Sql).ctx.storage.sql.exec("DELETE FROM agent_changes WHERE id LIKE 'chg_seed_1%'"));
+		const belowCap = await count();
+		expect(belowCap).toBeLessThan(1000);
+		await seed([{ id: changeId("expired_again"), createdAt: now - 31 * day }]);
+		await runInDurableObject(stub, (instance) => (instance as unknown as { alarm(): Promise<void> }).alarm());
+		expect(await count()).toBe(belowCap);
+	});
+
 	it("forgets recorded changes when an import replaces the content", async () => {
 		const { owner, columnId, token } = await setup();
 		result(await callTool(token, "append_items", { columnId, items: [{ text: "x" }] }));

@@ -365,6 +365,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 				this.persistSnapshot();
 				this.ctx.storage.sql.exec("DELETE FROM yjs_updates");
 				this.pruneReceivedOutbox();
+				this.pruneAgentChanges();
 			});
 		} catch (err) {
 			console.error("Compaction failed:", err);
@@ -400,7 +401,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		this.ctx.storage.sql.exec("DELETE FROM agent_changes WHERE created_at < ?", Date.now() - AGENT_CHANGE_RETENTION_MS);
 		this.ctx.storage.sql.exec(
 			`DELETE FROM agent_changes WHERE id NOT IN (
-				SELECT id FROM agent_changes ORDER BY created_at DESC LIMIT ?
+				SELECT id FROM agent_changes ORDER BY created_at DESC, rowid DESC LIMIT ?
 			)`,
 			AGENT_CHANGE_MAX_ROWS,
 		);
@@ -484,6 +485,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 					JSON.stringify(result.undo),
 					Date.now(),
 				);
+				this.pruneAgentChanges();
 			},
 		);
 		if (!outcome) return Response.json({ ok: false, failure }, { status: 409 });
