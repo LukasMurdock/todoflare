@@ -273,6 +273,9 @@ the tables are additive and can stay.
 The guided setup was released the same day the same way: frozen
 `0b102ddb-03c2-4249-9bf4-fa56774c2d0b` verified unchanged (4 accounts, 17
 documents), writable `39b94ce0-9e69-433f-b967-d0f8ad6de794` verified live.
+The note that column access can change later followed: frozen
+`6ecbac7e-ec46-40bb-b7a7-d1d1bb3928ef`, writable
+`d2e3bc65-9f0c-4057-b66f-8d57914aa2e1`, both verified.
 
 ## Connecting an agent
 
