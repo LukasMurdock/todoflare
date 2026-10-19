@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, Bot, Check, ChevronRight, Copy, ExternalLink, Globe, KeyRound, Terminal } from "lucide-react";
+import { ArrowLeft, Bot, Check, ChevronRight, Copy, Download, ExternalLink, Globe, KeyRound, MessageCircle, Terminal } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,17 +16,24 @@ interface AgentsDialogProps {
 	onOpenChange(open: boolean): void;
 }
 
-/** The apps the dialog has instructions for. Token apps get a token; Claude.ai signs in itself. */
-type AgentApp = "claude-code" | "claude-ai" | "other";
+/** The apps the dialog has instructions for. Token apps get a token; OAuth apps sign in themselves. */
+type AgentApp = "claude-code" | "claude-ai" | "chatgpt" | "other";
+type OAuthApp = "claude-ai" | "chatgpt";
+type TokenApp = Exclude<AgentApp, OAuthApp>;
+
+function isOAuthApp(app: AgentApp): app is OAuthApp {
+	return app === "claude-ai" || app === "chatgpt";
+}
 
 type View =
 	| { kind: "home" }
 	| { kind: "setup"; app: AgentApp }
-	| { kind: "connected"; app: Exclude<AgentApp, "claude-ai">; agent: AgentConnection; token: string };
+	| { kind: "connected"; app: TokenApp; agent: AgentConnection; token: string };
 
 const APPS: Array<{ app: AgentApp; title: string; detail: string; icon: typeof Bot; defaultName: string }> = [
 	{ app: "claude-code", title: "Claude Code", detail: "The coding agent in your terminal", icon: Terminal, defaultName: "Claude Code" },
 	{ app: "claude-ai", title: "Claude.ai", detail: "Add Todoflare as a connector in Claude on the web", icon: Globe, defaultName: "Claude" },
+	{ app: "chatgpt", title: "ChatGPT", detail: "Add Todoflare as a custom MCP server in ChatGPT", icon: MessageCircle, defaultName: "ChatGPT" },
 	{ app: "other", title: "Another app or script", detail: "Anything that takes an MCP server address and a token", icon: KeyRound, defaultName: "My agent" },
 ];
 
@@ -38,6 +45,13 @@ const EXPIRY_CHOICES = [
 ];
 
 const CLAUDE_CONNECTORS_URL = "https://claude.ai/settings/connectors";
+const CHATGPT_PLUGINS_URL = "https://chatgpt.com/plugins";
+/** What to type into ChatGPT's "Add custom MCP server" form. The icon fits its limits (PNG, 256 px, under 10 KB). */
+export const CHATGPT_FORM = {
+	name: "Todoflare",
+	description: "Read and update my Todoflare todo columns",
+	iconPath: "/todoflare-icon.png",
+};
 
 function relative(timestamp: number | null, now: number): string {
 	if (timestamp === null) return "never";
@@ -134,6 +148,8 @@ export function AgentsDialog({ accountId, open, onOpenChange }: AgentsDialogProp
 
 	const endpoint = mcpEndpointUrl();
 
+	const tokenApp = view.kind === "setup" && !isOAuthApp(view.app) ? view.app : null;
+
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent className="max-h-[calc(100dvh-2rem)] max-w-xl grid-rows-[auto_minmax(0,1fr)]">
@@ -148,10 +164,12 @@ export function AgentsDialog({ accountId, open, onOpenChange }: AgentsDialogProp
 						<Home accountId={accountId} state={state} columns={columns} busy={busy} run={run} onChoose={(app) => go({ kind: "setup", app })} />
 					) : view.kind === "setup" && view.app === "claude-ai" ? (
 						<ClaudeAiSetup endpoint={endpoint} onBack={() => go({ kind: "home" })} />
-					) : view.kind === "setup" ? (
+					) : view.kind === "setup" && view.app === "chatgpt" ? (
+						<ChatGptSetup endpoint={endpoint} onBack={() => go({ kind: "home" })} />
+					) : tokenApp ? (
 						<TokenSetup
-							key={view.app}
-							app={view.app as Exclude<AgentApp, "claude-ai">}
+							key={tokenApp}
+							app={tokenApp}
 							columns={columns}
 							busy={busy}
 							onBack={() => go({ kind: "home" })}
@@ -160,13 +178,13 @@ export function AgentsDialog({ accountId, open, onOpenChange }: AgentsDialogProp
 									const grants = Object.entries(levels).map(([columnId, level]) => ({ columnId, level }));
 									const result = await agentsApi.create(accountId, name, expiresInDays, grants);
 									replaceAgentConnection(accountId, result.agent);
-									setView({ kind: "connected", app: view.app as Exclude<AgentApp, "claude-ai">, agent: result.agent, token: result.token });
+									setView({ kind: "connected", app: tokenApp, agent: result.agent, token: result.token });
 								})
 							}
 						/>
-					) : (
+					) : view.kind === "connected" ? (
 						<TokenConnected view={view} endpoint={endpoint} onDone={() => go({ kind: "home" })} />
-					)}
+					) : null}
 					{error && <p className="text-sm text-destructive">{error}</p>}
 				</div>
 			</DialogContent>
@@ -334,7 +352,7 @@ function TokenSetup({
 	onBack,
 	onCreate,
 }: {
-	app: Exclude<AgentApp, "claude-ai">;
+	app: TokenApp;
 	columns: GrantableColumn[] | null;
 	busy: boolean;
 	onBack(): void;
@@ -449,6 +467,69 @@ function ClaudeAiSetup({ endpoint, onBack }: { endpoint: string; onBack(): void 
 				<Step number={3} title="Name it Todoflare, paste the address, and add it. Then click Connect" />
 				<Step number={4} title="Claude sends you back to Todoflare. Choose the columns it can use and click Allow">
 					<p className="text-xs text-muted-foreground">You’ll then see Claude under Connected agents here, and can change its columns any time.</p>
+				</Step>
+			</ol>
+			<div className="flex justify-end">
+				<Button variant="outline" onClick={onBack}>
+					Done
+				</Button>
+			</div>
+		</section>
+	);
+}
+
+function ChatGptSetup({ endpoint, onBack }: { endpoint: string; onBack(): void }) {
+	return (
+		<section className="space-y-4">
+			<BackButton onClick={onBack} />
+			<h3 className="text-base font-semibold">Connect ChatGPT</h3>
+			<ol className="space-y-5">
+				<Step number={1} title="In ChatGPT, open Plugins, click Add, and choose “Add custom MCP server”">
+					<Button variant="outline" size="sm" asChild>
+						<a href={CHATGPT_PLUGINS_URL} target="_blank" rel="noopener noreferrer">
+							Open ChatGPT plugins
+							<ExternalLink className="h-3 w-3" />
+						</a>
+					</Button>
+				</Step>
+				<Step number={2} title="Fill in the form with these">
+					<dl className="space-y-2">
+						<div className="space-y-1">
+							<dt className="text-xs text-muted-foreground">Icon (optional)</dt>
+							<dd>
+								<Button variant="outline" size="sm" asChild>
+									<a href={CHATGPT_FORM.iconPath} download="todoflare-icon.png">
+										<img src={CHATGPT_FORM.iconPath} alt="" className="h-4 w-4 rounded-sm" />
+										Download icon
+										<Download className="h-3 w-3" />
+									</a>
+								</Button>
+							</dd>
+						</div>
+						<div className="space-y-1">
+							<dt className="text-xs text-muted-foreground">Name</dt>
+							<dd>
+								<CopyField value={CHATGPT_FORM.name} label="name" />
+							</dd>
+						</div>
+						<div className="space-y-1">
+							<dt className="text-xs text-muted-foreground">Description</dt>
+							<dd>
+								<CopyField value={CHATGPT_FORM.description} label="description" />
+							</dd>
+						</div>
+						<div className="space-y-1">
+							<dt className="text-xs text-muted-foreground">Connection: Server URL</dt>
+							<dd>
+								<CopyField value={endpoint} label="server URL" />
+							</dd>
+						</div>
+					</dl>
+					<p className="text-xs text-muted-foreground">Leave Authentication on OAuth. Advanced OAuth settings need no changes.</p>
+				</Step>
+				<Step number={3} title="Tick “I understand and want to continue”, then create it and connect" />
+				<Step number={4} title="ChatGPT sends you back to Todoflare. Choose the columns it can use and click Allow">
+					<p className="text-xs text-muted-foreground">You’ll then see ChatGPT under Connected agents here, and can change its columns any time.</p>
 				</Step>
 			</ol>
 			<div className="flex justify-end">

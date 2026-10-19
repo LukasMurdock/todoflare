@@ -293,8 +293,12 @@ documents), writable `574cabbb-c6e2-487e-82c6-7593d53e39d0` verified live.
 
 Account menu → Agents walks through each app step by step. Claude.ai and
 other OAuth-capable clients: add `<origin>/api/mcp` as a custom connector and
-approve the columns on the consent page. Claude Code: choose the columns,
-then run the command the dialog shows:
+approve the columns on the consent page. ChatGPT: Plugins → Add → Add custom
+MCP server; the dialog gives the name, description, server URL and an icon
+(`public/todoflare-icon.png`, a 256 px PNG under ChatGPT's 10 KB limit), with
+Authentication left on OAuth. ChatGPT has no link that pre-fills that form;
+only a listing in its plugin directory would make it one click. Claude Code:
+choose the columns, then run the command the dialog shows:
 
 ```sh
 claude mcp add --scope user --transport http todoflare https://todo.tamesystems.org/api/mcp \

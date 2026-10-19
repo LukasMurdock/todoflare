@@ -10,6 +10,7 @@ import { BUILD_INFO } from "./lib/build-info";
 import { purgeExpiredTrashedColumns } from "./server/workflows/purge-expired-trashed-columns";
 import { reconcileColumnLifecycle } from "./server/workflows/reconcile-column-lifecycle";
 import { isReadOnlyMode } from "./server/read-only-mode";
+import { drainUnreadRequestBody } from "./server/http/drain-unread-body";
 import { cleanupAbandonedProvisionalUsers } from "./server/auth";
 
 import type { App, AppEnv, Bindings } from "./server/bindings";
@@ -37,6 +38,8 @@ export {
 };
 
 const app: App = new Hono<AppEnv>();
+
+app.use("*", drainUnreadRequestBody);
 
 app.use("/api/*", async (c, next) => {
 	await next();
