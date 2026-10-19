@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/dialog";
 import { useAccount } from "@/hooks/useAccount";
 import { truncateAccountId, displayAccountId } from "@/lib/account";
+import { BUILD_INFO, formatBuild } from "@/lib/build-info";
 import { cn } from "@/lib/utils";
 import { CredentialManager } from "./CredentialManager";
 
@@ -179,6 +180,7 @@ export function AccountBadge() {
 
 		return {
 			capturedAt: new Date().toISOString(),
+			build: BUILD_INFO,
 			redactedIds: redactSyncDebugIds,
 			accountId: snapshotAccountId,
 			networkOnline: typeof navigator === "undefined" ? null : navigator.onLine,
@@ -511,6 +513,10 @@ export function AccountBadge() {
 					<LogOut className="mr-2 h-4 w-4" />
 					Log Out
 				</DropdownMenuItem>
+
+				<DropdownMenuSeparator />
+
+				<p className="px-2 py-1 font-mono text-xs text-muted-foreground">Build {formatBuild()}</p>
 				</DropdownMenuContent>
 			</DropdownMenu>
 		</>

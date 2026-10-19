@@ -6,6 +6,7 @@ import { RateLimitCoordinatorSql } from "./durable-objects/rate-limit-coordinato
 import { AccountCoordinatorSql } from "./durable-objects/account-coordinator";
 import { PublicIdCoordinatorSql } from "./durable-objects/public-id-coordinator";
 import { API_ROUTES } from "./lib/api/routes";
+import { BUILD_INFO } from "./lib/build-info";
 import { purgeExpiredTrashedColumns } from "./server/workflows/purge-expired-trashed-columns";
 import { reconcileColumnLifecycle } from "./server/workflows/reconcile-column-lifecycle";
 import { isReadOnlyMode } from "./server/read-only-mode";
@@ -72,6 +73,7 @@ app.on(API_ROUTES.clock.method, API_ROUTES.clock.path, (c) => {
 			time: new Date().toLocaleTimeString(),
 			readOnlyMode: isReadOnlyMode(c.env),
 			autoBackupEnabled: isAutoBackupEnabled(c.env),
+			build: BUILD_INFO,
 		},
 		200,
 		{ "Cache-Control": "no-store" },
