@@ -77,6 +77,12 @@ per hour). Because every drill creates fresh accounts, it first calls the
 staging-only `reset-rate-limits` control, which clears the IP-keyed windows for
 the caller's IP only.
 
+Each drill then calls the staging-only `reset-data` control until it reports
+`done`. It deletes every column, account, KV record, backup object and auth row
+on staging in bounded batches (`src/staging-reset.ts`), so a run never depends
+on data left by earlier runs, including aborted ones. It refuses while staging
+is frozen. Staging therefore holds only the most recent drill's synthetic data.
+
 Staging controls require `ENVIRONMENT=staging` and the admin token. Marking also
 requires an authenticated account session; loss simulation requires a marked
 case, a write freeze, and a verified account credential backup. These controls

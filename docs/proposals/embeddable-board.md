@@ -122,8 +122,8 @@ Excalidraw's four mechanisms and adds a fifth:
 | Extension points | `renderColumnActions`, `renderTopBar`, `editorPlugins` |
 | Adapters | `DocumentAdapter.open(columnId, signal)`; `createMemoryDocuments` and `useLocalBoard` for simple hosts |
 
-Three hosts are written against it and type-checked by `pnpm check:board-spec`
-(in `verify:checks`; renaming one prop breaks all three):
+Three hosts were written against it and type-checked by `pnpm check:board-spec`
+(retired in step 3 with the draft; renaming one prop broke all three):
 
 - `hosts/minimal.tsx`: about 25 lines, memory documents mirrored to
   `localStorage`.
