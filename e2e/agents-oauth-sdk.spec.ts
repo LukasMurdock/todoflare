@@ -6,6 +6,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { UnauthorizedError, type OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { OAuthClientInformationMixed, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { expect, test } from "@playwright/test";
+import { getYjsOutboxCountForColumn } from "./helpers/local-first-readers";
 import { createAccount } from "./helpers/account-api";
 import { addColumnAndGetId, bootstrapAuthenticatedPage } from "./helpers/ui-session";
 
@@ -55,7 +56,8 @@ test("the official MCP SDK client signs in with OAuth and uses the granted colum
 	const editor = page.getByRole("textbox", { name: "Todo editor" }).first();
 	await editor.click();
 	await page.keyboard.type("Reading list");
-	await expect.poll(async () => (await page.evaluate(() => document.body.innerText)).includes("Reading list")).toBe(true);
+	// The server must have the edit, not just the page: titles are read on the server.
+	await expect.poll(() => getYjsOutboxCountForColumn(page, accountId, columnId)).toBe(0);
 
 	const provider = new MemoryProvider();
 	const endpoint = new URL(`${appUrl}/api/mcp`);

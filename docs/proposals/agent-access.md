@@ -229,6 +229,28 @@ Verified in the browser (`e2e/agents.spec.ts`):
 SDK's OAuth client** doing discovery, registration, PKCE, token exchange and
 refresh itself.
 
+## Staging
+
+Staging runs agent access (`AGENT_ACCESS_ENABLED=true`). Migrations 0003 and
+0004 were applied there on 2026-10-19, and `reset-data` clears the agent and
+OAuth tables along with the accounts they belong to.
+
+`pnpm test:staging:agents` (`e2e/agents-staging.spec.ts`, excluded from
+`pnpm verify`; one real model call) runs on the deployed HTTPS origin with a
+real passkey session:
+
+1. The person creates a token and grants edit in the Agents dialog.
+2. The real `claude` CLI adds an item, which appears live in the person's
+   editor.
+3. The column popover lists the change, and undo removes it.
+4. The official MCP SDK's OAuth client connects through discovery,
+   registration and consent, gets exactly the chosen read level, and has a
+   write refused.
+5. Disconnecting both makes both tokens 401.
+
+The staging recovery drill (`pnpm test:staging`) and `pnpm test:staging:auth`
+also pass with agent access deployed.
+
 ## Connecting an agent
 
 Claude.ai and other OAuth-capable clients: add `<origin>/api/mcp` as a

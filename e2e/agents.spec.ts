@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { createAccount } from "./helpers/account-api";
+import { getYjsOutboxCountForColumn } from "./helpers/local-first-readers";
 import { addColumnAndGetId, bootstrapAuthenticatedPage } from "./helpers/ui-session";
 
 const REDIRECT = "http://127.0.0.1:33418/callback";
@@ -19,12 +20,13 @@ async function mcpCall(request: APIRequestContext, baseURL: string, token: strin
 	return ((await response.json()) as { result: { isError?: boolean; content: Array<{ text: string }>; structuredContent?: Record<string, unknown> } }).result;
 }
 
-async function typeIntoFirstColumn(page: Page, text: string) {
+/** Types into the first column and waits until the server has the edit, not just the page. */
+async function typeIntoFirstColumn(page: Page, accountId: string, columnId: string, text: string) {
 	const editor = page.getByRole("textbox", { name: "Todo editor" }).first();
 	await editor.click();
 	await page.keyboard.type(text);
-	// Let the edit reach the column's server document.
-	await expect.poll(async () => (await page.evaluate(() => document.body.innerText)).includes(text)).toBe(true);
+	await expect(editor).toContainText(text);
+	await expect.poll(() => getYjsOutboxCountForColumn(page, accountId, columnId)).toBe(0);
 }
 
 async function openAgentsDialog(page: Page, accountId: string) {
@@ -39,7 +41,7 @@ test.describe("agents", () => {
 		const accountId = await createAccount(request, appUrl);
 		await bootstrapAuthenticatedPage(page, accountId);
 		const columnId = await addColumnAndGetId(page);
-		await typeIntoFirstColumn(page, "Groceries");
+		await typeIntoFirstColumn(page, accountId, columnId, "Groceries");
 
 		// Connect an agent with a token, then give it read access to the column.
 		await openAgentsDialog(page, accountId);
@@ -96,7 +98,7 @@ test.describe("agents", () => {
 		const accountId = await createAccount(request, appUrl);
 		await bootstrapAuthenticatedPage(page, accountId);
 		const columnId = await addColumnAndGetId(page);
-		await typeIntoFirstColumn(page, "Launch plan");
+		await typeIntoFirstColumn(page, accountId, columnId, "Launch plan");
 
 		// The client discovers the server and registers itself, as Claude does.
 		const challenge401 = await request.post(`${appUrl}/api/mcp`, { data: {} });
