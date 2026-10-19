@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { parseQueuedMutation } from "../src/lib/sync/account-command-parser";
-import { summarizeReplayReport } from "../src/lib/sync/account-command-reconciliation";
+import {
+	describeSyncFailure,
+	recordSyncFailure,
+	summarizeReplayReport,
+} from "../src/lib/sync/account-command-reconciliation";
 import type {
 	AccountCommandPayloadMap,
 	AccountCommandType,
@@ -130,5 +134,36 @@ describe("persisted account command parsing", () => {
 			accessLostColumnIds: ["00000000-0000-4000-8000-000000000001"],
 			nonAccessLossFailureCount: 0,
 		});
+	});
+
+	it("records a rejected command with what the server said", () => {
+		const deleted = parseQueuedMutation(
+			storedCommand("column.delete", validPayloads["column.delete"]),
+		);
+		if (!deleted) throw new Error("Expected a valid command");
+
+		const recorded = recordSyncFailure(
+			{
+				...deleted,
+				reason: "not_found",
+				detail: { status: 404, code: "not_found", message: "Column not found" },
+				failedAt: 5,
+			},
+			9,
+		);
+		expect(recorded).toEqual({
+			failedAt: 5,
+			opType: "column.delete",
+			columnId: "00000000-0000-4000-8000-000000000001",
+			reason: "not_found",
+			status: 404,
+			code: "not_found",
+			message: "Column not found",
+		});
+		expect(describeSyncFailure(recorded)).toBe("column.delete: Column not found (404 not_found)");
+
+		const bare = recordSyncFailure({ ...deleted, reason: "validation_failed" }, 9);
+		expect(bare.failedAt).toBe(9);
+		expect(describeSyncFailure(bare)).toBe("column.delete: validation_failed");
 	});
 });

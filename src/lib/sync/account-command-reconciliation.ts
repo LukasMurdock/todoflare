@@ -1,6 +1,7 @@
 import type {
 	AccountCommandDescriptor,
 	ReplayReport,
+	TerminalReplayFailure,
 } from "./contracts";
 import { shouldApplyAccessLossPolicy } from "./replay-response";
 import { ACCOUNT_COMMANDS } from "../api/account-commands";
@@ -50,4 +51,35 @@ export function summarizeReplayReport(
 		accessLostColumnIds: [...accessLostColumnIds],
 		nonAccessLossFailureCount,
 	};
+}
+
+/** A rejected command as it appears in the sync debug snapshot. */
+export interface RecordedSyncFailure {
+	failedAt: number;
+	opType: TerminalReplayFailure["opType"];
+	columnId: string | null;
+	reason: TerminalReplayFailure["reason"];
+	status: number | null;
+	code: string | null;
+	message: string | null;
+}
+
+export function recordSyncFailure(failure: TerminalReplayFailure, now: number): RecordedSyncFailure {
+	return {
+		failedAt: failure.failedAt ?? now,
+		opType: failure.opType,
+		columnId: columnIdForAccountCommand(failure),
+		reason: failure.reason,
+		status: failure.detail?.status ?? null,
+		code: failure.detail?.code ?? null,
+		message: failure.detail?.message ?? null,
+	};
+}
+
+/** One line naming the command and what the server said, e.g. for a toast. */
+export function describeSyncFailure(failure: RecordedSyncFailure): string {
+	const response = [failure.status, failure.code ?? failure.reason].filter((part) => part !== null).join(" ");
+	return failure.message
+		? `${failure.opType}: ${failure.message} (${response})`
+		: `${failure.opType}: ${response}`;
 }

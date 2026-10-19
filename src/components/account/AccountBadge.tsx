@@ -201,6 +201,14 @@ export function AccountBadge() {
 				quarantinedDurableMutations:
 					syncStateSummary.quarantinedDurableMutations,
 			},
+			recentSyncFailures: syncStateSummary.recentSyncFailures.map((failure) => ({
+				...failure,
+				failedAt: new Date(failure.failedAt).toISOString(),
+				columnId:
+					redactSyncDebugIds && failure.columnId
+						? redactColumnIdForSnapshot(failure.columnId)
+						: failure.columnId,
+			})),
 			yjsOutbox: {
 				totalPending: yjsOutboxSummary.totalPending,
 				activeColumns: yjsOutboxSummary.activeColumns,

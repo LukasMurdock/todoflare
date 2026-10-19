@@ -5,6 +5,7 @@ import type {
 	MutationQueueService,
 	ObservableLike,
 	QueuedMutation,
+	ReplayFailureDetail,
 	ReplayReport,
 	TerminalReplayReason,
 } from "@/lib/sync/contracts";
@@ -28,6 +29,7 @@ export type MutationReplayResult =
 		kind: "drop";
 		reason: TerminalReplayReason;
 		error?: string;
+		detail?: ReplayFailureDetail;
 	  };
 
 export interface MutationQueueStorage {
@@ -198,6 +200,8 @@ export class LocalMutationQueueService implements MutationQueueService {
 				report.terminalFailures.push({
 					...mutation,
 					reason: result.reason,
+					detail: result.detail,
+					failedAt: Date.now(),
 				} as (typeof report.terminalFailures)[number]);
 				continue;
 			}
