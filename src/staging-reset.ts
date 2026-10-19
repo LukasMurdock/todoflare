@@ -16,7 +16,20 @@ const RESET_BATCH = 150;
 /** R2 lists and deletes up to 1000 keys in one call each. */
 const R2_BATCH = 1000;
 const RESET_CONCURRENCY = 8;
-const AUTH_TABLES = ["session", "account", "passkey", "verification", "user"] as const;
+// Children before parents. Agent credentials go with the accounts they act for:
+// a reset must never leave a token or OAuth client from an earlier run.
+const AUTH_TABLES = [
+	"oauth_code",
+	"agent_token",
+	"agent_grant",
+	"agent_connection",
+	"oauth_client",
+	"session",
+	"account",
+	"passkey",
+	"verification",
+	"user",
+] as const;
 
 async function listKvKeys(env: Bindings, prefix: string, limit: number): Promise<string[]> {
 	const page = await env.ACCOUNTS.list({ prefix, limit });
