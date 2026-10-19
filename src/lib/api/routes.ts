@@ -30,6 +30,7 @@ export const API_ROUTES = {
 	revokeAgent: { method: "DELETE", path: "/api/agents/:agentId" },
 	setAgentGrant: { method: "PUT", path: "/api/agents/:agentId/grants/:id" },
 	removeAgentGrant: { method: "DELETE", path: "/api/agents/:agentId/grants/:id" },
+	mcp: { method: "POST", path: "/api/mcp" },
 	clock: { method: "GET", path: "/api/clock" },
 } as const satisfies Record<string, ApiRoute>;
 

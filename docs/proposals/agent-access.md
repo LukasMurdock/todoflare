@@ -6,8 +6,8 @@ see what the agent did, undo it, and cut it off immediately. Column content
 is untrusted input to the agent, so every boundary is enforced by the server
 and none depends on the model behaving.
 
-Status: step 1 (grant model) is implemented. Later steps are planned here and
-are not yet implemented.
+Status: steps 1 (grant model) and 2 (read-only MCP) are implemented. Later
+steps are planned here and are not yet implemented.
 
 ## Model
 
@@ -70,11 +70,11 @@ The whole surface is behind `AGENT_ACCESS_ENABLED` (`"false"` in production,
 
 ## Plan
 
-1. **Grant model** *(this step)*. Tables, the decision function, management
+1. **Grant model** *(done)*. Tables, the decision function, management
    routes, and the exhaustive permission table
    (`test/agent-access-decision.test.ts`: 600 cells against an independent
    ordered rule table, mutation-checked).
-2. **Read-only MCP.** A stateless Streamable HTTP endpoint at `/api/mcp`
+2. **Read-only MCP** *(done)*. A stateless Streamable HTTP endpoint at `/api/mcp`
    authenticated by bearer token, with tools `list_columns` and
    `read_column`. Content is serialized to markdown with stable block IDs and
    a version hash. The column model is flat (paragraphs, h1–h3, and
@@ -94,6 +94,36 @@ The whole surface is behind `AGENT_ACCESS_ENABLED` (`"false"` in production,
    per-column choices, an "Agent access" settings page, presence for active
    agents, and an end-to-end run with the real `claude` CLI and MCP Inspector
    against local and staging.
+
+## Connecting an agent
+
+Until step 4 adds OAuth, create a connection with `POST /api/agents` (passkey
+session) and pass the returned token as a header. For Claude Code:
+
+```sh
+claude mcp add --transport http todoflare https://todo.tamesystems.org/api/mcp \
+  --header "Authorization: Bearer tfa_…"
+```
+
+### Protocol notes
+
+- Legacy, stateless Streamable HTTP: one JSON-RPC message per `POST`, JSON
+  responses only. `GET` and `DELETE` are `405`. Protocol versions
+  `2025-11-25`, `2025-06-18` and `2025-03-26` are supported.
+- Clients that speak the stateless `2026-07-28` revision (Claude Code
+  2.1.303 does) probe with `server/discover` first. Per that revision's
+  compatibility rules, a legacy server answers `400` with a non-modern error
+  and the client falls back to `initialize`. A test pins this: answering with
+  the modern `UnsupportedProtocolVersionError` (`-32022`) would make clients
+  retry instead of falling back. Serving `2026-07-28` natively is a natural
+  follow-up because this server is already stateless.
+
+### Verification against a real client
+
+`scripts/agent-mcp-smoke.mjs` drives the real `claude` CLI against an E2E
+server. It reads a column containing a prompt-injection line, checks the
+answer, then revokes the agent and confirms the endpoint refuses it. It costs
+one real model call, so it is not part of `pnpm verify`.
 
 ## Threats considered
 

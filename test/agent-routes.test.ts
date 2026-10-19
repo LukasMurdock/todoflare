@@ -1,59 +1,10 @@
-import { SELF, env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
+import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import worker, { type Bindings } from "../src/index";
-import {
-	AGENT_CONNECTIONS_PER_ACCOUNT,
-	type AgentConnection,
-	createAgentResponseSchema,
-	listAgentsResponseSchema,
-	agentResponseSchema,
-} from "../src/lib/api/agent-contract";
-import { ACCOUNT_COMMANDS } from "../src/lib/api/account-commands";
+import { AGENT_CONNECTIONS_PER_ACCOUNT, agentResponseSchema } from "../src/lib/api/agent-contract";
 import { API_ROUTES, routePath } from "../src/lib/api/routes";
 import { agentStore, agentTokenHash } from "../src/server/agent-access/store";
+import { BASE, call, commandRoute, createAgent, fetchWithEnv, grantRoute, listAgents, setGrant } from "./helpers/agent-fixtures";
 import { createAccount, createColumn, headers } from "./helpers/metadata-fixtures";
-
-const BASE = "http://example.com";
-
-async function call(accountId: string | null, route: { method: string; path: string }, body?: unknown, extra: Record<string, string> = {}) {
-	return SELF.fetch(`${BASE}${route.path}`, {
-		method: route.method,
-		headers: { ...(accountId ? headers(accountId) : { "Content-Type": "application/json" }), ...extra },
-		body: body === undefined ? undefined : JSON.stringify(body),
-	});
-}
-
-async function createAgent(accountId: string, name = "Claude Code") {
-	const response = await call(accountId, API_ROUTES.createAgent, { name });
-	expect(response.status).toBe(201);
-	return createAgentResponseSchema.parse(await response.json());
-}
-
-function commandRoute(name: "column.share" | "column.delete", columnId: string) {
-	const { method, path } = ACCOUNT_COMMANDS[name];
-	return { method, path: routePath(path, { id: columnId }) };
-}
-
-function grantRoute(method: "PUT" | "DELETE", agentId: string, columnId: string) {
-	return { method, path: routePath(API_ROUTES.setAgentGrant.path, { agentId, id: columnId }) };
-}
-
-async function setGrant(accountId: string, agentId: string, columnId: string, body: unknown = { level: "read" }) {
-	return call(accountId, grantRoute("PUT", agentId, columnId), body);
-}
-
-async function listAgents(accountId: string): Promise<AgentConnection[]> {
-	const response = await call(accountId, API_ROUTES.listAgents);
-	expect(response.status).toBe(200);
-	return listAgentsResponseSchema.parse(await response.json()).agents;
-}
-
-async function fetchWithEnv(request: Request, overrides: Partial<Bindings>) {
-	const ctx = createExecutionContext();
-	const response = await worker.fetch(request, { ...env, ...overrides } as Bindings, ctx);
-	await waitOnExecutionContext(ctx);
-	return response;
-}
 
 describe("agent management routes", () => {
 	it("returns a token exactly once and stores only its hash", async () => {
