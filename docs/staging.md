@@ -123,7 +123,7 @@ previews with separate lifecycle rules.
 The initial production release was from 2026-05-12, with automatic backups
 disabled and no auth database. Explicit remote inventory found four accounts and
 two active documents. The initial code review found real data-loss risks; see
-[data-loss remediation](data-loss-remediation.md).
+[data-loss remediation](history/data-loss-remediation.md).
 
 ## Passkey-only release
 
