@@ -15,6 +15,8 @@ export const TERMINAL_REPLAY_REASONS = [
 	"not_owner",
 	"not_found",
 	"validation_failed",
+	/** The server may or may not have applied it; only fresh server state can tell. */
+	"outcome_unknown",
 ] as const;
 
 export type TerminalReplayReason = (typeof TERMINAL_REPLAY_REASONS)[number];

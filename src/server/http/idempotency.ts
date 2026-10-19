@@ -60,9 +60,9 @@ export function idempotencyOutcomeUnknownResponse() {
 	return Response.json(
 		{
 			error: "idempotency_outcome_unknown",
-			code: "idempotency_in_progress",
+			code: "idempotency_outcome_unknown",
 			message:
-				"A previous attempt may have executed, but its outcome could not be recorded. Retry with a new operation only after reconciling state.",
+				"A previous attempt may have executed, but its outcome could not be recorded. Reload the latest state before trying again.",
 		},
 		{ status: 409 },
 	);

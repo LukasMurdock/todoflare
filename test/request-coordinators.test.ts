@@ -70,6 +70,51 @@ describe("request coordinators", () => {
 		});
 	});
 
+	it("reports an unknown outcome once a pending claim outlives its lease", async () => {
+		const stub = env.IDEMPOTENCY_COORDINATOR.get(
+			env.IDEMPOTENCY_COORDINATOR.idFromName(`test:${crypto.randomUUID()}`),
+		);
+		const begin = (pendingLeaseMs?: number) =>
+			stub.fetch(
+				new Request("http://idempotency/begin", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						fingerprint: "same-request",
+						pendingExpiresAt: Date.now() + 60_000,
+						pendingLeaseMs,
+					}),
+				}),
+			);
+
+		const claim = (await (await begin()).json()) as { kind: string; ownerToken: string };
+		expect(claim.kind).toBe("acquired");
+		expect(await (await begin()).json()).toEqual({ kind: "pending" });
+		// The owner died mid-request: past the lease, nobody may re-run it.
+		expect(await (await begin(0)).json()).toEqual({ kind: "indeterminate" });
+		expect(await (await begin()).json()).toEqual({ kind: "indeterminate" });
+
+		// An owner that was only slow still records its real result.
+		const completed = await stub.fetch(
+			new Request("http://idempotency/complete", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					ownerToken: claim.ownerToken,
+					status: 200,
+					body: { success: true },
+					expiresAt: Date.now() + 60_000,
+				}),
+			}),
+		);
+		expect(completed.ok).toBe(true);
+		expect(await (await begin()).json()).toEqual({
+			kind: "completed",
+			status: 200,
+			body: { success: true },
+		});
+	});
+
 	it("atomically enforces the configured rate limit under concurrency", async () => {
 		const key = `concurrent:${crypto.randomUUID()}`;
 		const results = await Promise.all(

@@ -8,6 +8,7 @@ const terminalReasonByCode: Partial<Record<ApiErrorCode, TerminalReplayReason>> 
 	not_found: "not_found",
 	invalid_request: "validation_failed",
 	idempotency_conflict: "validation_failed",
+	idempotency_outcome_unknown: "outcome_unknown",
 };
 
 interface ErrorPayload {
