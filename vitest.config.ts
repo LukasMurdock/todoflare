@@ -11,7 +11,7 @@ export default defineConfig({
 		cloudflareTest({
 			wrangler: { configPath: "./wrangler.jsonc" },
 			miniflare: {
-				bindings: { AUTH_TEST_BYPASS: "true", TEST_AUTH_MIGRATIONS: authMigrations },
+				bindings: { AUTH_TEST_BYPASS: "true", AGENT_ACCESS_ENABLED: "true", TEST_AUTH_MIGRATIONS: authMigrations },
 			},
 		}),
 	],

@@ -17,6 +17,7 @@ import { createColumnBackupSnapshot, isAutoBackupEnabled, runScheduledBackups } 
 import { registerAccountCommandRoutes } from "./server/routes/account-commands";
 import { registerAccountRoutes } from "./server/routes/account";
 import { registerAdminBackupRoutes } from "./server/routes/admin-backups";
+import { registerAgentRoutes } from "./server/routes/agents";
 import { registerAuthRoutes, registerAuthStatusRoute } from "./server/routes/auth";
 import { registerColumnRoutes } from "./server/routes/columns";
 import { registerPublicRoutes } from "./server/routes/public";
@@ -64,6 +65,7 @@ registerAccountRoutes(app);
 registerAccountCommandRoutes(app);
 registerColumnRoutes(app);
 registerPublicRoutes(app);
+registerAgentRoutes(app);
 registerAdminBackupRoutes(app);
 
 // Keep the clock endpoint for testing

@@ -16,6 +16,8 @@ export type Bindings = {
 	PUBLIC_ID_COORDINATOR: DurableObjectNamespace;
 	RATE_LIMIT_DISABLED?: string;
 	READ_ONLY_MODE?: string;
+	/** "true" serves agent access; anything else hides every agent route. */
+	AGENT_ACCESS_ENABLED?: string;
 	BACKUPS?: R2Bucket;
 	BACKUP_ADMIN_TOKEN?: string;
 	AUTO_BACKUP_ENABLED?: string;

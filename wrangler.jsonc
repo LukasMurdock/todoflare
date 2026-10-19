@@ -22,7 +22,8 @@
 		"AUTH_RP_ID": "todo.tamesystems.org",
 		"AUTO_BACKUP_ENABLED": "true",
 		"BACKUP_MAX_COLUMNS": "1000",
-		"ENVIRONMENT": "production"
+		"ENVIRONMENT": "production",
+		"AGENT_ACCESS_ENABLED": "false"
 	},
 	"d1_databases": [
 		{
@@ -144,7 +145,8 @@
 				"AUTH_RP_ID": "staging.todo.tamesystems.org",
 				"AUTO_BACKUP_ENABLED": "true",
 				"BACKUP_MAX_COLUMNS": "1000",
-				"ENVIRONMENT": "staging"
+				"ENVIRONMENT": "staging",
+				"AGENT_ACCESS_ENABLED": "true"
 			},
 			"kv_namespaces": [
 				{
