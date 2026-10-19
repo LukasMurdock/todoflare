@@ -36,12 +36,17 @@ async function request<T extends z.ZodType>(
 		},
 		body: body === undefined ? undefined : JSON.stringify(body),
 	});
-	const json = (await response.json().catch(() => null)) as { error?: string; display?: string; code?: string } | null;
+	const json = (await response.json().catch(() => null)) as { error?: string; display?: string; message?: string; code?: string } | null;
 	if (response.status === 404 && json?.code === "not_found" && route === API_ROUTES.listAgents) throw new AgentAccessDisabledError();
-	if (!response.ok) throw new AgentApiError(json?.display ?? json?.error ?? `Request failed (${response.status})`);
+	if (!response.ok) throw new AgentApiError(agentErrorMessage(response.status, json));
 	const parsed = schema.safeParse(json);
 	if (!parsed.success) throw new AgentApiError("Unexpected response from the server");
 	return parsed.data;
+}
+
+/** What a person reads when a request fails: the server's sentence, never its error code. */
+export function agentErrorMessage(status: number, body: { display?: string; message?: string } | null): string {
+	return body?.display ?? body?.message ?? `Something went wrong (${status}). Please try again.`;
 }
 
 const revokedSchema = z.object({ success: z.literal(true) });

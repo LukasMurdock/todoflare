@@ -86,8 +86,8 @@ export function OAuthConsentPage() {
 				headers: { ...accountRequestHeaders(accountId), "Content-Type": "application/json" },
 				body: JSON.stringify(decision === "deny" ? { decision, params } : { decision, params, name: name.trim() || "Agent", expiresInDays, grants }),
 			});
-			const body = (await response.json().catch(() => null)) as { redirectTo?: string; display?: string } | null;
-			if (!response.ok || !body?.redirectTo) throw new Error(body?.display ?? "Could not complete the request");
+			const body = (await response.json().catch(() => null)) as { redirectTo?: string; display?: string; message?: string } | null;
+			if (!response.ok || !body?.redirectTo) throw new Error(body?.display ?? body?.message ?? "Could not complete the request");
 			setPage({ kind: "leaving", to: body.redirectTo });
 			window.location.assign(body.redirectTo);
 		} catch (cause) {
