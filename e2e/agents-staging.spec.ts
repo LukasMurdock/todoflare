@@ -59,16 +59,18 @@ test("agent access works end to end on staging", async ({ page, context, baseURL
 	// The server must have the edit, not just the page: titles are read on the server.
 	await expect.poll(() => getYjsOutboxCountForColumn(page, accountId, columnId)).toBe(0);
 
-	// 1. A personal token for Claude Code, with edit access granted in the dialog.
+	// 1. The Claude Code steps in the dialog: edit access to the column, then the command.
 	const compact = accountId.replace(/\D/g, "");
 	await page.getByRole("button", { name: `${compact.slice(0, 4)}...${compact.slice(-4)}` }).click();
 	await page.getByRole("menuitem", { name: "Agents" }).click();
 	const dialog = page.getByRole("dialog", { name: "Agents" });
+	await dialog.getByRole("button", { name: /^Claude Code/ }).click();
+	await dialog.getByRole("combobox", { name: "Access to Staging errands" }).selectOption("edit");
 	await dialog.getByRole("textbox", { name: "Agent name" }).fill("Claude Code (staging)");
-	await dialog.getByRole("button", { name: "Create token" }).click();
-	const token = (await dialog.getByTestId("agent-token").locator("code").first().textContent())!.trim();
-	await dialog.getByRole("combobox", { name: "Give Claude Code (staging) a column" }).selectOption({ label: "Staging errands" });
-	await dialog.getByRole("combobox", { name: "Claude Code (staging) access to Staging errands" }).selectOption("edit");
+	await dialog.getByRole("button", { name: "Connect with 1 column" }).click();
+	const command = (await dialog.getByTestId("agent-token").locator("code").first().textContent())!.trim();
+	const token = /Bearer (tfa_[A-Za-z0-9_-]+)"/.exec(command)![1]!;
+	await dialog.getByRole("button", { name: "Done" }).click();
 	await expect(dialog.getByRole("combobox", { name: "Claude Code (staging) access to Staging errands" })).toHaveValue("edit");
 	await page.keyboard.press("Escape");
 

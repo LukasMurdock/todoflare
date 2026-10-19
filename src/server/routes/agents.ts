@@ -71,14 +71,31 @@ export function registerAgentRoutes(app: App) {
 		if (readOnly) return readOnly;
 		const body = await validateJsonBody(c, createAgentBodySchema);
 		if (!body.ok) return body.response;
-		const created = await agentStore(c.env.AUTH_DB).create({
+		const grants = body.data.grants ?? [];
+		// An account can delegate only what it can reach itself, right now.
+		for (const grant of grants) {
+			const column = await loadColumnAccessState(c.env.COLUMN_ROOM, grant.columnId);
+			if (!column.ok) return durableObjectUnavailableResponse();
+			if (!column.state || column.state.trashed || !hasColumnAccess(column.state.meta, auth.accountId)) {
+				return apiErrorResponse("not_found", "Column not found", 404);
+			}
+		}
+		const store = agentStore(c.env.AUTH_DB);
+		const now = Date.now();
+		const created = await store.create({
 			userId: auth.accountId,
 			name: body.data.name,
 			expiresInDays: body.data.expiresInDays ?? AGENT_CONNECTION_DEFAULT_DAYS,
-			now: Date.now(),
+			now,
 		});
 		if (!created.ok) return storeFailureResponse(created.reason);
-		return c.json(created.value, 201, NO_STORE);
+		let agent = created.value.agent;
+		for (const grant of grants) {
+			const updated = await store.setGrant({ userId: auth.accountId, connectionId: agent.id, columnId: grant.columnId, level: grant.level, expiresAt: null, now });
+			if (!updated.ok) return storeFailureResponse(updated.reason);
+			agent = updated.value;
+		}
+		return c.json({ agent, token: created.value.token }, 201, NO_STORE);
 	});
 
 	// Revocation stays available in read-only mode: cutting off access is never

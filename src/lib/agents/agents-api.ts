@@ -48,8 +48,8 @@ const revokedSchema = z.object({ success: z.literal(true) });
 
 export const agentsApi = {
 	list: (accountId: string) => request(accountId, API_ROUTES.listAgents, API_ROUTES.listAgents.path, listAgentsResponseSchema).then((r) => r.agents),
-	create: (accountId: string, name: string, expiresInDays: number) =>
-		request(accountId, API_ROUTES.createAgent, API_ROUTES.createAgent.path, createAgentResponseSchema, { name, expiresInDays }),
+	create: (accountId: string, name: string, expiresInDays: number, grants: Array<{ columnId: string; level: AgentGrantLevel }> = []) =>
+		request(accountId, API_ROUTES.createAgent, API_ROUTES.createAgent.path, createAgentResponseSchema, { name, expiresInDays, grants }),
 	revoke: (accountId: string, agentId: string) =>
 		request(accountId, API_ROUTES.revokeAgent, routePath(API_ROUTES.revokeAgent.path, { agentId }), revokedSchema),
 	setGrant: (accountId: string, agentId: string, columnId: string, level: AgentGrantLevel) =>

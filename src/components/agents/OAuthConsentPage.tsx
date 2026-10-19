@@ -7,7 +7,7 @@ import { agentsApi } from "@/lib/agents/agents-api";
 import type { AgentGrantLevel, GrantableColumn } from "@/lib/api/agent-contract";
 import { accountRequestHeaders } from "@/lib/account-request-headers";
 import { API_ROUTES } from "@/lib/api/routes";
-import { AgentLevelSelect } from "./AgentLevelSelect";
+import { AgentColumnPicker } from "./AgentColumnPicker";
 
 const AUTHORIZATION_PARAMS = ["response_type", "client_id", "redirect_uri", "code_challenge", "code_challenge_method", "state", "resource", "scope"] as const;
 
@@ -171,35 +171,8 @@ export function OAuthConsentPage() {
 				<>
 					<section className="space-y-2 border-t pt-4">
 						<h2 className="text-sm font-medium">Choose what it can use</h2>
-						<p className="text-xs text-muted-foreground">It can only use columns you choose here, at the level you set. You can change this later.</p>
-						{columns === null ? (
-							<p className="text-sm text-muted-foreground">Loading your columns…</p>
-						) : columns.length === 0 ? (
-							<p className="text-sm text-muted-foreground">You have no columns yet.</p>
-						) : (
-							<ul className="max-h-64 space-y-2 overflow-y-auto">
-								{columns.map((column) => (
-									<li key={column.columnId} className="flex items-center justify-between gap-2">
-										<span className="min-w-0 truncate text-sm">
-											{column.title || "Untitled column"}
-											{!column.owned && <span className="text-xs text-muted-foreground"> · shared with you</span>}
-										</span>
-										<AgentLevelSelect
-											label={`Access to ${column.title || "untitled column"}`}
-											value={levels[column.columnId] ?? null}
-											onChange={(level) =>
-												setLevels((current) => {
-													const next = { ...current };
-													if (level) next[column.columnId] = level;
-													else delete next[column.columnId];
-													return next;
-												})
-											}
-										/>
-									</li>
-								))}
-							</ul>
-						)}
+						<p className="text-xs text-muted-foreground">It can only use the columns you choose here, at the level you set. You can change this later in Todoflare under Agents.</p>
+						<AgentColumnPicker columns={columns} levels={levels} onChange={setLevels} disabled={busy} />
 					</section>
 					<section className="flex gap-2 border-t pt-4">
 						<Input aria-label="Name for this connection" value={name} maxLength={80} onChange={(event) => setName(event.target.value)} />

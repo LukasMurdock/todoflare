@@ -202,9 +202,14 @@ The Worker is its own OAuth 2.1 authorization server, built to the MCP
 
 ## UI
 
-- **Account menu → Agents:**
-  - the connector address for Claude.ai
-  - personal tokens, shown once, with a ready `claude mcp add` command
+- **Account menu → Agents:** a guided, numbered setup per app (Claude Code,
+  Claude.ai, another app or script)
+  - token apps choose their columns *before* the token exists; creation
+    grants them in the same request, so no connection starts with nothing
+  - Claude Code gets one copyable `claude mcp add --scope user …` command
+    (user scope, so it works in every folder), shown once
+  - Claude.ai gets the address, a link to its connector settings and the
+    remaining steps; the column choice happens on the consent page
   - every connection, with its columns and levels, last use and expiry
   - two-step disconnect
 - **Each column:** an agent button (marked when an agent has access) with
@@ -267,12 +272,13 @@ the tables are additive and can stay.
 
 ## Connecting an agent
 
-Claude.ai and other OAuth-capable clients: add `<origin>/api/mcp` as a
-custom connector and approve the columns on the consent page. For tools that
-take a bearer token, create one under account menu → Agents. For Claude Code:
+Account menu → Agents walks through each app step by step. Claude.ai and
+other OAuth-capable clients: add `<origin>/api/mcp` as a custom connector and
+approve the columns on the consent page. Claude Code: choose the columns,
+then run the command the dialog shows:
 
 ```sh
-claude mcp add --transport http todoflare https://todo.tamesystems.org/api/mcp \
+claude mcp add --scope user --transport http todoflare https://todo.tamesystems.org/api/mcp \
   --header "Authorization: Bearer tfa_…"
 ```
 

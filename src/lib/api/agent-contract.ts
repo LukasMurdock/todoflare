@@ -52,6 +52,12 @@ export const createAgentBodySchema = z
 	.object({
 		name: z.string().trim().min(1).max(80),
 		expiresInDays: z.number().int().min(1).max(AGENT_CONNECTION_MAX_DAYS).optional(),
+		/** Columns the new connection gets, granted before its token is returned. */
+		grants: z
+			.array(z.object({ columnId: columnIdContractSchema, level: agentGrantLevelSchema }).strict())
+			.max(AGENT_GRANTS_PER_CONNECTION)
+			.refine((grants) => new Set(grants.map((grant) => grant.columnId)).size === grants.length, "Each column may appear once")
+			.optional(),
 	})
 	.strict();
 

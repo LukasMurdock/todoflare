@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { AGENT_CONNECTIONS_PER_ACCOUNT, agentResponseSchema } from "../src/lib/api/agent-contract";
+import { AGENT_CONNECTIONS_PER_ACCOUNT, agentResponseSchema, createAgentResponseSchema } from "../src/lib/api/agent-contract";
 import { API_ROUTES, routePath } from "../src/lib/api/routes";
 import { agentStore, agentTokenHash } from "../src/server/agent-access/store";
 import { BASE, call, commandRoute, createAgent, fetchWithEnv, grantRoute, listAgents, setGrant } from "./helpers/agent-fixtures";
@@ -47,6 +47,52 @@ describe("agent management routes", () => {
 				{ columnId: sharedWithMe, level: "append" },
 			].sort((a, b) => a.columnId.localeCompare(b.columnId)),
 		);
+	});
+
+	it("creates a token with its columns already granted", async () => {
+		const me = await createAccount();
+		const first = await createColumn(me.id);
+		const second = await createColumn(me.id);
+		const response = await call(me.id, API_ROUTES.createAgent, {
+			name: "Claude Code",
+			grants: [
+				{ columnId: first, level: "edit" },
+				{ columnId: second, level: "read" },
+			],
+		});
+		expect(response.status).toBe(201);
+		const { agent, token } = createAgentResponseSchema.parse(await response.json());
+		expect(agent.grants.map(({ columnId, level }) => ({ columnId, level })).sort((a, b) => a.columnId.localeCompare(b.columnId))).toEqual(
+			[
+				{ columnId: first, level: "edit" },
+				{ columnId: second, level: "read" },
+			].sort((a, b) => a.columnId.localeCompare(b.columnId)),
+		);
+		expect(await agentStore(env.AUTH_DB).resolveToken(token, Date.now())).toMatchObject({ id: agent.id });
+	});
+
+	it("creates nothing when an initial column is out of reach or repeated", async () => {
+		const me = await createAccount();
+		const stranger = await createAccount();
+		const mine = await createColumn(me.id);
+		const notMine = await createColumn(stranger.id);
+		const outOfReach = await call(me.id, API_ROUTES.createAgent, {
+			name: "Claude Code",
+			grants: [
+				{ columnId: mine, level: "read" },
+				{ columnId: notMine, level: "read" },
+			],
+		});
+		expect(outOfReach.status).toBe(404);
+		const repeated = await call(me.id, API_ROUTES.createAgent, {
+			name: "Claude Code",
+			grants: [
+				{ columnId: mine, level: "read" },
+				{ columnId: mine, level: "edit" },
+			],
+		});
+		expect(repeated.status).toBe(400);
+		expect(await listAgents(me.id)).toEqual([]);
 	});
 
 	it("updates a grant's level in place", async () => {

@@ -43,14 +43,20 @@ test.describe("agents", () => {
 		const columnId = await addColumnAndGetId(page);
 		await typeIntoFirstColumn(page, accountId, columnId, "Groceries");
 
-		// Connect an agent with a token, then give it read access to the column.
+		// Follow the Claude Code steps: choose the column first, then get the command.
 		await openAgentsDialog(page, accountId);
 		const dialog = page.getByRole("dialog", { name: "Agents" });
+		await dialog.getByRole("button", { name: /^Claude Code/ }).click();
+		await expect(dialog.getByRole("button", { name: "Choose a column first" })).toBeDisabled();
+		await dialog.getByRole("combobox", { name: "Access to Groceries" }).selectOption("read");
 		await dialog.getByRole("textbox", { name: "Agent name" }).fill("Test agent");
-		await dialog.getByRole("button", { name: "Create token" }).click();
-		const token = (await dialog.getByTestId("agent-token").locator("code").first().textContent())!.trim();
-		expect(token).toMatch(/^tfa_/);
-		await dialog.getByRole("combobox", { name: "Give Test agent a column" }).selectOption({ label: "Groceries" });
+		await dialog.getByRole("button", { name: "Connect with 1 column" }).click();
+		await expect(dialog.getByTestId("agent-token")).toContainText("Test agent can use 1 column");
+		const command = (await dialog.getByTestId("agent-token").locator("code").first().textContent())!.trim();
+		// User scope, so the connection works in every folder, not only where the command ran.
+		expect(command).toContain(`claude mcp add --scope user --transport http todoflare ${appUrl}/api/mcp`);
+		const token = /Bearer (tfa_[A-Za-z0-9_-]+)"/.exec(command)![1]!;
+		await dialog.getByRole("button", { name: "Done" }).click();
 		await expect(dialog.getByRole("combobox", { name: "Test agent access to Groceries" })).toHaveValue("read");
 		await page.keyboard.press("Escape");
 
