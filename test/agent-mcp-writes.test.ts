@@ -178,6 +178,22 @@ describe.each(MCP_ERAS)("agent writes (%s protocol)", (era) => {
 		expect(logged).toMatchObject({ undoneBy: owner.id.replace(/\s/g, ""), undoResult: { restored: 1, kept: 0 } });
 	});
 
+	it("shows each change as the items it added, changed and removed", async () => {
+		const { owner, columnId, token } = await setup();
+		const added = result(await callTool(token, "append_items", { columnId, items: [{ text: "Bread" }] }));
+		result(await callTool(token, "set_checked", { columnId, itemId: "milkaaaaaa", checked: true }));
+		result(await callTool(token, "update_item", { columnId, itemId: "milkaaaaaa", find: "Milk", replaceWith: "Oat milk" }));
+		const version = String(result(await callTool(token, "read_column", { columnId })).structuredContent!.version);
+		result(await callTool(token, "delete_items", { columnId, itemIds: [String((added.structuredContent!.itemIds as string[])[0])], expectedVersion: version }));
+		const [deleted, edited, checked, appended] = await listChanges(owner.id, columnId);
+		const milk = (text: string, isChecked: boolean) => ({ text, style: "todo", checked: isChecked, depth: 0 });
+		expect(appended!.diff).toEqual({ entries: [{ kind: "added", item: milk("Bread", false) }], omitted: 0 });
+		expect(checked!.diff.entries).toEqual([{ kind: "changed", before: milk("Milk", false), after: milk("Milk", true) }]);
+		// The checkbox the earlier change ticked stays in view, unchanged.
+		expect(edited!.diff.entries).toEqual([{ kind: "changed", before: milk("Milk", true), after: milk("Oat milk", true) }]);
+		expect(deleted!.diff.entries).toEqual([{ kind: "removed", item: milk("Bread", false) }]);
+	});
+
 	it("does not log a no-op", async () => {
 		const { owner, columnId, token } = await setup();
 		const response = result(await callTool(token, "set_checked", { columnId, itemId: "milkaaaaaa", checked: false }, opts));

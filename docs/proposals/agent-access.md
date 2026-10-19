@@ -123,7 +123,10 @@ rewritten, so the person's own characters, not copies of them, survive.
 **Change log and undo.** Each change is recorded in the column
 (`agent_changes`: who, which agent, tool, summary, items; kept 30 days, at
 most 1000, pruned whenever a change is recorded and when the column compacts;
-listing returns the newest 200). Any member can list changes (`GET /api/column/:id/agent-changes`)
+listing returns the newest 200, each with a diff of the items it added,
+removed or changed, derived from its undo record by
+`src/server/agent-access/change-diff.ts`; field edits also store the item's
+full prior fields so the diff can show the item in context). Any member can list changes (`GET /api/column/:id/agent-changes`)
 and undo them (`POST …/:changeId/undo`). Agents can undo their own changes.
 Undo is **compare-and-revert**: it reverts a field or item only while it
 still holds what the agent wrote, and reports what it kept because a person

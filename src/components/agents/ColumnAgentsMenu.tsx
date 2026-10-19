@@ -6,6 +6,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { replaceAgentConnection, useAgentConnections } from "@/hooks/useAgentConnections";
 import { agentsApi } from "@/lib/agents/agents-api";
 import type { AgentChange, AgentGrantLevel } from "@/lib/api/agent-contract";
+import { AgentChangeDiffView } from "./AgentChangeDiff";
 import { AgentLevelSelect } from "./AgentLevelSelect";
 
 interface ColumnAgentsMenuProps {
@@ -78,7 +79,7 @@ export function ColumnAgentsMenu({ accountId, columnId }: ColumnAgentsMenuProps)
 					{activeHere.length > 0 && <span className="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-sky-500" aria-hidden />}
 				</button>
 			</PopoverTrigger>
-			<PopoverContent className="w-80" align="end">
+			<PopoverContent className="w-96" align="end">
 				<div className="space-y-4">
 					<section className="space-y-2">
 						<h4 className="text-sm font-medium">Agent access</h4>
@@ -105,11 +106,12 @@ export function ColumnAgentsMenu({ accountId, columnId }: ColumnAgentsMenuProps)
 						) : changes.length === 0 ? (
 							<p className="text-xs text-muted-foreground">No agent has changed this column.</p>
 						) : (
-							<ul className="max-h-64 space-y-2 overflow-y-auto">
+							<ul className="max-h-96 space-y-2 overflow-y-auto">
 								{changes.map((change) => (
 									<li key={change.id} className="flex items-start justify-between gap-2 rounded border p-2" data-testid="agent-change">
-										<div className="min-w-0">
+										<div className="min-w-0 flex-1 space-y-1">
 											<p className={change.undoneAt ? "text-sm text-muted-foreground line-through" : "text-sm"}>{change.summary}</p>
+											<AgentChangeDiffView diff={change.diff} muted={change.undoneAt !== null} />
 											<p className="text-xs text-muted-foreground">
 												{change.agentName} · {when(change.createdAt)}
 												{change.undoneAt ? ` · ${undoneLabel(change)}` : ""}
