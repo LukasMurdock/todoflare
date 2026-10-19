@@ -243,7 +243,9 @@ editor ─ Y.Doc update ─► cache in IndexedDB ─► Yjs outbox (persist fir
 - There is no state-vector exchange: on reconnect the server sends its whole
   document and the client its whole unacknowledged outbox, and Yjs merges.
 - Presence is derived on the server from sessions; awareness (cursors) is
-  relayed and kept only as the latest entry per column.
+  relayed and kept only as the latest entry per column. The room stops
+  y-protocols' expiry timer so it can hibernate: a peer's entry is dropped when
+  its socket closes, and clients expire peers that stop renewing.
 
 ### 5. Losing access
 
@@ -340,6 +342,9 @@ Breaking one of these is a bug even if every test passes.
 - Corrupt Yjs state blocks reads, writes, sockets and compaction rather than
   being compacted away.
 - Read-only mode stops every write path, including cron.
+- `ColumnRoomSql` holds no timers or non-hibernatable sockets between
+  messages. Anything pending keeps the object awake, and it is billed for
+  duration the whole time a column is open.
 - An agent's access never exceeds its account's live access; no agent-facing
   route can widen, extend or create access; column text is data, not
   instructions.
