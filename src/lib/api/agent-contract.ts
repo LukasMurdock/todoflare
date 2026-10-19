@@ -65,3 +65,33 @@ export const listAgentsResponseSchema = z.object({ agents: z.array(agentConnecti
 /** The token is returned exactly once, at creation; only its hash is stored. */
 export const createAgentResponseSchema = z.object({ agent: agentConnectionContractSchema, token: z.string() });
 export const agentResponseSchema = z.object({ agent: agentConnectionContractSchema });
+
+export const agentChangeIdContractSchema = z.string().regex(/^chg_[A-Za-z0-9_-]{22}$/, "Invalid change ID");
+
+/** One edit an agent made to a column, as recorded by the column. */
+export const agentChangeContractSchema = z
+	.object({
+		id: agentChangeIdContractSchema,
+		agentId: agentIdContractSchema,
+		agentName: z.string(),
+		/** The account the agent acted for. */
+		accountId: z.string(),
+		tool: z.string(),
+		summary: z.string(),
+		itemIds: z.array(z.string()),
+		createdAt: timestampContractSchema,
+		undoneAt: timestampContractSchema.nullable(),
+		/** An account ID, or `agent:<agentId>` when the agent undid it itself. */
+		undoneBy: z.string().nullable(),
+		undoResult: z.object({ restored: z.number(), kept: z.number(), version: z.string() }).nullable(),
+	})
+	.strict();
+export type AgentChange = z.output<typeof agentChangeContractSchema>;
+
+export const listAgentChangesResponseSchema = z.object({ changes: z.array(agentChangeContractSchema) });
+export const undoAgentChangeResponseSchema = z.object({
+	ok: z.literal(true),
+	restored: z.number(),
+	kept: z.number(),
+	version: z.string(),
+});

@@ -69,20 +69,20 @@ describe("column content codec", () => {
 		expect(columnTitle([{ id: null, type: "p", list: null, depth: 0, checked: false, text: "x".repeat(200) }])).toHaveLength(80);
 	});
 
-	it("versions content: stable across encodings, different after any edit", async () => {
+	it("versions content: stable across encodings, different after any edit", () => {
 		const original = docFromPlate(BOARD);
 		const copy = new Y.Doc();
 		Y.applyUpdate(copy, Y.encodeStateAsUpdate(original));
-		const before = (await readColumnContent(original)).version;
-		expect((await readColumnContent(copy)).version).toBe(before);
+		const before = (readColumnContent(original)).version;
+		expect((readColumnContent(copy)).version).toBe(before);
 
 		const firstTodo = columnContentRoot(copy).toDelta()[1].insert as Y.XmlText;
 		firstTodo.setAttribute("checked", true);
-		expect((await readColumnContent(copy)).version).not.toBe(before);
+		expect((readColumnContent(copy)).version).not.toBe(before);
 	});
 
-	it("treats an empty document as no blocks", async () => {
-		expect(await readColumnContent(new Y.Doc())).toMatchObject({ blocks: [] });
+	it("treats an empty document as no blocks", () => {
+		expect(readColumnContent(new Y.Doc())).toMatchObject({ blocks: [] });
 		expect(columnBlocksToMarkdown([])).toBe("");
 	});
 });

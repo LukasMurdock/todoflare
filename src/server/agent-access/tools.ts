@@ -8,6 +8,7 @@ import type { Bindings } from "../bindings";
 import { loadColumnAccessState, type ColumnAccessState } from "./column-state";
 import { columnBlocksToMarkdown, columnTitle, readColumnContent } from "./column-content";
 import { decideAgentColumnAccess, type AgentAccessDecision } from "./decision";
+import { ITEM_STYLES, type AgentEdit } from "./column-edits";
 import { toolError, toolText, type ToolResult } from "./mcp-protocol";
 import { agentStore, type ResolvedAgent } from "./store";
 
@@ -82,7 +83,73 @@ function defineTool<TInput extends z.ZodType>(tool: AgentTool<TInput>): AgentToo
 	return tool;
 }
 
-const columnInput = z.object({ columnId: columnIdContractSchema.describe("A column ID from list_columns.") }).strict();
+const columnId = columnIdContractSchema.describe("A column ID from list_columns.");
+const columnInput = z.object({ columnId }).strict();
+const itemId = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, "An item ID, without the ^").describe("An item's ID from read_column, without the leading ^.");
+const expectedVersion = z.string().min(1).max(64).describe("The version read_column returned. The edit is refused if the column changed since.");
+const itemText = z
+	.string()
+	.max(2000)
+	.refine((text) => !/[\r\n]/.test(text), "One line per item: split multi-line text into several items");
+const itemStyle = z.enum(ITEM_STYLES).describe("todo (a checkbox), bullet, numbered, paragraph, or heading1–3.");
+const depth = z.number().int().min(0).max(8).describe("Nesting level; 0 is top level.");
+const newItem = z
+	.object({
+		text: itemText,
+		style: itemStyle.default("todo"),
+		checked: z.boolean().optional().describe("Todo items only."),
+		depth: depth.optional(),
+	})
+	.strict();
+
+interface EditResponse {
+	ok: boolean;
+	changeId?: string | null;
+	version?: string;
+	itemIds?: string[];
+	summary?: string;
+	failure?: { code: string; message: string };
+	code?: string;
+}
+
+/** Sends an authorized edit to the column's Durable Object, which rechecks access atomically with the write. */
+async function editColumn(
+	context: AgentToolContext,
+	tool: string,
+	columnId: string,
+	required: AgentGrantLevel,
+	edit: AgentEdit,
+): Promise<ToolResult> {
+	const authorization = await authorizeColumn(context, columnId, required);
+	if (!authorization.ok) return authorization.result;
+	const stub = context.env.COLUMN_ROOM.get(context.env.COLUMN_ROOM.idFromName(columnId));
+	const response = await stub.fetch(
+		new Request("http://do/agent-edit", {
+			method: "POST",
+			body: JSON.stringify({
+				accountId: context.agent.userId,
+				connectionId: context.agent.id,
+				agentName: context.agent.name,
+				tool,
+				requiredLevel: required,
+				edit,
+			}),
+		}),
+	);
+	if (response.status === 503) return toolError("Todoflare is temporarily read-only. Try again later.");
+	const body = (await response.json()) as EditResponse;
+	if (response.status === 404) return toolError(NOT_VISIBLE);
+	if (!body.ok) return toolError(body.failure?.message ?? "The edit could not be applied.");
+	const ids = body.itemIds?.length ? ` Items: ${body.itemIds.map((id) => `^${id}`).join(", ")}.` : "";
+	const undo = body.changeId ? ` Change ${body.changeId} can be undone with undo_change.` : "";
+	return toolText(`${body.summary}.${ids} Column version is now ${body.version}.${undo}`, {
+		columnId,
+		changeId: body.changeId ?? null,
+		version: body.version,
+		itemIds: body.itemIds ?? [],
+		summary: body.summary,
+	});
+}
 
 export const AGENT_TOOLS = [
 	defineTool({
@@ -100,7 +167,7 @@ export const AGENT_TOOLS = [
 				if (!authorization.ok) return null;
 				const doc = await loadDocument(context.env, grant.columnId);
 				if (!doc) return null;
-				const { blocks } = await readColumnContent(doc);
+				const { blocks } = readColumnContent(doc);
 				doc.destroy();
 				return { columnId: grant.columnId, title: columnTitle(blocks) || "(untitled)", level: authorization.level };
 			});
@@ -125,7 +192,7 @@ export const AGENT_TOOLS = [
 			if (!authorization.ok) return authorization.result;
 			const doc = await loadDocument(context.env, columnId);
 			if (!doc) return toolError(NOT_VISIBLE);
-			const { blocks, version } = await readColumnContent(doc);
+			const { blocks, version } = readColumnContent(doc);
 			doc.destroy();
 			const markdown = columnBlocksToMarkdown(blocks);
 			const text = [
@@ -143,6 +210,141 @@ export const AGENT_TOOLS = [
 				version,
 				markdown,
 				blocks,
+			});
+		},
+	}),
+	defineTool({
+		name: "append_items",
+		title: "Add items",
+		description:
+			"Adds new items to a column, at the end (above any trailing blank lines) or after a given item. " +
+			"Never changes or removes existing items. Needs append or edit access. Text is one line per item.",
+		input: z
+			.object({
+				columnId,
+				items: z.array(newItem).min(1).max(100),
+				afterId: itemId.optional().describe("Insert after this item instead of at the end."),
+			})
+			.strict(),
+		annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+		run: (context, input) =>
+			editColumn(context, "append_items", input.columnId, "append", {
+				kind: "append",
+				items: input.items,
+				afterId: input.afterId ?? null,
+			}),
+	}),
+	defineTool({
+		name: "set_checked",
+		title: "Check or uncheck a todo",
+		description: "Checks off a todo item, or unchecks it. Needs edit access.",
+		input: z.object({ columnId, itemId, checked: z.boolean() }).strict(),
+		annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+		run: (context, input) =>
+			editColumn(context, "set_checked", input.columnId, "edit", {
+				kind: "update",
+				itemId: input.itemId,
+				changes: { checked: input.checked },
+			}),
+	}),
+	defineTool({
+		name: "update_item",
+		title: "Edit an item",
+		description:
+			"Changes one item's text, style, nesting or checked state. Needs edit access. For text, prefer find + replaceWith: " +
+			"it replaces one exact span of the item's current text, so someone typing elsewhere in the item keeps their work. " +
+			"To set the whole text instead, pass text with expectedText (the text you read); it is refused if the item changed since.",
+		input: z
+			.object({
+				columnId,
+				itemId,
+				find: z.string().min(1).max(2000).optional().describe("Exact text to replace; must occur once in the item."),
+				replaceWith: itemText.optional(),
+				text: itemText.optional().describe("The item's new whole text. Requires expectedText."),
+				expectedText: z.string().max(2000).optional().describe("The item's text as you read it."),
+				style: itemStyle.optional(),
+				depth: depth.optional(),
+				checked: z.boolean().optional(),
+			})
+			.strict()
+			.refine(
+				(input) => [input.find, input.text, input.style, input.depth, input.checked].some((value) => value !== undefined),
+				"Give at least one of find/replaceWith, text, style, depth or checked",
+			),
+		annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+		run: (context, { columnId: id, itemId: target, ...changes }) =>
+			editColumn(context, "update_item", id, "edit", { kind: "update", itemId: target, changes }),
+	}),
+	defineTool({
+		name: "delete_items",
+		title: "Delete items",
+		description:
+			"Deletes items from a column. Requires the version from your latest read_column, and is refused if the column " +
+			"changed since. Needs edit access. Can be undone with undo_change.",
+		input: z.object({ columnId, itemIds: z.array(itemId).min(1).max(100), expectedVersion }).strict(),
+		annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+		run: (context, input) =>
+			editColumn(context, "delete_items", input.columnId, "edit", {
+				kind: "delete",
+				itemIds: input.itemIds,
+				expectedVersion: input.expectedVersion,
+			}),
+	}),
+	defineTool({
+		name: "replace_column",
+		title: "Rewrite a column",
+		description:
+			"Replaces a column's whole content, e.g. to reorder or regroup it. Pass an item's id to keep that item's identity. " +
+			"Requires the version from your latest read_column, and is refused if the column changed since. Needs edit access. " +
+			"Prefer the smaller tools when they suffice.",
+		input: z
+			.object({
+				columnId,
+				items: z.array(newItem.extend({ id: itemId.optional().describe("Keep this existing item's identity.") })).max(500),
+				expectedVersion,
+			})
+			.strict(),
+		annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+		run: (context, input) =>
+			editColumn(context, "replace_column", input.columnId, "edit", {
+				kind: "replace",
+				items: input.items,
+				expectedVersion: input.expectedVersion,
+			}),
+	}),
+	defineTool({
+		name: "undo_change",
+		title: "Undo one of your changes",
+		description:
+			"Undoes a change this agent made, by its changeId. Anything a person changed since is kept rather than reverted. " +
+			"Needs the same access as the change itself.",
+		input: z.object({ columnId, changeId: z.string().regex(/^chg_[A-Za-z0-9_-]{22}$/, "A changeId returned by an edit tool") }).strict(),
+		annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+		async run(context, { columnId: id, changeId }) {
+			// Append is the lowest level that ever records a change. The Durable
+			// Object, which holds the change, requires the level that change needed
+			// and restricts undo to this agent's own changes.
+			const authorization = await authorizeColumn(context, id, "append");
+			if (!authorization.ok) return authorization.result;
+			const stub = context.env.COLUMN_ROOM.get(context.env.COLUMN_ROOM.idFromName(id));
+			const response = await stub.fetch(
+				new Request("http://do/agent-undo", {
+					method: "POST",
+					body: JSON.stringify({ accountId: context.agent.userId, changeId, connectionId: context.agent.id, grantedLevel: authorization.level }),
+				}),
+			);
+			if (response.status === 503) return toolError("Todoflare is temporarily read-only. Try again later.");
+			const body = (await response.json()) as { ok: boolean; code?: string; restored?: number; kept?: number; version?: string };
+			if (body.code === "change_not_found" || response.status === 404) return toolError("No change with that ID from this agent in this column.");
+			if (body.code === "already_undone") return toolError("That change was already undone.");
+			if (body.code === "insufficient_grant") return toolError("This agent's access to the column does not allow undoing that change.");
+			const kept = body.kept ? ` Kept ${body.kept} that someone changed since.` : "";
+			return toolText(`Undid change ${changeId}: restored ${body.restored}.${kept} Column version is now ${body.version}.`, {
+				columnId: id,
+				changeId,
+				restored: body.restored,
+				kept: body.kept,
+				version: body.version,
 			});
 		},
 	}),

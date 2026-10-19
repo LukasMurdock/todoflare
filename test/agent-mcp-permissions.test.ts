@@ -29,6 +29,7 @@ type GrantState = OracleCell["grant"];
 type ColumnState = OracleCell["column"];
 
 const columns = {} as Record<ColumnState, string>;
+const SEEDED_ITEM = "seededitem";
 const tokens = {} as Record<ConnectionState, Record<GrantState, string | null>>;
 
 beforeAll(async () => {
@@ -41,7 +42,7 @@ beforeAll(async () => {
 	columns.trashed = await createColumn(granter.id);
 	columns.missing = crypto.randomUUID();
 	for (const state of COLUMN_STATES) {
-		if (state !== "missing") await seedColumn(columns[state], [{ id: `id${state.length}xxxxxx`, type: "p", children: [{ text: `Column ${state}` }] }]);
+		if (state !== "missing") await seedColumn(columns[state], [{ id: SEEDED_ITEM, type: "p", children: [{ text: `Column ${state}` }] }]);
 	}
 	for (const state of ["shared-with-granter", "granter-lost-access"] as const) {
 		expect((await call(other.id, commandRoute("column.share", columns[state]), { targetAccountId: granter.id })).ok).toBe(true);
@@ -120,6 +121,48 @@ describe("MCP permission table: read_column", () => {
 					break;
 				default:
 					throw new Error(`read_column cannot produce ${outcome}`);
+			}
+		},
+	);
+});
+
+// Each write tool needs a level; every cell is checked against the oracle with
+// that level. The edits are chosen so that allowed cells do not disturb others:
+// appends leave the seeded text in place, and the update replaces it with itself.
+const WRITE_TOOLS = [
+	{ tool: "append_items", required: "append" as const, args: { items: [{ text: "from the table" }] } },
+	{ tool: "update_item", required: "edit" as const, args: { itemId: SEEDED_ITEM, find: "Column", replaceWith: "Column" } },
+];
+
+describe.each(WRITE_TOOLS)("MCP permission table: $tool", ({ tool, required, args }) => {
+	const writeCells = cells.map((cell) => ({ ...cell, required }));
+	it.each(writeCells.map((cell) => [`${cell.era} / ${cell.connection} / ${cell.grant} / ${cell.column}${cell.readOnlyMode ? " / read-only" : ""}`, cell] as const))(
+		"%s",
+		async (_name, cell) => {
+			const response = await callTool(tokens[cell.connection][cell.grant], tool, { columnId: columns[cell.column], ...args }, options(cell.era, cell.readOnlyMode));
+			const { outcome } = expectedOutcome(cell);
+			if (outcome === "unauthorized") {
+				expect(response.status).toBe(401);
+				return;
+			}
+			expect(response.status).toBe(200);
+			const result = response.body?.result;
+			const text = result?.content?.[0]?.text ?? "";
+			switch (outcome) {
+				case "not_found":
+					expect([result?.isError, text]).toEqual([true, "Column not found, or not shared with this agent."]);
+					break;
+				case "insufficient_grant":
+					expect(result?.isError).toBe(true);
+					expect(text).toContain(`does not allow ${required}`);
+					break;
+				case "read_only_mode":
+					expect(result?.isError).toBe(true);
+					expect(text).toContain("read-only");
+					break;
+				case "allowed":
+					expect(result?.isError, text).toBeUndefined();
+					break;
 			}
 		},
 	);

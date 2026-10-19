@@ -11,6 +11,8 @@ import {
 } from "../lib/column-access";
 import { TRASH_RETENTION_MS, parseColumnMetaRecord } from "../server/persistence-records";
 import { columnSnapshotImportSchema } from "../server/column-backup-payload";
+import { applyAgentEdit, undoAgentChange, type AgentEdit, type UndoRecord } from "../server/agent-access/column-edits";
+import { agentLevelIncludes, type AgentGrantLevel } from "../lib/api/agent-contract";
 import {
 	isReadOnlyMode,
 	readOnlyModeResponse,
@@ -33,6 +35,10 @@ const DO_MIGRATION_TAG = "column-room-sql-v1";
 const WS_TICKET_TTL_MS = 45_000;
 const RECEIVED_OUTBOX_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const RECEIVED_OUTBOX_MAX_ROWS = 100_000;
+const AGENT_CHANGE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const AGENT_CHANGE_MAX_ROWS = 1000;
+/** Transaction origin for every agent edit and undo applied in this object. */
+const AGENT_ORIGIN = "todoflare-agent";
 
 function base64Url(bytes: Uint8Array): string {
 	let binary = "";
@@ -135,6 +141,24 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 			);
 
 			CREATE INDEX IF NOT EXISTS idx_ws_tickets_expiry ON ws_tickets(expires_at);
+
+			CREATE TABLE IF NOT EXISTS agent_changes (
+				id TEXT PRIMARY KEY,
+				connection_id TEXT NOT NULL,
+				account_id TEXT NOT NULL,
+				agent_name TEXT NOT NULL,
+				tool TEXT NOT NULL,
+				required_level TEXT NOT NULL,
+				summary TEXT NOT NULL,
+				item_ids TEXT NOT NULL,
+				undo TEXT NOT NULL,
+				created_at INTEGER NOT NULL,
+				undone_at INTEGER,
+				undone_by TEXT,
+				undo_result TEXT
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_agent_changes_created_at ON agent_changes(created_at);
 
 			CREATE TABLE IF NOT EXISTS storage_migrations (
 				migration_tag TEXT PRIMARY KEY,
@@ -372,6 +396,164 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		);
 	}
 
+	private pruneAgentChanges() {
+		this.ctx.storage.sql.exec("DELETE FROM agent_changes WHERE created_at < ?", Date.now() - AGENT_CHANGE_RETENTION_MS);
+		this.ctx.storage.sql.exec(
+			`DELETE FROM agent_changes WHERE id NOT IN (
+				SELECT id FROM agent_changes ORDER BY created_at DESC LIMIT ?
+			)`,
+			AGENT_CHANGE_MAX_ROWS,
+		);
+	}
+
+	/**
+	 * Computes an agent edit or undo on a scratch copy, persists the resulting
+	 * update with its change record, and only then applies and broadcasts it.
+	 * Runs without yielding, so no other event can interleave between the
+	 * version check and the write; a failed write leaves memory untouched.
+	 */
+	private commitAgentWork<T>(
+		compute: (scratch: Y.Doc) => T | null,
+		persist: (result: T, update: Uint8Array) => void,
+	): T | null {
+		const scratch = new Y.Doc();
+		Y.applyUpdate(scratch, encodeStateAsUpdate(this.doc));
+		const stateBefore = Y.encodeStateVector(scratch);
+		const result = compute(scratch);
+		if (result === null) {
+			scratch.destroy();
+			return null;
+		}
+		const update = encodeStateAsUpdate(scratch, stateBefore);
+		scratch.destroy();
+		this.ctx.storage.transactionSync(() => {
+			if (update.byteLength > 2) this.insertUpdateRow(update);
+			persist(result, update);
+		});
+		if (update.byteLength > 2) {
+			applyUpdate(this.doc, update, AGENT_ORIGIN);
+			this.scheduleCompaction();
+			this.broadcast({ type: "sync", data: update });
+		}
+		return result;
+	}
+
+	/** Rejects agent work on columns the acting account cannot write right now. */
+	private agentAccessFailure(accountId: unknown): Response | null {
+		if (isReadOnlyMode(this.env)) return readOnlyModeResponse();
+		if (typeof accountId !== "string" || !this.meta || this.isTrashed() || !hasColumnAccess(this.meta, accountId)) {
+			return Response.json({ ok: false, code: "not_found" }, { status: 404 });
+		}
+		return null;
+	}
+
+	private async handleAgentEdit(request: Request): Promise<Response> {
+		const body = (await request.json()) as {
+			accountId: string;
+			connectionId: string;
+			agentName: string;
+			tool: string;
+			requiredLevel: string;
+			edit: AgentEdit;
+		};
+		// Rechecked here, after the Worker's decision: membership and trash are authoritative in this object.
+		const denied = this.agentAccessFailure(body.accountId);
+		if (denied) return denied;
+		const id = `chg_${base64Url(crypto.getRandomValues(new Uint8Array(16)))}`;
+		let failure: unknown = null;
+		const outcome = this.commitAgentWork(
+			(scratch) => {
+				const result = applyAgentEdit(scratch, body.edit, AGENT_ORIGIN);
+				if (!result.ok) failure = result.failure;
+				return result.ok ? result : null;
+			},
+			(result) => {
+				if (!result.changed) return;
+				this.ctx.storage.sql.exec(
+					`INSERT INTO agent_changes
+					 (id, connection_id, account_id, agent_name, tool, required_level, summary, item_ids, undo, created_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					id,
+					body.connectionId,
+					normalizeAccountId(body.accountId),
+					body.agentName,
+					body.tool,
+					body.requiredLevel,
+					result.summary,
+					JSON.stringify(result.itemIds),
+					JSON.stringify(result.undo),
+					Date.now(),
+				);
+			},
+		);
+		if (!outcome) return Response.json({ ok: false, failure }, { status: 409 });
+		return Response.json({
+			ok: true,
+			changeId: outcome.changed ? id : null,
+			version: outcome.version,
+			itemIds: outcome.itemIds,
+			summary: outcome.summary,
+		});
+	}
+
+	private async handleAgentUndo(request: Request): Promise<Response> {
+		const body = (await request.json()) as { accountId: string; changeId: string; connectionId?: string; grantedLevel?: AgentGrantLevel };
+		const denied = this.agentAccessFailure(body.accountId);
+		if (denied) return denied;
+		const row = this.ctx.storage.sql
+			.exec<{ undo: string; undone_at: number | null; connection_id: string; required_level: string }>(
+				"SELECT undo, undone_at, connection_id, required_level FROM agent_changes WHERE id = ?",
+				body.changeId,
+			)
+			.toArray()[0];
+		// An agent may undo only its own changes; people may undo any agent's.
+		if (!row || (body.connectionId !== undefined && row.connection_id !== body.connectionId)) {
+			return Response.json({ ok: false, code: "change_not_found" }, { status: 404 });
+		}
+		if (row.undone_at !== null) return Response.json({ ok: false, code: "already_undone" }, { status: 409 });
+		if (body.grantedLevel !== undefined && !agentLevelIncludes(body.grantedLevel, row.required_level as AgentGrantLevel)) {
+			return Response.json({ ok: false, code: "insufficient_grant" }, { status: 403 });
+		}
+		const record = JSON.parse(row.undo) as UndoRecord;
+		const outcome = this.commitAgentWork(
+			(scratch) => undoAgentChange(scratch, record, AGENT_ORIGIN),
+			(result) => {
+				this.ctx.storage.sql.exec(
+					"UPDATE agent_changes SET undone_at = ?, undone_by = ?, undo_result = ? WHERE id = ?",
+					Date.now(),
+					body.connectionId ? `agent:${body.connectionId}` : normalizeAccountId(body.accountId),
+					JSON.stringify(result),
+					body.changeId,
+				);
+			},
+		)!;
+		return Response.json({ ok: true, ...outcome });
+	}
+
+	private listAgentChanges(): Response {
+		const rows = this.ctx.storage.sql
+			.exec<AgentChangeRow>(
+				`SELECT id, connection_id, account_id, agent_name, tool, summary, item_ids, created_at, undone_at, undone_by, undo_result
+				 FROM agent_changes ORDER BY created_at DESC, id LIMIT 200`,
+			)
+			.toArray();
+		return Response.json({
+			changes: rows.map((row) => ({
+				id: row.id,
+				agentId: row.connection_id,
+				agentName: row.agent_name,
+				accountId: row.account_id,
+				tool: row.tool,
+				summary: row.summary,
+				itemIds: JSON.parse(row.item_ids) as string[],
+				createdAt: row.created_at,
+				undoneAt: row.undone_at,
+				undoneBy: row.undone_by,
+				undoResult: row.undo_result ? (JSON.parse(row.undo_result) as unknown) : null,
+			})),
+		});
+	}
+
 	private hasAccess(accountId: string | null, isPublic: boolean): boolean {
 		if (!this.meta) return false;
 		if (isPublic && this.meta.publicId) return true;
@@ -416,6 +598,13 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		if (request.method === "GET" && url.pathname === "/access-state") {
 			if (!this.meta) return new Response("Column not found", { status: 404 });
 			return Response.json({ meta: this.meta, trashed: this.isTrashed() });
+		}
+
+		if (request.method === "POST" && url.pathname === "/agent-edit") return this.handleAgentEdit(request);
+		if (request.method === "POST" && url.pathname === "/agent-undo") return this.handleAgentUndo(request);
+		if (request.method === "GET" && url.pathname === "/agent-changes") {
+			if (!this.meta) return new Response("Column not found", { status: 404 });
+			return this.listAgentChanges();
 		}
 
 		if (request.method === "GET" && url.pathname === "/yjs-state") {
@@ -521,6 +710,8 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 					this.ctx.storage.sql.exec("DELETE FROM yjs_updates");
 					this.ctx.storage.sql.exec("DELETE FROM received_outbox");
 					this.ctx.storage.sql.exec("DELETE FROM ws_tickets");
+					// Recorded changes describe content this import replaces.
+					this.ctx.storage.sql.exec("DELETE FROM agent_changes");
 				});
 			} catch (err) {
 				candidateDoc.destroy();
@@ -585,7 +776,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 			if (row && row.trashed_at !== deletedAt) return new Response("Column lifecycle changed", { status: 409 });
 			this.closeDeletedSessions();
 			this.ctx.storage.transactionSync(() => {
-				for (const table of ["meta", "yjs_snapshot", "yjs_updates", "received_outbox", "ws_tickets", "column_lifecycle"]) this.ctx.storage.sql.exec(`DELETE FROM ${table}`);
+				for (const table of ["meta", "yjs_snapshot", "yjs_updates", "received_outbox", "ws_tickets", "agent_changes", "column_lifecycle"]) this.ctx.storage.sql.exec(`DELETE FROM ${table}`);
 			});
 			this.meta = null;
 			this.doc.destroy(); this.doc = new Y.Doc();
@@ -977,6 +1168,20 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		}
 	}
 }
+
+type AgentChangeRow = {
+	id: string;
+	connection_id: string;
+	account_id: string;
+	agent_name: string;
+	tool: string;
+	summary: string;
+	item_ids: string;
+	created_at: number;
+	undone_at: number | null;
+	undone_by: string | null;
+	undo_result: string | null;
+};
 
 interface SessionInfo {
 	/** Reject hibernated sockets from the retired credential scheme. Never set on new sessions. */

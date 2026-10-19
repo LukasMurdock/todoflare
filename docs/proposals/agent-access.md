@@ -6,8 +6,8 @@ see what the agent did, undo it, and cut it off immediately. Column content
 is untrusted input to the agent, so every boundary is enforced by the server
 and none depends on the model behaving.
 
-Status: steps 1 (grant model) and 2 (read-only MCP) are implemented. Later
-steps are planned here and are not yet implemented.
+Status: steps 1 (grant model), 2 (read-only MCP) and 3 (write tools) are
+implemented. Step 4 is planned here and not yet implemented.
 
 ## Model
 
@@ -81,19 +81,77 @@ The whole surface is behind `AGENT_ACCESS_ENABLED` (`"false"` in production,
    disc/decimal/todo lists with indent), so conversion is a small
    project-owned codec rather than Plate's markdown stack in the Worker. The
    HTTP permission table enumerates every tool × grant × column state.
-3. **Write tools.** `append_items` (append), plus `update_item`,
-   `set_checked`, `delete_items` and `replace_column` with `expectedVersion`
-   (edit). Writes are Yjs transactions applied in the column's Durable Object,
-   which rechecks membership and trash state atomically with the write. They
-   are broadcast like any collaborator's edit, attributed to the agent,
-   recorded in an audit log, and can be undone per agent session. A seeded
-   property test interleaves human and agent edits and requires convergence
-   with zero lost human characters.
+3. **Write tools** *(done)*. See [Writes](#writes).
 4. **OAuth, UI and staging.** MCP-spec OAuth 2.1 (PKCE, dynamic client
    registration, protected-resource metadata) with passkey consent and
    per-column choices, an "Agent access" settings page, presence for active
    agents, and an end-to-end run with the real `claude` CLI and MCP Inspector
    against local and staging.
+
+## Writes
+
+| Tool | Level | Notes |
+| --- | --- | --- |
+| `append_items` | append | At the end (above trailing blank lines) or after an item. Never alters existing items. |
+| `set_checked` | edit | |
+| `update_item` | edit | Text via `find`/`replaceWith`, or whole `text` with `expectedText`. |
+| `delete_items` | edit | Requires the column `expectedVersion`. |
+| `replace_column` | edit | Requires `expectedVersion`. Pass an item's `id` to keep its identity. |
+| `undo_change` | the change's own level | Only the agent's own changes. |
+
+Every edit is a Yjs transaction, built exactly as the editor's slate-yjs
+binding would, so it merges with concurrent typing. The column's Durable
+Object:
+
+1. Rechecks membership and trash. It is authoritative for both, so this
+   holds even if the Worker's check were bypassed.
+2. Computes the edit on a scratch copy of the document.
+3. Persists the update and its change record in one SQL transaction.
+4. Only then applies the update to the live document and broadcasts it to
+   connected people.
+
+None of this yields, so no WebSocket message can interleave between an
+`expectedVersion` check and its write. This is also why the content version
+is a synchronous hash: an `await` inside the object would let other events
+in.
+
+**No silent overwrites.** Text edits are either an exact span replacement on
+the current text (`find`/`replaceWith`, which rebases onto concurrent edits)
+or a whole-text write that states what it read (`expectedText`). A
+whole-text write against a stale read is refused, not applied. This was
+found by an end-to-end test: an earlier "set the text to X" deleted a
+person's words typed after the agent's read. Only the changed span is ever
+rewritten, so the person's own characters, not copies of them, survive.
+
+**Change log and undo.** Each change is recorded in the column
+(`agent_changes`: who, which agent, tool, summary, items; kept 30 days, at
+most 1000). Any member can list changes (`GET /api/column/:id/agent-changes`)
+and undo them (`POST …/:changeId/undo`). Agents can undo their own changes.
+Undo is **compare-and-revert**: it reverts a field or item only while it
+still holds what the agent wrote, and reports what it kept because a person
+changed it since. True Yjs undo is not durable, because garbage collection
+discards deleted content once the object reloads. A blind snapshot rollback
+would erase later human work. Undo can only see what the server has
+received: an edit a person has made but not yet synced can still be lost if
+an undo removes the item it is in.
+
+**Verified by:**
+
+- A seeded property test (`test/agent-edit-convergence.test.ts`): 10,000
+  runs of two people and an agent editing one column, with out-of-order
+  delivery. It requires convergence, and that every character a person typed
+  survives *as their own character*, not a copy, unless they deleted it or
+  an agent deliberately removed its item. Nothing a person deleted may
+  reappear. Coverage counters assert the runs reach undos that keep human
+  work, rewrites during concurrent typing, stale-read writes, and
+  out-of-order delivery. Mutation-checked:
+  - a whole-text rewrite (deleted text reappears)
+  - undo ignoring later edits
+  - ignoring `expectedText`
+- The end-to-end permission table, extended to `append_items` and
+  `update_item` in both protocol eras.
+- The real Claude Code smoke test, with edit access and every tool, against
+  a column whose text instructs it to delete everything.
 
 ## Connecting an agent
 
