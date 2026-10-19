@@ -270,6 +270,10 @@ metadata documents are served, and `/oauth/authorize` is served with framing
 denied. To turn it off, set `AGENT_ACCESS_ENABLED` to `"false"` and release;
 the tables are additive and can stay.
 
+The guided setup was released the same day the same way: frozen
+`0b102ddb-03c2-4249-9bf4-fa56774c2d0b` verified unchanged (4 accounts, 17
+documents), writable `39b94ce0-9e69-433f-b967-d0f8ad6de794` verified live.
+
 ## Connecting an agent
 
 Account menu → Agents walks through each app step by step. Claude.ai and
