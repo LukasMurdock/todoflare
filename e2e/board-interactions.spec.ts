@@ -174,3 +174,34 @@ test("an unknown outcome stops retrying and resyncs from the server", async ({ p
 	await page.waitForTimeout(3000);
 	expect(deleteAttempts).toBe(1);
 });
+
+test("the sync debug snapshot lists changes the server keeps retrying", async ({ page, context, request, baseURL }) => {
+	const appUrl = baseURL ?? "http://127.0.0.1:4173";
+	const accountId = await createAccount(request, appUrl);
+	await createColumn(request, appUrl, accountId);
+	const columnId = await createColumn(request, appUrl, accountId);
+	await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+	await page.route(`**/api/column/${columnId}`, (route) =>
+		route.request().method() === "DELETE"
+			? route.fulfill({ status: 503, json: { error: "Column storage is busy", code: "durable_object_unavailable", message: "Column storage is busy" } })
+			: route.fallback(),
+	);
+	await bootstrapAuthenticatedPage(page, accountId);
+
+	const editors = page.getByRole("textbox", { name: "Todo editor" });
+	await expect(editors).toHaveCount(2, { timeout: 15000 });
+	await page.getByRole("button", { name: "Delete column" }).last().click();
+
+	const compactAccountId = accountId.replace(/\D/g, "");
+	const readSnapshot = async () => {
+		await page.getByRole("button", { name: `${compactAccountId.slice(0, 4)}...${compactAccountId.slice(-4)}` }).click();
+		await page.getByRole("menuitem", { name: /Copy Sync Debug Snapshot/ }).click();
+		await page.keyboard.press("Escape");
+		return JSON.parse(await page.evaluate(() => navigator.clipboard.readText())) as {
+			pendingCommands: Array<{ opType: string; attemptCount: number; lastError: string | null }>;
+		};
+	};
+	await expect.poll(async () => (await readSnapshot()).pendingCommands, { timeout: 15000 }).toEqual([
+		expect.objectContaining({ opType: "column.delete", lastError: "Column storage is busy" }),
+	]);
+});
