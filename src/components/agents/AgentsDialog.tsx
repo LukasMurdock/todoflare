@@ -353,6 +353,7 @@ function TokenSetup({
 			<ol className="space-y-5">
 				<Step number={1} title="Choose which columns it can use">
 					<AgentColumnPicker columns={columns} levels={levels} onChange={setLevels} disabled={busy} />
+					<p className="text-xs text-muted-foreground">You can change these any time under Agents, without a new command.</p>
 				</Step>
 				<Step number={2} title="Name it and choose how long it lasts">
 					<div className="flex gap-2">

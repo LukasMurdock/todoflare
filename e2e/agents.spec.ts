@@ -48,6 +48,7 @@ test.describe("agents", () => {
 		const dialog = page.getByRole("dialog", { name: "Agents" });
 		await dialog.getByRole("button", { name: /^Claude Code/ }).click();
 		await expect(dialog.getByRole("button", { name: "Choose a column first" })).toBeDisabled();
+		await expect(dialog).toContainText("You can change these any time under Agents, without a new command.");
 		await dialog.getByRole("combobox", { name: "Access to Groceries" }).selectOption("read");
 		await dialog.getByRole("textbox", { name: "Agent name" }).fill("Test agent");
 		await dialog.getByRole("button", { name: "Connect with 1 column" }).click();
