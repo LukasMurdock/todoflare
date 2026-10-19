@@ -92,7 +92,11 @@ export function registerAgentRoutes(app: App) {
 		let agent = created.value.agent;
 		for (const grant of grants) {
 			const updated = await store.setGrant({ userId: auth.accountId, connectionId: agent.id, columnId: grant.columnId, level: grant.level, expiresAt: null, now });
-			if (!updated.ok) return storeFailureResponse(updated.reason);
+			if (!updated.ok) {
+				// The token was never shown, but do not leave a connection with only some of its columns.
+				await store.revokeById(agent.id, now);
+				return storeFailureResponse(updated.reason);
+			}
 			agent = updated.value;
 		}
 		return c.json({ agent, token: created.value.token }, 201, NO_STORE);

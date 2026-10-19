@@ -190,7 +190,8 @@ The Worker is its own OAuth 2.1 authorization server, built to the MCP
   - the host you will be returned to, with a warning for localhost clients
   - a column list with a level for each, nothing selected by default
 
-  Approval creates the connection and its grants. The page refuses to render
+  Approval creates the connection and its grants, all or nothing: if any
+  column cannot be granted, the connection is revoked and no code is issued. The page refuses to render
   in a frame, and `/oauth/*` is served with `frame-ancestors 'none'`. A
   request whose client or redirect cannot be trusted never redirects;
   anything else redirects back with `error`, `state` and `iss`.

@@ -4,6 +4,7 @@ import { SELF, env, createExecutionContext, waitOnExecutionContext } from "cloud
 import { expect } from "vitest";
 import worker, { type Bindings } from "../../src/index";
 import {
+	AGENT_GRANTS_PER_CONNECTION,
 	type AgentConnection,
 	createAgentResponseSchema,
 	listAgentsResponseSchema,
@@ -136,4 +137,24 @@ export async function callTool(token: string | null, name: string, args: Record<
 
 export function routeForRevoke(agentId: string) {
 	return { method: API_ROUTES.revokeAgent.method, path: routePath(API_ROUTES.revokeAgent.path, { agentId }) };
+}
+
+/**
+ * Runs `body` while every new agent connection is born already holding the
+ * maximum number of grants, so granting any further column fails. Lets tests
+ * reach the "a grant could not be saved" path the routes must roll back from.
+ */
+export async function withConnectionsAtGrantLimit<T>(body: () => Promise<T>): Promise<T> {
+	await env.AUTH_DB.exec(
+		"CREATE TABLE zz_grant_filler (n INTEGER PRIMARY KEY); " +
+			`INSERT INTO zz_grant_filler (n) WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ${AGENT_GRANTS_PER_CONNECTION}) SELECT n FROM seq;`,
+	);
+	await env.AUTH_DB.exec(
+		`CREATE TRIGGER zz_fill_grants AFTER INSERT ON "agent_connection" BEGIN INSERT INTO "agent_grant" ("connectionId", "columnId", "level", "createdAt", "updatedAt", "expiresAt") SELECT NEW."id", 'filler-' || n, 'read', 0, 0, NULL FROM zz_grant_filler; END;`,
+	);
+	try {
+		return await body();
+	} finally {
+		await env.AUTH_DB.exec("DROP TRIGGER zz_fill_grants; DROP TABLE zz_grant_filler;");
+	}
 }

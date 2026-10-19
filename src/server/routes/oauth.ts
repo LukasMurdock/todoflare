@@ -1,6 +1,5 @@
 import { z } from "zod";
-import { AGENT_CONNECTION_DEFAULT_DAYS, AGENT_CONNECTION_MAX_DAYS, agentGrantLevelSchema } from "../../lib/api/agent-contract";
-import { columnIdContractSchema } from "../../lib/api/account-contract";
+import { AGENT_CONNECTION_DEFAULT_DAYS, AGENT_CONNECTION_MAX_DAYS, initialAgentGrantsSchema } from "../../lib/api/agent-contract";
 import { API_ROUTES } from "../../lib/api/routes";
 import { hasColumnAccess } from "../../lib/column-access";
 import { requireAccountCredential } from "../../lib/http-account-auth";
@@ -60,7 +59,7 @@ const decisionSchema = z.discriminatedUnion("decision", [
 			params: authorizationParamsSchema,
 			name: z.string().trim().min(1).max(80),
 			expiresInDays: z.number().int().min(1).max(AGENT_CONNECTION_MAX_DAYS).default(AGENT_CONNECTION_DEFAULT_DAYS),
-			grants: z.array(z.object({ columnId: columnIdContractSchema, level: agentGrantLevelSchema }).strict()).max(200),
+			grants: initialAgentGrantsSchema,
 		})
 		.strict(),
 ]);
@@ -178,7 +177,12 @@ export function registerOAuthRoutes(app: App) {
 			return c.json({ ok: false, display: "You already have the maximum number of connected agents. Remove one first." }, 409, NO_STORE);
 		}
 		for (const grant of grants) {
-			await store.setGrant({ userId: auth.accountId, connectionId: created.value.id, columnId: grant.columnId, level: grant.level, expiresAt: null, now });
+			const granted = await store.setGrant({ userId: auth.accountId, connectionId: created.value.id, columnId: grant.columnId, level: grant.level, expiresAt: null, now });
+			if (!granted.ok) {
+				// Never hand out a code for fewer columns than the person approved.
+				await store.revokeById(created.value.id, now);
+				return c.json({ ok: false, display: "The chosen columns could not all be granted. Reload and try again." }, 409, NO_STORE);
+			}
 		}
 		const code = await authorizationCodes(c.env.AUTH_DB).create(request, created.value.id, now);
 		return c.json({ redirectTo: authorizationRedirect(request.redirectUri, origin(c), { code, state: request.state }) }, 200, NO_STORE);
