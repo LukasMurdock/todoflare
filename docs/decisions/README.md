@@ -1,0 +1,31 @@
+# Decisions
+
+Short records of choices that are hard to infer from the code: why it is
+built this way and not the apparently simpler way. Each has a context, the
+decision and its consequences.
+
+Rules:
+
+- Add a record in the same change that makes an architectural choice
+  (a new store, a new authority, a new boundary, a new protocol, a new
+  external dependency with security impact).
+- Never rewrite a decided record to say something else. Supersede it with a
+  new one and change the old one's status to `Superseded by NNNN`.
+- Keep them short. Link to the longer design in `docs/proposals/` if one exists.
+
+| # | Decision | Status |
+| --- | --- | --- |
+| [0001](0001-local-first-two-state-planes.md) | Local-first, with separate planes for metadata and content | Accepted |
+| [0002](0002-one-durable-object-per-column.md) | One SQLite Durable Object and Yjs document per column | Accepted |
+| [0003](0003-passkeys-and-public-account-ids.md) | Passkeys authenticate; Account IDs are public | Accepted (supersedes the account-number credential) |
+| [0004](0004-single-use-websocket-tickets.md) | Single-use tickets for authenticated WebSockets | Accepted |
+| [0005](0005-metadata-authority-by-domain.md) | Metadata authority is scoped by domain; KV indexes are projections | Accepted |
+| [0006](0006-custom-indexeddb-persistence.md) | A project-owned IndexedDB store, not RxDB or TanStack DB | Accepted, open for review |
+| [0007](0007-stable-error-codes-drive-replay.md) | Stable error codes, not HTTP status, decide replay | Accepted |
+| [0008](0008-named-workflows-for-multi-store-writes.md) | Multi-store writes live in named, journaled workflows | Accepted |
+| [0009](0009-embeddable-board-package.md) | The editor is an embeddable package the app consumes by its public API | Accepted |
+| [0010](0010-agent-access-model.md) | Agent access: grants in D1, bounded by the account's live access | Accepted |
+| [0011](0011-agent-undo-compare-and-revert.md) | Agent undo is compare-and-revert | Accepted |
+| [0012](0012-own-oauth-server-public-clients.md) | Todoflare is its own OAuth server, for public clients only | Accepted |
+| [0013](0013-frozen-release-verification.md) | Production writes reopen only after verifying the frozen build | Accepted |
+| [0014](0014-xstate-for-lifecycles.md) | XState for convergence and connection lifecycles | Accepted |

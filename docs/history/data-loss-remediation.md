@@ -44,7 +44,7 @@ passkey RP/origin. A production-mode remote drill passed account-root and auth
 loss recovery, original passkey sign-in, content/order/trash/share/public-link
 checks, scheduled backup execution, freeze and thaw. Credential changes are
 also frozen during recovery, while sign-in remains available for validation.
-See [the runbook](staging.md) for reproduction and the production release gate.
+See [the runbook](../staging.md) for reproduction and the production release gate.
 
 ## Production validation
 
@@ -70,7 +70,7 @@ sharing/order/trash/public checks, actual scheduled-handler execution, legacy
 browser enrollment, retired credential/session/socket rejection, and Worker
 rollback preserving data written after the older version was created. Production
 owners were not enrolled using synthetic credentials, and production data was
-not restored over its live originals. See [the runbook](staging.md) for release
+not restored over its live originals. See [the runbook](../staging.md) for release
 versions, commands, independent storage and recovery boundaries.
 
 ## Remaining limits

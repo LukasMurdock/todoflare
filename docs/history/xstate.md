@@ -18,23 +18,23 @@ intended to remove.
 ## Implementation entry point
 
 Application code should use `ColumnSessionManager` in
-[`column-session-manager.ts`](../src/lib/sync/column-session-manager.ts). Acquire
+[`column-session-manager.ts`](../../src/lib/sync/column-session-manager.ts). Acquire
 a column lease with `subscribeToColumn(columnId)` and call the returned closure
 for cleanup. The manager owns the actor registry and policy broadcasts; the
 column machine and socket actor are implementation details behind it.
 
 Lifecycle changes belong in
-[`column-session-machine.ts`](../src/lib/sync/column-session-machine.ts), socket
+[`column-session-machine.ts`](../../src/lib/sync/column-session-machine.ts), socket
 translation belongs in
-[`column-socket-actor.ts`](../src/lib/sync/column-socket-actor.ts), and durable
+[`column-socket-actor.ts`](../../src/lib/sync/column-socket-actor.ts), and durable
 outbound bytes belong only in
-[`yjs-update-outbox.ts`](../src/lib/sync/yjs-update-outbox.ts).
+[`yjs-update-outbox.ts`](../../src/lib/sync/yjs-update-outbox.ts).
 
 ## Current problem
 
 The current `ColumnConnection` combines socket state, reconnect timers, retry
 policy, reference counting, presence, and send buffering in one mutable object
-([sync-context.tsx, line 123](../src/contexts/sync-context.tsx#L123)). Its
+([sync-context.tsx, line 123](../../src/contexts/sync-context.tsx#L123)). Its
 behavior is distributed across socket callbacks, timer callbacks, ref-counted
 teardown, global degradation, access-loss cleanup, and outbox replay.
 
@@ -135,8 +135,8 @@ I would not use `degraded` as a per-column state. Use:
 
 Currently, three failed initial attempts by one column call
 `markRealtimeDegraded`, which then tears down every column
-([sync-context.tsx, line 1464](../src/contexts/sync-context.tsx#L1464),
-[sync-context.tsx, line 1491](../src/contexts/sync-context.tsx#L1491)). Worse,
+([sync-context.tsx, line 1464](../../src/contexts/sync-context.tsx#L1464),
+[sync-context.tsx, line 1491](../../src/contexts/sync-context.tsx#L1491)). Worse,
 the retry path does not check `isNetworkOnline`, so going offline can eventually
 degrade the entire session. The manager should pause all actors on
 `NETWORK_OFFLINE` and resume them on `NETWORK_ONLINE`.
@@ -186,9 +186,9 @@ That eliminates these fields:
 - `nonce`
 
 XState ignores `sendBack` calls after an invoked callback actor has stopped
-([callback.ts, line 202](../repos/xstate/packages/core/src/actors/callback.ts#L202)).
+([callback.ts, line 202](../../repos/xstate/packages/core/src/actors/callback.ts#L202)).
 This directly replaces the hand-written nonce and object-identity guards at
-[sync-context.tsx, line 1367](../src/contexts/sync-context.tsx#L1367).
+[sync-context.tsx, line 1367](../../src/contexts/sync-context.tsx#L1367).
 
 Use a named XState delay for exponential backoff:
 
@@ -263,13 +263,13 @@ Rules:
 
 The current best-effort policy removes an outbox entry when `WebSocket.send()`
 returns successfully
-([yjs-update-outbox.ts](../src/lib/sync/yjs-update-outbox.ts),
-[sync-context.tsx](../src/contexts/sync-context.tsx)). The method is named
+([yjs-update-outbox.ts](../../src/lib/sync/yjs-update-outbox.ts),
+[sync-context.tsx](../../src/contexts/sync-context.tsx)). The method is named
 `removeAfterSocketWrite` to make clear that the browser accepted the bytes; it
 does not mean the server applied them.
 
 The protocol has no ACK opcode
-([websocket-protocol.ts, line 3](../src/lib/collaboration/websocket-protocol.ts#L3)).
+([websocket-protocol.ts, line 3](../../src/lib/collaboration/websocket-protocol.ts#L3)).
 
 Choose explicitly between:
 
@@ -282,8 +282,8 @@ I recommend the second option, but as a separate change from the XState migratio
 
 Currently, access-loss handling waits for asynchronous mutation cleanup before
 detaching the socket
-([sync-context.tsx, line 929](../src/contexts/sync-context.tsx#L929),
-[sync-context.tsx, line 976](../src/contexts/sync-context.tsx#L976)). During that
+([sync-context.tsx, line 929](../../src/contexts/sync-context.tsx#L929),
+[sync-context.tsx, line 976](../../src/contexts/sync-context.tsx#L976)). During that
 interval, the session can still receive or enqueue work.
 
 Instead:

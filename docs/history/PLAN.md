@@ -1,6 +1,10 @@
 # Local-first account mode: current state and decision record
 
-Status: current as of 2026-07-19.
+Status: historical, as of 2026-07-19. Superseded as the description of the
+current system by [architecture.md](../architecture.md) and
+[decisions/](../decisions/). Two decisions below no longer hold: the account
+number is not a credential ([0003](../decisions/0003-passkeys-and-public-account-ids.md)),
+and agent access now exists ([0010](../decisions/0010-agent-access-model.md)).
 
 This document records what Todoflare runs today, which parts of the original
 local-first proposal were superseded, and which decisions remain open. It is not
