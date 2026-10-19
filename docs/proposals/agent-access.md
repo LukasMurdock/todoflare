@@ -252,6 +252,19 @@ real passkey session:
 The staging recovery drill (`pnpm test:staging`) and `pnpm test:staging:auth`
 also pass with agent access deployed.
 
+## Production
+
+Rolled out on 2026-10-19 through the standard [release procedure](../staging.md#release-procedure):
+preflight snapshot (4 accounts, 16 documents), migrations 0003 and 0004
+applied to `todoflare-auth`, frozen deploy `4a8fb34b-b793-478a-945c-87fdc192ca75`
+verified unchanged, backups mirrored, writable deploy
+`02a30095-bcf2-4418-8fd7-28537524bd00` verified live, backup health current.
+No synthetic agent account was created in production; the read-only checks
+confirmed `/api/mcp` answers 401 with the `resource_metadata` challenge, both
+metadata documents are served, and `/oauth/authorize` is served with framing
+denied. To turn it off, set `AGENT_ACCESS_ENABLED` to `"false"` and release;
+the tables are additive and can stay.
+
 ## Connecting an agent
 
 Claude.ai and other OAuth-capable clients: add `<origin>/api/mcp` as a
