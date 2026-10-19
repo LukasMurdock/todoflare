@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { API_ROUTES } from "../src/lib/api/routes";
 import { agentStore } from "../src/server/agent-access/store";
 import { isAllowedRedirectUri, oauthClients, redirectUriMatches, validateAuthorizationRequest, type MetadataFetcher } from "../src/server/oauth/authorization-server";
-import { BASE, callTool, listAgents, MCP_ERAS } from "./helpers/agent-fixtures";
+import { BASE, callTool, listAgents, MCP_ERAS, withConnectionsAtGrantLimit } from "./helpers/agent-fixtures";
 import { createAccount, createColumn, headers } from "./helpers/metadata-fixtures";
 
 const ORIGIN = BASE;
@@ -243,6 +243,33 @@ describe("authorization", () => {
 		const { challenge } = await pkce();
 		const decision = await decide(person.id, { decision: "approve", params: authorizeParams(String(client.client_id), challenge), name: "x", grants: [{ columnId: someoneElse, level: "edit" }] });
 		expect(decision.status).toBe(409);
+		expect(await listAgents(person.id)).toEqual([]);
+	});
+
+	it("refuses the same column twice", async () => {
+		const person = await createAccount();
+		const columnId = await createColumn(person.id);
+		const { body: client } = await register();
+		const { challenge } = await pkce();
+		const grants = [
+			{ columnId, level: "read" },
+			{ columnId, level: "edit" },
+		];
+		const decision = await decide(person.id, { decision: "approve", params: authorizeParams(String(client.client_id), challenge), name: "x", grants });
+		expect(decision.status).toBe(400);
+		expect(await listAgents(person.id)).toEqual([]);
+	});
+
+	it("gives no code, and keeps no connection, when a chosen column cannot be granted", async () => {
+		const person = await createAccount();
+		const columnId = await createColumn(person.id);
+		const { body: client } = await register();
+		const { challenge } = await pkce();
+		const decision = await withConnectionsAtGrantLimit(() =>
+			decide(person.id, { decision: "approve", params: authorizeParams(String(client.client_id), challenge), name: "x", grants: [{ columnId, level: "edit" }] }),
+		);
+		expect(decision.status).toBe(409);
+		expect(decision.body.redirectTo).toBeUndefined();
 		expect(await listAgents(person.id)).toEqual([]);
 	});
 });

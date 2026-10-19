@@ -4,7 +4,7 @@ import { AGENT_CONNECTIONS_PER_ACCOUNT, agentResponseSchema, createAgentResponse
 import { API_ROUTES, routePath } from "../src/lib/api/routes";
 import { agentErrorMessage } from "../src/lib/agents/agents-api";
 import { agentStore, agentTokenHash } from "../src/server/agent-access/store";
-import { BASE, call, commandRoute, createAgent, fetchWithEnv, grantRoute, listAgents, setGrant } from "./helpers/agent-fixtures";
+import { BASE, call, commandRoute, createAgent, fetchWithEnv, grantRoute, listAgents, setGrant, withConnectionsAtGrantLimit } from "./helpers/agent-fixtures";
 import { createAccount, createColumn, headers } from "./helpers/metadata-fixtures";
 
 describe("agent management routes", () => {
@@ -93,6 +93,14 @@ describe("agent management routes", () => {
 			],
 		});
 		expect(repeated.status).toBe(400);
+		expect(await listAgents(me.id)).toEqual([]);
+	});
+
+	it("keeps no connection when an initial column cannot be granted", async () => {
+		const me = await createAccount();
+		const column = await createColumn(me.id);
+		const response = await withConnectionsAtGrantLimit(() => call(me.id, API_ROUTES.createAgent, { name: "Claude Code", grants: [{ columnId: column, level: "read" }] }));
+		expect(response.status).toBe(409);
 		expect(await listAgents(me.id)).toEqual([]);
 	});
 
