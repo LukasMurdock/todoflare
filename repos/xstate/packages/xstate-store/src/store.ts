@@ -87,7 +87,7 @@ function toEvent(eventType: string, payload: any) {
       };
 }
 
-function createEnqueueObject<TEmitted extends EventObject>(
+export function createEnqueueObject<TEmitted extends EventObject>(
   effects: StoreEffect<TEmitted>[],
   trigger?: (event: EventObject) => void
 ): EnqueueObject<any, TEmitted, any> {
@@ -794,8 +794,8 @@ export function createStoreTransition<
     const pendingEvents: StoreEvent[] = [event];
     let allowed = false;
 
-    while (pendingEvents.length > 0) {
-      const currentEvent = pendingEvents.shift()!;
+    for (let index = 0; index < pendingEvents.length; index++) {
+      const currentEvent = pendingEvents[index];
       const currentContext = currentSnapshot.context;
       const assigner = transitions?.[currentEvent.type as StoreEvent['type']];
       let producerAssignerResult: unknown;

@@ -217,7 +217,9 @@ export interface Store<
   TContext extends StoreContext,
   TEventPayloadMap extends EventPayloadMap,
   TEmitted extends EventObject
-> extends Subscribable<StoreSnapshot<TContext>>,
+>
+  extends
+    Subscribable<StoreSnapshot<TContext>>,
     InteropObservable<StoreSnapshot<TContext>>,
     Readable<StoreSnapshot<TContext>> {
   /** Standard Schema definitions for this store, if provided. */
@@ -523,8 +525,7 @@ interface StoreBaseInspectionEventProperties {
   actorRef: ActorRefLike;
 }
 
-export interface StoreInspectionEvent
-  extends StoreBaseInspectionEventProperties {
+export interface StoreInspectionEvent extends StoreBaseInspectionEventProperties {
   type: '@xstate.transition';
   event: AnyEventObject; // { type: string, ... }
   snapshot: Snapshot<unknown>;
@@ -643,6 +644,14 @@ export interface ReducerAtom<TState, TEvent> extends BaseAtom<TState> {
 
 export interface AtomOptions<T> {
   compare?: (prev: T, next: T) => boolean;
+}
+
+/** An external value exposed through a read-only source atom. */
+export interface SourceAtomConfig<T> {
+  /** Reads the current value without starting an external subscription. */
+  getSnapshot: () => T;
+  /** Attaches a listener and returns a subscription or cleanup function. */
+  subscribe: (notify: () => void) => Subscription | (() => void);
 }
 
 export interface AtomConfig<TValue, TInput> {
