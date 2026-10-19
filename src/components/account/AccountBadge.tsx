@@ -1,4 +1,4 @@
-import { useRef, useState, type ChangeEvent } from "react";
+import { lazy, Suspense, useRef, useState, type ChangeEvent } from "react";
 import {
 	Copy,
 	LogOut,
@@ -8,6 +8,7 @@ import {
 	Upload,
 	Trash2,
 	RotateCcw,
+	Bot,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -36,6 +37,8 @@ import { BUILD_INFO, formatBuild } from "@/lib/build-info";
 import { columnIdForAccountCommand } from "@/lib/sync/account-command-reconciliation";
 import { cn } from "@/lib/utils";
 import { CredentialManager } from "./CredentialManager";
+// Most visits never open it: fetched on first use, not with the board.
+const AgentsDialog = lazy(() => import("@/components/agents/AgentsDialog").then((module) => ({ default: module.AgentsDialog })));
 
 export function AccountBadge() {
 	const {
@@ -60,6 +63,7 @@ export function AccountBadge() {
 	const [redactSyncDebugIds, setRedactSyncDebugIds] = useState(true);
 	const [showGarbageCan, setShowGarbageCan] = useState(false);
 	const [showCredentials, setShowCredentials] = useState(false);
+	const [showAgents, setShowAgents] = useState(false);
 	const fileInputRef = useRef<HTMLInputElement | null>(null);
 	const handleDownloadStorageRecovery = async () => {
 		try {
@@ -311,6 +315,11 @@ export function AccountBadge() {
 	return (
 		<>
 			<CredentialManager open={showCredentials} onOpenChange={setShowCredentials} />
+			{authenticationStatus === "authenticated" && showAgents && (
+				<Suspense fallback={null}>
+					<AgentsDialog accountId={accountId} open={showAgents} onOpenChange={setShowAgents} />
+				</Suspense>
+			)}
 			<Dialog open={showGarbageCan} onOpenChange={setShowGarbageCan}>
 				<DialogContent className="max-h-[calc(100dvh-2rem)] grid-rows-[auto_minmax(0,1fr)]">
 					<DialogHeader>
@@ -475,6 +484,12 @@ export function AccountBadge() {
 				<DropdownMenuItem onClick={() => setShowCredentials(true)}>
 					Passkeys and recovery
 				</DropdownMenuItem>
+				{authenticationStatus === "authenticated" && (
+					<DropdownMenuItem onClick={() => setShowAgents(true)}>
+						<Bot className="mr-2 h-4 w-4" />
+						Agents
+					</DropdownMenuItem>
+				)}
 
 				<DropdownMenuItem onClick={handleCopySyncDebugSnapshot}>
 					{copiedSyncDebug ? (

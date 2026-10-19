@@ -6,12 +6,16 @@
 // unused Yjs providers: 385.4 KiB. React 19.3, zod 4.6 and Plate 53.3 (slate)
 // added 22 KiB upstream: 407.4 KiB. The budget leaves a little room; raise it
 // deliberately, with the reason in the commit.
+//
+// Agent access added 8.9 KiB: 3.6 KiB in the board (each column's agent
+// popover) and 5.3 KiB in two chunks loaded only on demand (the Agents dialog
+// and the OAuth consent page). Measured total 418.4 KiB; budget 415 → 420.
 
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 
-const BUDGET_GZIP_KIB = 415;
+const BUDGET_GZIP_KIB = 420;
 const dir = process.argv[2] ?? "dist/client/assets";
 const files = readdirSync(dir).filter((file) => file.endsWith(".js"));
 if (files.length === 0) throw new Error(`No JavaScript in ${dir}; build first.`);

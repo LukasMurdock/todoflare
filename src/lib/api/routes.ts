@@ -30,9 +30,17 @@ export const API_ROUTES = {
 	revokeAgent: { method: "DELETE", path: "/api/agents/:agentId" },
 	setAgentGrant: { method: "PUT", path: "/api/agents/:agentId/grants/:id" },
 	removeAgentGrant: { method: "DELETE", path: "/api/agents/:agentId/grants/:id" },
+	grantableColumns: { method: "GET", path: "/api/agents/columns" },
 	listAgentChanges: { method: "GET", path: "/api/column/:id/agent-changes" },
 	undoAgentChange: { method: "POST", path: "/api/column/:id/agent-changes/:changeId/undo" },
 	mcp: { method: "POST", path: "/api/mcp" },
+	oauthProtectedResource: { method: "GET", path: "/.well-known/oauth-protected-resource" },
+	oauthProtectedResourceMcp: { method: "GET", path: "/.well-known/oauth-protected-resource/api/mcp" },
+	oauthAuthorizationServer: { method: "GET", path: "/.well-known/oauth-authorization-server" },
+	oauthRegister: { method: "POST", path: "/api/oauth/register" },
+	oauthToken: { method: "POST", path: "/api/oauth/token" },
+	describeAuthorization: { method: "GET", path: "/api/oauth/authorization" },
+	decideAuthorization: { method: "POST", path: "/api/oauth/authorization" },
 	clock: { method: "GET", path: "/api/clock" },
 } as const satisfies Record<string, ApiRoute>;
 
@@ -41,6 +49,12 @@ export const AUTH_BASE_PATH = "/api/auth";
 
 /** Browser page that renders a public read-only column. */
 export const PUBLIC_PAGE_PATH = "/p/:publicId";
+
+/** Browser page where a person approves an MCP client (the OAuth authorization endpoint). */
+export const OAUTH_AUTHORIZE_PAGE_PATH = "/oauth/authorize";
+
+/** Endpoints OAuth clients call from other origins (browser-based MCP clients). */
+export const CROSS_ORIGIN_API_PATHS: readonly string[] = [API_ROUTES.oauthToken.path, API_ROUTES.oauthRegister.path];
 
 type RouteParams<P extends string> =
 	P extends `${string}:${infer Name}/${infer Rest}`
@@ -60,6 +74,10 @@ export function routePath<P extends string>(pattern: P, params: RouteParams<P>):
 
 export function publicPageUrl(origin: string, publicId: string): string {
 	return `${origin}${routePath(PUBLIC_PAGE_PATH, { publicId })}`;
+}
+
+export function isOAuthAuthorizePagePath(pathname: string): boolean {
+	return pathname === OAUTH_AUTHORIZE_PAGE_PATH;
 }
 
 /** Returns the public ID when a browser pathname is a public column page. */

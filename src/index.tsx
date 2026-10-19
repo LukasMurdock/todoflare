@@ -5,7 +5,7 @@ import { IdempotencyCoordinatorSql } from "./durable-objects/idempotency-coordin
 import { RateLimitCoordinatorSql } from "./durable-objects/rate-limit-coordinator";
 import { AccountCoordinatorSql } from "./durable-objects/account-coordinator";
 import { PublicIdCoordinatorSql } from "./durable-objects/public-id-coordinator";
-import { API_ROUTES } from "./lib/api/routes";
+import { API_ROUTES, CROSS_ORIGIN_API_PATHS } from "./lib/api/routes";
 import { BUILD_INFO } from "./lib/build-info";
 import { purgeExpiredTrashedColumns } from "./server/workflows/purge-expired-trashed-columns";
 import { reconcileColumnLifecycle } from "./server/workflows/reconcile-column-lifecycle";
@@ -19,6 +19,7 @@ import { registerAccountRoutes } from "./server/routes/account";
 import { registerAdminBackupRoutes } from "./server/routes/admin-backups";
 import { registerAgentRoutes } from "./server/routes/agents";
 import { registerMcpRoutes } from "./server/routes/mcp";
+import { registerOAuthRoutes } from "./server/routes/oauth";
 import { registerAuthRoutes, registerAuthStatusRoute } from "./server/routes/auth";
 import { registerColumnRoutes } from "./server/routes/columns";
 import { registerPublicRoutes } from "./server/routes/public";
@@ -50,6 +51,9 @@ registerAuthRoutes(app);
 
 app.use("/api/*", async (c, next) => {
 	if (["GET", "HEAD", "OPTIONS"].includes(c.req.method)) return next();
+	// OAuth registration and token requests carry no cookies and come from MCP
+	// clients on other origins by design; they authenticate by PKCE and tokens.
+	if (CROSS_ORIGIN_API_PATHS.includes(new URL(c.req.url).pathname)) return next();
 	const origin = c.req.header("Origin");
 	const fetchSite = c.req.header("Sec-Fetch-Site");
 	if (
@@ -68,6 +72,7 @@ registerColumnRoutes(app);
 registerPublicRoutes(app);
 registerAgentRoutes(app);
 registerMcpRoutes(app);
+registerOAuthRoutes(app);
 registerAdminBackupRoutes(app);
 
 // Keep the clock endpoint for testing

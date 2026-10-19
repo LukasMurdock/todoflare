@@ -6,8 +6,8 @@ see what the agent did, undo it, and cut it off immediately. Column content
 is untrusted input to the agent, so every boundary is enforced by the server
 and none depends on the model behaving.
 
-Status: steps 1 (grant model), 2 (read-only MCP) and 3 (write tools) are
-implemented. Step 4 is planned here and not yet implemented.
+Status: all four steps are implemented. Agent access is off in production
+(`AGENT_ACCESS_ENABLED`) and on in staging.
 
 ## Model
 
@@ -82,11 +82,7 @@ The whole surface is behind `AGENT_ACCESS_ENABLED` (`"false"` in production,
    project-owned codec rather than Plate's markdown stack in the Worker. The
    HTTP permission table enumerates every tool × grant × column state.
 3. **Write tools** *(done)*. See [Writes](#writes).
-4. **OAuth, UI and staging.** MCP-spec OAuth 2.1 (PKCE, dynamic client
-   registration, protected-resource metadata) with passkey consent and
-   per-column choices, an "Agent access" settings page, presence for active
-   agents, and an end-to-end run with the real `claude` CLI and MCP Inspector
-   against local and staging.
+4. **OAuth and UI** *(done)*. See [OAuth](#oauth) and [UI](#ui).
 
 ## Writes
 
@@ -153,10 +149,91 @@ an undo removes the item it is in.
 - The real Claude Code smoke test, with edit access and every tool, against
   a column whose text instructs it to delete everything.
 
+## OAuth
+
+The Worker is its own OAuth 2.1 authorization server, built to the MCP
+2026-07-28 authorization specification
+(`src/server/oauth/authorization-server.ts`, `src/server/routes/oauth.ts`).
+
+- **Discovery.** A 401 from `/api/mcp` carries
+  `WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/api/mcp"`.
+  Protected Resource Metadata is also served at the root well-known path.
+  Authorization server metadata (`/.well-known/oauth-authorization-server`)
+  advertises:
+  - S256 only
+  - public clients only
+  - `client_id_metadata_document_supported`
+  - `authorization_response_iss_parameter_supported`
+
+  All of `/.well-known/*` runs Worker-first. A narrower glob silently served
+  the SPA for the path-suffixed document, which only the browser suite could
+  see.
+- **Clients.**
+  - **Client ID Metadata Documents, preferred.** An HTTPS `client_id` with a
+    path is fetched and cached for 10 minutes. The fetch never follows
+    redirects, times out after 5 s and is capped at 5 KB. It never reaches
+    loopback, private, link-local, single-label or `.local`/`.internal`
+    hosts, or any IP literal. The document's `client_id` must equal its URL.
+  - **Dynamic Client Registration, deprecated in the spec but widely used.**
+    Rate limited per IP.
+  - **Redirect URIs** must be HTTPS or loopback HTTP and are matched exactly,
+    except that loopback ports may vary (RFC 8252).
+- **Consent is the grant.** `/oauth/authorize` is a page in the app. It
+  shows:
+  - the client's name and whether it is verified (published at a metadata
+    URL) or self-registered
+  - the host you will be returned to, with a warning for localhost clients
+  - a column list with a level for each, nothing selected by default
+
+  Approval creates the connection and its grants. The page refuses to render
+  in a frame, and `/oauth/*` is served with `frame-ancestors 'none'`. A
+  request whose client or redirect cannot be trusted never redirects;
+  anything else redirects back with `error`, `state` and `iss`.
+- **Codes and tokens.**
+  - Codes are single use and live 2 minutes. They are bound to client,
+    redirect, PKCE challenge and resource (RFC 8707). A replayed code
+    revokes the connection.
+  - Access tokens (`tfa_…`) last 1 hour. Refresh tokens (`tfr_…`, never
+    accepted by `/api/mcp`) rotate on each use, are bound to their client,
+    and never outlive the connection.
+  - An approval whose code is never redeemed is revoked when it expires.
+  - Disconnecting a connection deletes all its tokens at once.
+
+## UI
+
+- **Account menu → Agents:**
+  - the connector address for Claude.ai
+  - personal tokens, shown once, with a ready `claude mcp add` command
+  - every connection, with its columns and levels, last use and expiry
+  - two-step disconnect
+- **Each column:** an agent button (marked when an agent has access) with
+  - per-agent access levels for that column
+  - the column's recent agent changes, with undo; it reports what undo kept
+    because someone edited it since
+- **Lazy loading:** the dialog and the consent page load on demand. The
+  board's initial JavaScript grows by 3.6 KiB gzip. Total client JS is
+  418.4 KiB against a budget raised from 415 to 420 KiB.
+
+Verified in the browser (`e2e/agents.spec.ts`):
+
+- A person connects an agent with a token and grants read. The agent's write
+  is refused; the person raises the level from the column; the agent's item
+  appears live in the person's editor; the change is listed and undone; the
+  person disconnects and the agent gets 401.
+- A full OAuth flow: discovery from the 401, registration, consent with a
+  chosen column and level, code and `iss` on the callback, token exchange,
+  then exactly that grant on `list_columns`.
+- Declining, and an untrustworthy request that never redirects.
+
+`e2e/agents-oauth-sdk.spec.ts` runs the same flow with the **official MCP
+SDK's OAuth client** doing discovery, registration, PKCE, token exchange and
+refresh itself.
+
 ## Connecting an agent
 
-Until step 4 adds OAuth, create a connection with `POST /api/agents` (passkey
-session) and pass the returned token as a header. For Claude Code:
+Claude.ai and other OAuth-capable clients: add `<origin>/api/mcp` as a
+custom connector and approve the columns on the consent page. For tools that
+take a bearer token, create one under account menu → Agents. For Claude Code:
 
 ```sh
 claude mcp add --transport http todoflare https://todo.tamesystems.org/api/mcp \

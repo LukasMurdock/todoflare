@@ -8,7 +8,12 @@ import {
 } from "../../lib/api/agent-contract";
 import { columnIdContractSchema } from "../../lib/api/account-contract";
 import { API_ROUTES } from "../../lib/api/routes";
-import { hasColumnAccess } from "../../lib/column-access";
+import * as Y from "yjs";
+import { hasColumnAccess, isColumnOwner } from "../../lib/column-access";
+import { accountRecordStore } from "../account-record-store";
+import { columnTitle, readColumnBlocks } from "../agent-access/column-content";
+import { mapWithConcurrency } from "../bounded-concurrency";
+import { parseAccountRecord, parseSharedColumnIndex } from "../persistence-records";
 import { requireAccountCredential } from "../../lib/http-account-auth";
 import { agentStore, type AgentStoreFailure } from "../agent-access/store";
 import { loadColumnAccessState } from "../agent-access/column-state";
@@ -182,5 +187,28 @@ export function registerAgentRoutes(app: App) {
 		if (response.status === 404) return apiErrorResponse("not_found", "Change not found", 404);
 		if (body.code === "already_undone") return apiErrorResponse("invalid_request", "Change already undone", 409);
 		return c.json(body, 200, NO_STORE);
+	});
+
+	// The columns this account could hand to an agent, with the titles people
+	// recognise them by. Titles exist only inside each column's document.
+	app.on(API_ROUTES.grantableColumns.method, API_ROUTES.grantableColumns.path, async (c) => {
+		const auth = await requireManager(c);
+		if (!auth.ok) return auth.response;
+		const records = accountRecordStore(c.env);
+		const account = parseAccountRecord((await records.get(`account:${auth.accountId}`)) ?? "");
+		const shared = parseSharedColumnIndex(await records.get(`shared:${auth.accountId}`));
+		const ids = [...new Set([...(account.ok ? account.value.columnOrder : []), ...(shared.ok ? shared.value : [])])];
+		const columns = await mapWithConcurrency(ids, 8, async (columnId) => {
+			const column = await loadColumnAccessState(c.env.COLUMN_ROOM, columnId);
+			if (!column.ok || !column.state || column.state.trashed || !hasColumnAccess(column.state.meta, auth.accountId)) return null;
+			const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
+			const state = await stub.fetch(new Request("http://do/yjs-state"));
+			const doc = new Y.Doc();
+			if (state.ok) Y.applyUpdate(doc, new Uint8Array(await state.arrayBuffer()));
+			const title = columnTitle(readColumnBlocks(doc));
+			doc.destroy();
+			return { columnId, title, owned: isColumnOwner(column.state.meta, auth.accountId) };
+		});
+		return c.json({ columns: columns.filter((column) => column !== null) }, 200, NO_STORE);
 	});
 }

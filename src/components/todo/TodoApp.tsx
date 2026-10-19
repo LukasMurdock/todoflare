@@ -7,6 +7,7 @@ import { StorageRecoveryBanner } from "@/components/account/StorageRecoveryBanne
 import { AccountBadge } from "@/components/account/AccountBadge";
 import { PresenceAvatars } from "@/components/column/PresenceAvatars";
 import { ShareMenu } from "@/components/column/ShareMenu";
+import { ColumnAgentsMenu } from "@/components/agents/ColumnAgentsMenu";
 import { createMemoryDocuments, TodoBoard, type BoardColumn, type TodoBoardApi } from "@todoflare/board";
 import { useWelcomeRefsOptional } from "@/contexts/welcome-refs-context";
 import { useSyncContext } from "@/contexts/sync-context";
@@ -133,6 +134,9 @@ export function TodoApp() {
 			renderColumnActions={(column) => (
 				<>
 					<PresenceAvatars columnId={column.id} />
+					{isSyncedMode && accountId && authenticationStatus === "authenticated" && columnsById.has(column.id) && (
+						<ColumnAgentsMenu accountId={accountId} columnId={column.id} />
+					)}
 					{isColumnOwner(column.id) && authenticationStatus === "authenticated" && (
 						<ShareMenu
 							columnId={column.id}

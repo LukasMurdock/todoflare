@@ -1,5 +1,5 @@
 import "./styles/global.css";
-import { useState, useEffect, useMemo } from "react";
+import { lazy, Suspense, useState, useEffect, useMemo } from "react";
 import { createRoot } from "react-dom/client";
 import { Toaster } from "sonner";
 import { TodoApp } from "./components/todo/TodoApp";
@@ -10,7 +10,9 @@ import { AccountModal } from "./components/account/AccountModal";
 import { ClaimDataModal } from "./components/account/ClaimDataModal";
 import { PublicView } from "./components/public/PublicView";
 import { useFirstVisit } from "./hooks/useFirstVisit";
-import { matchPublicPagePath } from "./lib/api/routes";
+import { isOAuthAuthorizePagePath, matchPublicPagePath } from "./lib/api/routes";
+// Only the OAuth authorization endpoint renders it.
+const OAuthConsentPage = lazy(() => import("./components/agents/OAuthConsentPage").then((module) => ({ default: module.OAuthConsentPage })));
 
 /**
  * Simple router based on pathname
@@ -29,6 +31,7 @@ function useRoute() {
 		if (publicId) {
 			return { type: "public" as const, publicId };
 		}
+		if (isOAuthAuthorizePagePath(pathname)) return { type: "oauth" as const };
 
 		// Default to main app
 		return { type: "app" as const };
@@ -89,6 +92,18 @@ function App() {
 				<PublicView publicId={route.publicId} />
 				<Toaster position="bottom-right" richColors />
 			</>
+		);
+	}
+
+	// Consent needs the account session, but not the board or its onboarding.
+	if (route.type === "oauth") {
+		return (
+			<SyncProvider>
+				<Suspense fallback={null}>
+					<OAuthConsentPage />
+				</Suspense>
+				<Toaster position="bottom-right" richColors />
+			</SyncProvider>
 		);
 	}
 

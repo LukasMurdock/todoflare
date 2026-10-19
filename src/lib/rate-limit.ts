@@ -34,6 +34,10 @@ export const RATE_LIMITS = {
 	publicView: { limit: 100, windowSeconds: 60 },
 	/** Agent MCP requests: 120 per agent connection per minute */
 	agentRequest: { limit: 120, windowSeconds: 60 },
+	/** OAuth client registration: 20 per IP per hour */
+	oauthRegister: { limit: 20, windowSeconds: 3600 },
+	/** OAuth token requests: 60 per IP per minute */
+	oauthToken: { limit: 60, windowSeconds: 60 },
 } as const;
 
 /**
@@ -76,7 +80,7 @@ export async function resetRateLimit<Id>(
 }
 
 /** Actions limited per client IP; staging can reset all of them for a caller. */
-export const IP_RATE_LIMITED_ACTIONS = ["create-account", "account-lookup"] as const;
+export const IP_RATE_LIMITED_ACTIONS = ["create-account", "account-lookup", "oauth-register", "oauth-token"] as const;
 
 /**
  * Get client IP from Cloudflare request

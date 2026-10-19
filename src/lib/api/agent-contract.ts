@@ -41,6 +41,8 @@ export const agentConnectionContractSchema = z
 		expiresAt: timestampContractSchema,
 		revokedAt: timestampContractSchema.nullable(),
 		lastUsedAt: timestampContractSchema.nullable(),
+		/** The OAuth client it was authorized for, or null for a personal token. */
+		clientId: z.string().nullable(),
 		grants: z.array(agentGrantContractSchema),
 	})
 	.strict();
@@ -95,3 +97,8 @@ export const undoAgentChangeResponseSchema = z.object({
 	kept: z.number(),
 	version: z.string(),
 });
+
+export const grantableColumnsResponseSchema = z.object({
+	columns: z.array(z.object({ columnId: columnIdContractSchema, title: z.string(), owned: z.boolean() }).strict()),
+});
+export type GrantableColumn = z.output<typeof grantableColumnsResponseSchema>["columns"][number];
