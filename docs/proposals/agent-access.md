@@ -298,6 +298,9 @@ documents), writable `a753eaec-f098-4c3b-96e6-7c3dccc65b55` verified live.
 Change diffs and the all-columns control (`d6d1a22`): frozen
 `7ff5a0b6-aa36-4a65-9690-b97cabd1d020` verified unchanged (4 accounts, 17
 documents), writable `e299b61b-abdf-4eb2-ac91-3f7f1d3e47f1` verified live.
+All-or-nothing connection creation (`be73a6c`): frozen
+`c78f703f-a735-487d-b588-68106be109a5` verified unchanged (4 accounts, 17
+documents), writable `0e2cdf77-7108-479d-9eac-2dd158f9b99a` verified live.
 
 ## Connecting an agent
 
