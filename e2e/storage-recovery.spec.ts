@@ -39,6 +39,11 @@ test("pauses guest editing on quota failure and exports the unsaved content", as
 	await page.keyboard.press("Escape");
 	const editor = page.getByRole("textbox", { name: "Todo editor" }).first();
 	await expect(editor).toHaveAttribute("contenteditable", "true");
+	// The first edit also saves the node ids the editor adds to the default
+	// column. Let that save succeed, so the failing save is the one that carries
+	// the unsaved text rather than an id-only normalization.
+	await editor.click(); await page.keyboard.insertText("Retain ");
+	await expect.poll(() => page.evaluate(() => localStorage.getItem("todoflare-columns") ?? "")).toContain("Retain ");
 	await page.evaluate(() => {
 		const original = Storage.prototype.setItem;
 		(window as unknown as { restoreStorage: () => void }).restoreStorage = () => { Storage.prototype.setItem = original; };
@@ -47,7 +52,7 @@ test("pauses guest editing on quota failure and exports the unsaved content", as
 			original.call(this, key, value);
 		};
 	});
-	await editor.click(); await page.keyboard.insertText("Retain unsaved guest content");
+	await page.keyboard.insertText("unsaved guest content");
 	await expect(page.getByRole("alert")).toContainText("Editing paused");
 	await expect(editor).toHaveAttribute("contenteditable", "false");
 	const downloadPromise = page.waitForEvent("download");
