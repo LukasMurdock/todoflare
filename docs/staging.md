@@ -233,8 +233,7 @@ Yjs snapshots when writing. Storage recovery exports include the document cache.
 
 Validation passed: 289 unit/Worker tests, all 27 browser tests, the real HTTPS
 staging passkey reconnect test, and the full staging recovery/rollback drill.
-The staging drill's scheduled backup request now allows 300 seconds (raised from
-180 on 2026-10-18, when 82 synthetic columns took 205 seconds) and reports
+The staging drill's scheduled backup request allows 180 seconds and reports
 fetch failures without request headers. Its registration helper reports the
 actual HTTP status. A temporary staging-only rate-limit override used for
 synthetic fixture setup was removed by the normal freeze/thaw deployments and

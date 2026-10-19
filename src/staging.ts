@@ -3,6 +3,7 @@ import worker, { type Bindings } from "./index";
 import { requireAccountCredential } from "./lib/http-account-auth";
 import { accountRecordStore } from "./server/account-record-store";
 import { readAccountBackup } from "./server/account-backup";
+import { resetStagingData } from "./staging-reset";
 import { isReadOnlyMode } from "./server/read-only-mode";
 import {
 	getClientIP,
@@ -36,6 +37,11 @@ export default {
 				await resetRateLimit(env.RATE_LIMIT_COORDINATOR, ipRateLimitKey(action, ip));
 			}
 			return Response.json({ success: true, reset: IP_RATE_LIMITED_ACTIONS });
+		}
+		if (path === "/api/admin/staging/reset-data") {
+			// Drills start from empty storage; see staging-reset.ts. Repeat until done.
+			if (isReadOnlyMode(env)) return new Response("Frozen", { status: 409 });
+			return Response.json(await resetStagingData(env));
 		}
 		if (path === "/api/admin/staging/mark-drill") {
 			if (isReadOnlyMode(env)) return new Response("Frozen", { status: 409 });

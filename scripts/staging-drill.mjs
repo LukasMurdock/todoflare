@@ -9,8 +9,8 @@ const browser = await chromium.launch();
 const context = await browser.newContext();
 const page = await context.newPage();
 const results = [];
-// A full backup run grows with staging's synthetic accounts (82 columns took 205s).
-const SCHEDULED_RUN_TIMEOUT_MS = 300_000;
+// A full backup of the drill's own data (staging is reset at the start of each run).
+const SCHEDULED_RUN_TIMEOUT_MS = 180_000;
 async function api(path, method = 'GET', data, admin = false, expected = 200) {
   const response = await context.request.fetch(`${origin}${path}`, {
     method, data, timeout: path === '/api/admin/staging/scheduled' ? SCHEDULED_RUN_TIMEOUT_MS : 30000,
@@ -69,6 +69,13 @@ try {
   // this workstation's hourly account-creation allowance.
   await api('/api/admin/staging/reset-rate-limits', 'POST', {}, false, 401);
   await api('/api/admin/staging/reset-rate-limits', 'POST', {}, true);
+  // Start from empty staging data so this run's duration and results never depend
+  // on earlier runs (or on runs that aborted before finishing). Bounded batches;
+  // KV listings are eventually consistent, so allow repeats.
+  await api('/api/admin/staging/reset-data', 'POST', {}, false, 401);
+  let reset;
+  for (let round = 0; round < 60 && !reset?.done; round++) reset = await api('/api/admin/staging/reset-data', 'POST', {}, true);
+  assert(reset?.done, 'staging data reset did not finish');
   const cdp = await context.newCDPSession(page);
   await cdp.send('WebAuthn.enable');
   await cdp.send('WebAuthn.addVirtualAuthenticator', { options: { protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } });
