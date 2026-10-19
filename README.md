@@ -185,8 +185,10 @@ authenticated realtime sessions, and both the Worker and ColumnRoom reject new
 private WebSocket tickets, upgrades, and sync submissions while the flag is set.
 Public read-only WebSockets remain available.
 
-`GET /api/clock` returns `readOnlyMode` with `Cache-Control: no-store` so you can
-verify the version serving that request. Treat this as a local smoke check, not
+`GET /api/clock` returns `readOnlyMode` and `build` (the commit the Worker was
+built from) with `Cache-Control: no-store` so you can verify the version serving
+that request. The page names its own build in `<meta name="todoflare-build">`,
+and signed-in users see it at the bottom of the account menu. Treat this as a local smoke check, not
 as proof that an incomplete deployment has reached every location.
 
 ### 2) Configure backup auth secret
