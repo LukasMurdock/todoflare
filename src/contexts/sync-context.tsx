@@ -47,6 +47,7 @@ import { normalizeAccountId, displayAccountId } from "@/lib/account";
 import { useAccountColumnCommands } from "@/hooks/use-account-column-commands";
 import { useAccountDataTransfer } from "@/hooks/use-account-data-transfer";
 import { fetchColumnSocketUrl } from "@/lib/sync/column-socket-ticket";
+import { classifyYjsOutbox, type YjsOutboxRetentionInput } from "@/lib/sync/yjs-outbox-retention";
 
 const ACCOUNT_STORAGE_KEY = "todoflare-account";
 const E2E_REPLAY_WAKE_EVENT = "todoflare:e2e:replay-wake";
@@ -68,6 +69,8 @@ interface YjsOutboxSummary {
 	totalPending: number;
 	activeColumns: number;
 	columnPending: Record<string, number>;
+	/** Edits kept for trashed columns; not pending, since they only send after a restore. */
+	heldForTrashedColumns: number;
 }
 
 function emptyYjsOutboxSummary(): YjsOutboxSummary {
@@ -75,22 +78,28 @@ function emptyYjsOutboxSummary(): YjsOutboxSummary {
 		totalPending: 0,
 		activeColumns: 0,
 		columnPending: {},
+		heldForTrashedColumns: 0,
 	};
 }
 
 function summarizeYjsOutbox(
-	entries: Array<{ columnId: string }>,
+	entries: YjsOutboxEntry[],
+	retention: YjsOutboxRetentionInput | null,
 ): YjsOutboxSummary {
+	const { sendable, heldForTrash } = retention
+		? classifyYjsOutbox(entries, { ...retention, now: Date.now() })
+		: { sendable: entries, heldForTrash: [] };
 	const columnPending: Record<string, number> = {};
 
-	for (const entry of entries) {
+	for (const entry of sendable) {
 		columnPending[entry.columnId] = (columnPending[entry.columnId] ?? 0) + 1;
 	}
 
 	return {
-		totalPending: entries.length,
+		totalPending: sendable.length,
 		activeColumns: Object.keys(columnPending).length,
 		columnPending,
+		heldForTrashedColumns: heldForTrash.length,
 	};
 }
 
@@ -112,6 +121,8 @@ interface SyncContextValue {
 	syncMode: SyncMode;
 	syncStateSummary: SyncStateSummary;
 	yjsOutboxSummary: YjsOutboxSummary;
+	/** Account changes still queued for this account, for the sync debug snapshot. */
+	getPendingAccountCommands(): QueuedMutation[];
 	browserStorageError: string | null;
 	reportBrowserStorageError: (error: unknown, guestColumns?: Column[]) => void;
 	retryBrowserStorage: () => Promise<void>;
@@ -194,6 +205,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 	const [yjsOutboxSummary, setYjsOutboxSummary] = useState<YjsOutboxSummary>(
 		emptyYjsOutboxSummary,
 	);
+	// Column sets from the last server-confirmed projection; null until one arrives.
+	const yjsRetentionRef = useRef<YjsOutboxRetentionInput | null>(null);
 	const [isNetworkOnline, setIsNetworkOnline] = useState(() => {
 		if (typeof navigator === "undefined") return true;
 		return navigator.onLine;
@@ -396,8 +409,45 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		const entries = yjsOutbox
 			.getAllEntries()
 			.filter((entry) => entry.accountId === accountId);
-		setYjsOutboxSummary(summarizeYjsOutbox(entries));
+		setYjsOutboxSummary(summarizeYjsOutbox(entries, yjsRetentionRef.current));
 	}, [accountId, yjsOutbox]);
+
+	// Once the server has confirmed the account, drop outbox entries that can never
+	// send (stale presence, edits for columns gone for good). Edits for trashed
+	// columns stay: a restore reconnects the column and sends them.
+	const lastConvergedAt = accountConvergence.lastConvergedAt;
+	useEffect(() => {
+		yjsRetentionRef.current = null;
+		if (!accountId || !projection || lastConvergedAt === null) {
+			refreshYjsOutboxSummary();
+			return;
+		}
+		const activeColumnIds = new Set([
+			...projection.account.columnOrder,
+			...projection.sharedColumns.map((column) => column.id),
+			...mutationQueue
+				.getPending(accountId)
+				.flatMap((mutation) => (mutation.opType === "column.create" ? [mutation.payload.columnId] : [])),
+		]);
+		const retention: YjsOutboxRetentionInput = {
+			activeColumnIds,
+			trashedColumnIds: new Set(
+				projection.deletedColumns
+					.map((entry) => entry.columnId)
+					.filter((columnId) => !activeColumnIds.has(columnId)),
+			),
+			now: Date.now(),
+			awarenessMaxAgeMs: YJS_AWARENESS_REPLAY_MAX_AGE_MS,
+		};
+		yjsRetentionRef.current = retention;
+		const { discardable } = classifyYjsOutbox(
+			yjsOutbox.getAllEntries().filter((entry) => entry.accountId === accountId),
+			retention,
+		);
+		const discardIds = new Set(discardable.map((entry) => entry.id));
+		if (discardIds.size > 0) yjsOutbox.dropWhere((entry) => discardIds.has(entry.id));
+		refreshYjsOutboxSummary();
+	}, [accountId, lastConvergedAt, mutationQueue, projection, refreshYjsOutboxSummary, yjsOutbox]);
 
 	// Overall connection status (derived from column connections)
 	const [connectionStatus, setConnectionStatus] =
@@ -935,6 +985,11 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		} catch (error) { reportBrowserStorageError(error); throw error; }
 	}, [ensureLocalFirstDb, yjsOutbox, mutationQueue, accountConvergenceActor, reportBrowserStorageError]);
 
+	const getPendingAccountCommands = useCallback(
+		() => (accountId ? mutationQueue.getPending(accountId) : []),
+		[accountId, mutationQueue],
+	);
+
 	const exportStorageRecoveryData = useCallback(async () => {
 		const db = await ensureLocalFirstDb();
 		let guestColumns = guestRecoveryColumnsRef.current;
@@ -966,6 +1021,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		syncMode,
 		syncStateSummary,
 		yjsOutboxSummary,
+		getPendingAccountCommands,
 		browserStorageError,
 		reportBrowserStorageError,
 		retryBrowserStorage,

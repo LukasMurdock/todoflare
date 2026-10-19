@@ -18,6 +18,7 @@ export function useAccount() {
 		syncMode,
 		syncStateSummary,
 		yjsOutboxSummary,
+		getPendingAccountCommands,
 		createAccount,
 		loginWithPasskey,
 		loginWithRecoveryCode,
@@ -46,6 +47,7 @@ export function useAccount() {
 		syncMode,
 		syncStateSummary,
 		yjsOutboxSummary,
+		getPendingAccountCommands,
 
 		// Operations
 		createAccount,

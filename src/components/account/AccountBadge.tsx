@@ -33,6 +33,7 @@ import {
 import { useAccount } from "@/hooks/useAccount";
 import { truncateAccountId, displayAccountId } from "@/lib/account";
 import { BUILD_INFO, formatBuild } from "@/lib/build-info";
+import { columnIdForAccountCommand } from "@/lib/sync/account-command-reconciliation";
 import { cn } from "@/lib/utils";
 import { CredentialManager } from "./CredentialManager";
 
@@ -43,6 +44,7 @@ export function AccountBadge() {
 		syncMode,
 		syncStateSummary,
 		yjsOutboxSummary,
+		getPendingAccountCommands,
 		logout,
 		resetSyncTelemetry,
 		authenticationStatus,
@@ -209,8 +211,21 @@ export function AccountBadge() {
 						? redactColumnIdForSnapshot(failure.columnId)
 						: failure.columnId,
 			})),
+			pendingCommands: getPendingAccountCommands().map((command) => {
+				const columnId = columnIdForAccountCommand(command);
+				return {
+					opType: command.opType,
+					columnId:
+						redactSyncDebugIds && columnId ? redactColumnIdForSnapshot(columnId) : columnId,
+					createdAt: new Date(command.createdAt).toISOString(),
+					attemptCount: command.attemptCount,
+					nextRetryAt: new Date(command.nextRetryAt).toISOString(),
+					lastError: command.lastError ?? null,
+				};
+			}),
 			yjsOutbox: {
 				totalPending: yjsOutboxSummary.totalPending,
+				heldForTrashedColumns: yjsOutboxSummary.heldForTrashedColumns,
 				activeColumns: yjsOutboxSummary.activeColumns,
 				topColumns: topYjsOutboxColumns.map(([columnId, count]) => ({
 					columnId: redactSyncDebugIds
@@ -383,6 +398,11 @@ export function AccountBadge() {
 					<p className="text-muted-foreground">
 						Yjs queue: {syncStateSummary.yjsQueueDepth}
 					</p>
+					{yjsOutboxSummary.heldForTrashedColumns > 0 ? (
+						<p className="text-muted-foreground">
+							Held for trashed columns: {yjsOutboxSummary.heldForTrashedColumns}
+						</p>
+					) : null}
 					<p className="text-muted-foreground">
 						Last server hydration: {formatSyncTimestamp(syncStateSummary.lastServerHydrationAt)}
 					</p>
