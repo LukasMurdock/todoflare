@@ -159,8 +159,21 @@ const metadataDocumentSchema = z
 		client_uri: z.string().url().max(2000).optional(),
 		redirect_uris: redirectUrisSchema,
 		token_endpoint_auth_method: z.string().optional(),
+		token_endpoint_auth_methods_supported: z.array(z.string()).optional(),
 	})
 	.passthrough();
+
+/**
+ * Whether a client can authenticate at the token endpoint the only way this
+ * server accepts: as a public client, with PKCE alone. A metadata document's
+ * plural list names every method the client can use, and the client picks from
+ * its intersection with ours; the singular field is only its preference.
+ * ChatGPT, for example, prefers private_key_jwt but also lists none.
+ */
+export function supportsPublicClientAuth(document: { token_endpoint_auth_method?: string; token_endpoint_auth_methods_supported?: string[] }): boolean {
+	if (document.token_endpoint_auth_methods_supported) return document.token_endpoint_auth_methods_supported.includes("none");
+	return !document.token_endpoint_auth_method || document.token_endpoint_auth_method === "none";
+}
 
 /** A client_id that names a metadata document: HTTPS with a path. */
 export function isMetadataClientId(clientId: string): boolean {
@@ -233,8 +246,8 @@ async function fetchMetadataDocument(clientId: string, fetcher: MetadataFetcher)
 	const parsed = metadataDocumentSchema.safeParse(json);
 	if (!parsed.success) return { ok: false, description: "Client metadata is missing client_id, client_name or valid redirect_uris" };
 	if (parsed.data.client_id !== clientId) return { ok: false, description: "Client metadata client_id does not match its URL" };
-	if (parsed.data.token_endpoint_auth_method && parsed.data.token_endpoint_auth_method !== "none") {
-		return { ok: false, description: "Only public clients (token_endpoint_auth_method none) are supported" };
+	if (!supportsPublicClientAuth(parsed.data)) {
+		return { ok: false, description: "This app needs a sign-in method Todoflare does not support (only public clients, token_endpoint_auth_method none)" };
 	}
 	return {
 		ok: true,

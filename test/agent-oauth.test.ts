@@ -391,6 +391,11 @@ describe("Client ID Metadata Documents", () => {
 		["no redirect_uris", "https://client.example/e.json", (url) => Response.json({ client_id: url, client_name: "x" })],
 		["an unsafe redirect", "https://client.example/f.json", (url) => Response.json({ ...document, client_id: url, redirect_uris: ["http://evil.example/cb"] })],
 		["a confidential client", "https://client.example/g.json", (url) => Response.json({ ...document, client_id: url, token_endpoint_auth_method: "private_key_jwt" })],
+		[
+			"a client that lists only confidential methods",
+			"https://client.example/h.json",
+			(url) => Response.json({ ...document, client_id: url, token_endpoint_auth_method: "none", token_endpoint_auth_methods_supported: ["private_key_jwt"] }),
+		],
 	])("refuses %s", async (_name, clientId, respond) => {
 		const { result } = await resolve(clientId, respond);
 		expect(result.ok).toBe(false);
@@ -404,6 +409,31 @@ describe("Client ID Metadata Documents", () => {
 			expect(calls).toHaveLength(0);
 		},
 	);
+
+	it("accepts ChatGPT's published document, which prefers private_key_jwt but also lists none", async () => {
+		// Verbatim from https://chatgpt.com/oauth/client.json on 2026-10-19.
+		const chatgpt = {
+			client_id: "https://chatgpt.com/oauth/client.json",
+			client_uri: "https://chatgpt.com/",
+			redirect_uris: ["https://chatgpt.com/connector_platform_oauth_redirect"],
+			token_endpoint_auth_method: "private_key_jwt",
+			token_endpoint_auth_methods_supported: ["none", "private_key_jwt"],
+			grant_types: ["authorization_code", "refresh_token"],
+			response_types: ["code"],
+			client_name: "ChatGPT",
+			logo_uri: "https://persistent.oaistatic.com/sonic/misc/openai-logo.png",
+			token_endpoint_auth_signing_alg: "RS256",
+			jwks_uri: "https://chatgpt.com/oauth/jwks.json",
+		};
+		const stub = fetcher(() => Response.json(chatgpt));
+		const validation = await validateAuthorizationRequest(
+			{ ...authorizeParams(chatgpt.client_id, (await pkce()).challenge), redirect_uri: chatgpt.redirect_uris[0] },
+			ORIGIN,
+			oauthClients(env.AUTH_DB, stub.fetch),
+			Date.now(),
+		);
+		expect(validation).toMatchObject({ ok: true, request: { client: { clientId: chatgpt.client_id, name: "ChatGPT" }, redirectUri: chatgpt.redirect_uris[0] } });
+	});
 
 	it("authorizes a metadata client and shows where it is hosted", async () => {
 		const stub = fetcher(() => Response.json(document));
