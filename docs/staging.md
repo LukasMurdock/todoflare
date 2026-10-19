@@ -295,3 +295,20 @@ The verified frozen production version is
 verification preserved all four accounts, four documents, and their
 credentials. Eight independent backup snapshots verified and backup health is
 current.
+
+## better-auth 1.7 and backup scaling release (2026-10-19)
+
+Released merge commit `bdf2c6d5`: better-auth and the passkey plugin 1.7.10
+(PR #5; auth schema unchanged, sessions and passkeys from 1.6 verified to keep
+working on staging), single-account backups scoped to the column registry and
+scheduled backups run concurrently (PR #7), and drills that start from empty
+staging data. Validation: `pnpm verify`, CI, and on staging version
+`904dde74-edcc-4b77-b686-2cae68590de6` the passkey test and the full
+recovery/rollback drill.
+
+The verified frozen production version is
+`893bcb93-4db2-4349-86a4-936a94e1cc2e`; the writable version is
+`97916249-3211-4241-855b-4a606eb13dd2`. Preflight, frozen verification, and live
+verification preserved all four accounts, six documents, and their
+credentials. Ten independent backup snapshots verified and backup health is
+current.
