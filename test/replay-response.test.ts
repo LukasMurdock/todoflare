@@ -51,6 +51,21 @@ describe("replay response contract", () => {
 		});
 	});
 
+	it("keeps what the server said for a terminal failure", async () => {
+		const response = Response.json(
+			{ error: "Column not found", code: "not_found", message: "Column not found" },
+			{ status: 404 },
+		);
+		expect(await mutationResultFromResponse(response)).toMatchObject({
+			kind: "drop",
+			detail: { status: 404, code: "not_found", message: "Column not found" },
+		});
+		expect(await mutationResultFromResponse(new Response("gone", { status: 410 }))).toMatchObject({
+			kind: "drop",
+			detail: { status: 410, code: null, message: null },
+		});
+	});
+
 	it.each([
 		["read_only_mode", 503],
 		["rate_limited", 429],

@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { LocalFirstDatabase } from "../lib/local-first/database";
-import { summarizeReplayReport } from "../lib/sync/account-command-reconciliation";
+import {
+	describeSyncFailure,
+	recordSyncFailure,
+	summarizeReplayReport,
+	type RecordedSyncFailure,
+} from "../lib/sync/account-command-reconciliation";
+import { shouldApplyAccessLossPolicy } from "../lib/sync/replay-response";
 import type { ReplayReport } from "../lib/sync/contracts";
 import type { SyncMode } from "../lib/sync/mode-machine";
 import { normalizeAccountId } from "../lib/account";
@@ -19,7 +25,11 @@ export interface SyncStateSummary {
 	storageLastError: string | null;
 	quarantinedRecords: number;
 	quarantinedDurableMutations: number;
+	/** Most recent first; this session only, so reproduce before copying a snapshot. */
+	recentSyncFailures: RecordedSyncFailure[];
 }
+
+const MAX_RECENT_SYNC_FAILURES = 20;
 
 function syncStateDocId(accountId: string | null): string {
 	return accountId ? `sync:${normalizeAccountId(accountId)}` : "sync:anonymous";
@@ -63,6 +73,7 @@ export function useSyncTelemetry(params: {
 	const [storageLastError, setStorageLastError] = useState<string | null>(null);
 	const [quarantinedRecords, setQuarantinedRecords] = useState(0);
 	const [quarantinedDurableMutations, setQuarantinedDurableMutations] = useState(0);
+	const [recentSyncFailures, setRecentSyncFailures] = useState<RecordedSyncFailure[]>([]);
 	const handledReplayReportRef = useRef<ReplayReport | null>(null);
 	const handledStorageErrorRef = useRef<string | null>(null);
 	const activeDocId = syncStateDocId(accountId);
@@ -76,6 +87,7 @@ export function useSyncTelemetry(params: {
 		setLastReplayLatencyMs(null);
 		setRevokeDiscardCount(0);
 		setConvergenceFailureCount(0);
+		setRecentSyncFailures([]);
 
 		void ensureLocalFirstDb()
 			.then((db) => {
@@ -162,8 +174,20 @@ export function useSyncTelemetry(params: {
 			setLastReplayLatencyMs(replayDurationMs);
 		}
 		if (summarizeReplayReport(report).nonAccessLossFailureCount > 0) {
+			const now = Date.now();
+			const failures = report.terminalFailures
+				.filter((failure) => !shouldApplyAccessLossPolicy(failure.reason))
+				.map((failure) => recordSyncFailure(failure, now));
+			console.error("Server rejected queued account changes:", failures);
 			setConvergenceFailureCount((value) => value + 1);
-			toast.error("Some offline changes could not be synced");
+			setRecentSyncFailures((current) =>
+				[...failures.reverse(), ...current].slice(0, MAX_RECENT_SYNC_FAILURES),
+			);
+			toast.error("Some offline changes could not be synced", {
+				description:
+					describeSyncFailure(failures[0]!) +
+					(failures.length > 1 ? ` (and ${failures.length - 1} more)` : ""),
+			});
 		}
 	}, [replayDurationMs, replayReport]);
 
@@ -212,6 +236,7 @@ export function useSyncTelemetry(params: {
 		setLastReplayLatencyMs(null);
 		setRevokeDiscardCount(0);
 		setConvergenceFailureCount(0);
+		setRecentSyncFailures([]);
 	}, []);
 
 	const summary = useMemo<SyncStateSummary>(
@@ -227,8 +252,10 @@ export function useSyncTelemetry(params: {
 			storageLastError,
 			quarantinedRecords,
 			quarantinedDurableMutations,
+			recentSyncFailures,
 		}),
 		[
+			recentSyncFailures,
 			convergenceFailureCount,
 			lastReplayAt,
 			lastReplayLatencyMs,

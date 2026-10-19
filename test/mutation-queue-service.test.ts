@@ -108,6 +108,7 @@ describe("LocalMutationQueueService", () => {
 			executor: async () => ({
 				kind: "drop",
 				reason: "validation_failed",
+				detail: { status: 400, code: "invalid_request", message: "Bad order" },
 			}),
 			storage,
 		});
@@ -124,6 +125,8 @@ describe("LocalMutationQueueService", () => {
 		expect(report.terminalFailures[0]?.reason).toBe("validation_failed");
 		expect(report.terminalFailures[0]?.opType).toBe("column.reorder");
 		expect(report.terminalFailures[0]?.entityId).toBe("1111 1111 1111 1111");
+		expect(report.terminalFailures[0]?.detail).toEqual({ status: 400, code: "invalid_request", message: "Bad order" });
+		expect(typeof report.terminalFailures[0]?.failedAt).toBe("number");
 		expect(storage.read()).toHaveLength(0);
 	});
 

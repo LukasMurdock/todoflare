@@ -122,3 +122,23 @@ test("Mod+/ opens shortcuts once from inside the editor and from the page", asyn
 	await page.keyboard.press("ControlOrMeta+/");
 	await expect(dialog).toBeVisible();
 });
+
+test("a rejected change says what the server answered", async ({ page, request, baseURL }) => {
+	const appUrl = baseURL ?? "http://127.0.0.1:4173";
+	const accountId = await createAccount(request, appUrl);
+	await createColumn(request, appUrl, accountId);
+	const columnId = await createColumn(request, appUrl, accountId);
+	await page.route(`**/api/column/${columnId}`, (route) =>
+		route.request().method() === "DELETE"
+			? route.fulfill({ status: 404, json: { error: "Column not found", code: "not_found", message: "Column not found" } })
+			: route.fallback(),
+	);
+	await bootstrapAuthenticatedPage(page, accountId);
+
+	const editors = page.getByRole("textbox", { name: "Todo editor" });
+	await expect(editors).toHaveCount(2, { timeout: 15000 });
+	await page.getByRole("button", { name: "Delete column" }).last().click();
+
+	await expect(page.getByText("Some offline changes could not be synced")).toBeVisible({ timeout: 15000 });
+	await expect(page.getByText("column.delete: Column not found (404 not_found)")).toBeVisible();
+});

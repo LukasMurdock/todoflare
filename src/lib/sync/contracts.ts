@@ -73,9 +73,20 @@ export type ReplayCommandSummary<
 	  >
 	: never;
 
+/** What the server answered when it rejected a command, kept for sync debugging. */
+export interface ReplayFailureDetail {
+	status: number | null;
+	code: string | null;
+	message: string | null;
+}
+
 export type TerminalReplayFailure<
 	T extends AccountCommandType = AccountCommandType,
-> = ReplayCommandSummary<T> & { reason: TerminalReplayReason };
+> = ReplayCommandSummary<T> & {
+	reason: TerminalReplayReason;
+	detail?: ReplayFailureDetail;
+	failedAt?: number;
+};
 
 export type AccountCommandEffect =
 	| { type: "column.created"; queueId: string; column: ColumnMeta }

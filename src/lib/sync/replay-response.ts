@@ -41,6 +41,12 @@ export async function mutationResultFromResponse(
 	const code = isApiErrorCode(payload?.code) ? payload.code : null;
 	const hasExplicitCode = typeof payload?.code === "string";
 
+	const detail = {
+		status: response.status,
+		code: typeof payload?.code === "string" ? payload.code : null,
+		message: errorMessage(payload, "") || null,
+	};
+
 	if (code) {
 		const terminalReason = terminalReasonByCode[code];
 		if (terminalReason) {
@@ -48,6 +54,7 @@ export async function mutationResultFromResponse(
 				kind: "drop",
 				reason: terminalReason,
 				error: errorMessage(payload, code),
+				detail,
 			};
 		}
 
@@ -65,13 +72,13 @@ export async function mutationResultFromResponse(
 
 	// Compatibility fallback for responses from older deployments.
 	if (response.status === 403) {
-		return { kind: "drop", reason: "revoked" };
+		return { kind: "drop", reason: "revoked", detail };
 	}
 	if (response.status === 404 || response.status === 410) {
-		return { kind: "drop", reason: "not_found" };
+		return { kind: "drop", reason: "not_found", detail };
 	}
 	if (response.status === 400 || response.status === 422) {
-		return { kind: "drop", reason: "validation_failed" };
+		return { kind: "drop", reason: "validation_failed", detail };
 	}
 
 	return {
