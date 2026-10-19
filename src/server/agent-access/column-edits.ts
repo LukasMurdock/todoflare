@@ -1,4 +1,5 @@
 import * as Y from "yjs";
+import { AGENT_ITEM_STYLES } from "../../lib/api/agent-contract";
 import { columnContentRoot, readColumnContent } from "./column-content";
 
 /**
@@ -14,7 +15,8 @@ import { columnContentRoot, readColumnContent } from "./column-content";
  * Object reloads.)
  */
 
-export const ITEM_STYLES = ["paragraph", "todo", "bullet", "numbered", "heading1", "heading2", "heading3"] as const;
+/** The item styles agents name; the same list people see in change diffs. */
+export const ITEM_STYLES = AGENT_ITEM_STYLES;
 export type ItemStyle = (typeof ITEM_STYLES)[number];
 
 export interface NewItem {
@@ -52,17 +54,24 @@ export type AgentEdit =
 /** The block attributes the editor reads, plus the block's text. */
 const FIELDS = ["type", "listStyleType", "indent", "checked", "listStart", "text"] as const;
 type Field = (typeof FIELDS)[number];
-type FieldValues = Partial<Record<Field, unknown>>;
+export type FieldValues = Partial<Record<Field, unknown>>;
 
 /** A whole block as Plate stores it, enough to recreate it exactly. */
-interface BlockSnapshot {
+export interface BlockSnapshot {
 	attributes: Record<string, unknown>;
 	runs: Array<{ insert: string; attributes?: Record<string, unknown> }>;
 }
 
 export type UndoRecord =
 	| { kind: "remove-inserted"; items: Array<{ id: string; written: FieldValues }> }
-	| { kind: "restore-fields"; id: string; before: FieldValues; after: FieldValues }
+	| {
+			kind: "restore-fields";
+			id: string;
+			before: FieldValues;
+			after: FieldValues;
+			/** Every field of the item before the change, to show it in context. Absent from older records. */
+			context?: FieldValues;
+		}
 	| { kind: "reinsert"; items: Array<{ snapshot: BlockSnapshot; afterId: string | null; index: number }> }
 	| { kind: "restore-column"; before: BlockSnapshot[]; after: Array<FieldValues & { id: string }> };
 
@@ -124,6 +133,13 @@ function sameValue(left: unknown, right: unknown): boolean {
 	return left === right || (left === undefined && right === null) || (left === null && right === undefined);
 }
 
+/** Every item's current fields, by ID. */
+export function currentItemFields(doc: Y.Doc): Map<string, FieldValues> {
+	const items = new Map<string, FieldValues>();
+	for (const entry of blockEntries(doc)) if (entry.id) items.set(entry.id, fieldValues(entry.xml));
+	return items;
+}
+
 function snapshot(xml: Y.XmlText): BlockSnapshot {
 	return {
 		attributes: { ...(xml.getAttributes() as Record<string, unknown>) },
@@ -154,7 +170,7 @@ function styleAttributes(style: ItemStyle, depth: number, checked: boolean): Rec
 	};
 }
 
-function currentStyle(values: FieldValues): { style: ItemStyle; depth: number; checked: boolean } {
+export function currentStyle(values: FieldValues): { style: ItemStyle; depth: number; checked: boolean } {
 	const list = values.listStyleType;
 	const indent = typeof values.indent === "number" ? values.indent : 0;
 	const style: ItemStyle =
@@ -364,6 +380,7 @@ export function applyAgentEdit(doc: Y.Doc, edit: AgentEdit, origin: unknown): Ed
 				undo: {
 					kind: "restore-fields",
 					id: edit.itemId,
+					context: before,
 					before: Object.fromEntries(changed.map((field) => [field, before[field] ?? null])),
 					after: Object.fromEntries(changed.map((field) => [field, after[field] ?? null])),
 				},

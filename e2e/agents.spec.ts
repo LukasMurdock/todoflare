@@ -83,6 +83,7 @@ test.describe("agents", () => {
 		const change = page.getByTestId("agent-change").first();
 		await expect(change).toContainText('Added "Milk from the agent"');
 		await expect(change).toContainText("Test agent");
+		await expect(change.getByTestId("agent-change-diff")).toContainText("Added: Milk from the agent");
 		await change.getByRole("button", { name: /^Undo/ }).click();
 		await expect(page.getByRole("textbox", { name: "Todo editor" }).first()).not.toContainText("Milk from the agent");
 		await expect(change).toContainText("Undone");
@@ -199,6 +200,32 @@ test.describe("agents", () => {
 		await page.goto("/");
 		await openAgentsDialog(page, accountId);
 		await expect(page.getByRole("dialog", { name: "Agents" })).toContainText("No agents connected.");
+	});
+
+	test("one control sets access to every column at once", async ({ page, request, baseURL }) => {
+		const appUrl = baseURL ?? "http://127.0.0.1:4173";
+		const accountId = await createAccount(request, appUrl);
+		await bootstrapAuthenticatedPage(page, accountId);
+		await addColumnAndGetId(page);
+		await addColumnAndGetId(page);
+		await openAgentsDialog(page, accountId);
+		const dialog = page.getByRole("dialog", { name: "Agents" });
+		await dialog.getByRole("button", { name: /^Claude Code/ }).click();
+		const all = dialog.getByRole("combobox", { name: "Set access to all columns" });
+		await expect(all).toHaveValue("none");
+		const perColumn = dialog.getByRole("combobox", { name: /^Access to / });
+		const count = await perColumn.count();
+		expect(count).toBeGreaterThan(1);
+
+		await all.selectOption("edit");
+		for (let index = 0; index < count; index++) await expect(perColumn.nth(index)).toHaveValue("edit");
+		await expect(dialog.getByRole("button", { name: `Connect with ${count} columns` })).toBeEnabled();
+
+		// Changing one column afterwards still works, and the shared control says so.
+		await perColumn.first().selectOption("read");
+		await expect(all).toHaveValue("mixed");
+		await all.selectOption("none");
+		await expect(dialog.getByRole("button", { name: "Choose a column first" })).toBeDisabled();
 	});
 
 	test("the ChatGPT steps give everything its custom MCP server form asks for", async ({ page, request, baseURL }) => {

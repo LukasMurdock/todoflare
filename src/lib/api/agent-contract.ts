@@ -76,6 +76,27 @@ export const agentResponseSchema = z.object({ agent: agentConnectionContractSche
 
 export const agentChangeIdContractSchema = z.string().regex(/^chg_[A-Za-z0-9_-]{22}$/, "Invalid change ID");
 
+export const AGENT_ITEM_STYLES = ["paragraph", "todo", "bullet", "numbered", "heading1", "heading2", "heading3"] as const;
+export const agentDiffItemSchema = z
+	.object({ text: z.string(), style: z.enum(AGENT_ITEM_STYLES), checked: z.boolean(), depth: z.number().int().min(0) })
+	.strict();
+export type AgentDiffItem = z.output<typeof agentDiffItemSchema>;
+/** What an agent change did to the column's items, for people to read. */
+export const agentChangeDiffSchema = z
+	.object({
+		entries: z.array(
+			z.discriminatedUnion("kind", [
+				z.object({ kind: z.literal("added"), item: agentDiffItemSchema }).strict(),
+				z.object({ kind: z.literal("removed"), item: agentDiffItemSchema }).strict(),
+				z.object({ kind: z.literal("changed"), before: agentDiffItemSchema, after: agentDiffItemSchema }).strict(),
+			]),
+		),
+		/** Entries left out to keep the list short. */
+		omitted: z.number().int().min(0),
+	})
+	.strict();
+export type AgentChangeDiff = z.output<typeof agentChangeDiffSchema>;
+
 /** One edit an agent made to a column, as recorded by the column. */
 export const agentChangeContractSchema = z
 	.object({
@@ -92,6 +113,7 @@ export const agentChangeContractSchema = z
 		/** An account ID, or `agent:<agentId>` when the agent undid it itself. */
 		undoneBy: z.string().nullable(),
 		undoResult: z.object({ restored: z.number(), kept: z.number(), version: z.string() }).nullable(),
+		diff: agentChangeDiffSchema,
 	})
 	.strict();
 export type AgentChange = z.output<typeof agentChangeContractSchema>;

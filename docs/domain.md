@@ -141,11 +141,15 @@ dynamic registration. Gets short-lived `tfa_…` access tokens and rotating
 - **edit**: also change, check off, reorder and delete items
 
 Levels are cumulative. A grant never exceeds what the account itself can
-currently reach.
+currently reach. There is no account-wide grant: "All columns" in the column
+list sets each listed column's grant at once, and columns created later are
+not included.
 
 **Agent change**: a record of one agent write in the column (who, which tool,
 what changed). Any member can **undo** it; undo reverts only what is still as
-the agent left it, and keeps later human edits.
+the agent left it, and keeps later human edits. The column's agent menu shows
+each change as a **diff**: items added, removed, or changed (old → new), built
+from the same record undo uses.
 
 ## Operations
 

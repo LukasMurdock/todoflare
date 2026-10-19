@@ -11,7 +11,8 @@ import {
 } from "../lib/column-access";
 import { TRASH_RETENTION_MS, parseColumnMetaRecord } from "../server/persistence-records";
 import { columnSnapshotImportSchema } from "../server/column-backup-payload";
-import { applyAgentEdit, undoAgentChange, type AgentEdit, type UndoRecord } from "../server/agent-access/column-edits";
+import { describeAgentChange } from "../server/agent-access/change-diff";
+import { applyAgentEdit, currentItemFields, undoAgentChange, type AgentEdit, type FieldValues, type UndoRecord } from "../server/agent-access/column-edits";
 import { agentLevelIncludes, type AgentGrantLevel } from "../lib/api/agent-contract";
 import {
 	isReadOnlyMode,
@@ -535,10 +536,12 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 	private listAgentChanges(): Response {
 		const rows = this.ctx.storage.sql
 			.exec<AgentChangeRow>(
-				`SELECT id, connection_id, account_id, agent_name, tool, summary, item_ids, created_at, undone_at, undone_by, undo_result
+				`SELECT id, connection_id, account_id, agent_name, tool, summary, item_ids, undo, created_at, undone_at, undone_by, undo_result
 				 FROM agent_changes ORDER BY created_at DESC, id LIMIT 200`,
 			)
 			.toArray();
+		let current: Map<string, FieldValues> | null = null;
+		const currentItem = (id: string) => (current ??= currentItemFields(this.doc)).get(id);
 		return Response.json({
 			changes: rows.map((row) => ({
 				id: row.id,
@@ -552,6 +555,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 				undoneAt: row.undone_at,
 				undoneBy: row.undone_by,
 				undoResult: row.undo_result ? (JSON.parse(row.undo_result) as unknown) : null,
+				diff: describeAgentChange(JSON.parse(row.undo) as UndoRecord, currentItem),
 			})),
 		});
 	}
@@ -1179,6 +1183,7 @@ type AgentChangeRow = {
 	tool: string;
 	summary: string;
 	item_ids: string;
+	undo: string;
 	created_at: number;
 	undone_at: number | null;
 	undone_by: string | null;
