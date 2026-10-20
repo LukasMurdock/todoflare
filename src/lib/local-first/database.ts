@@ -9,6 +9,7 @@ import type {
 	SyncStateDoc,
 	YjsUpdateOutboxDoc,
 } from "@/lib/local-first/collections";
+import { REMOVAL_MARKER_TTL_MS } from "./outbox-journal";
 import { migrateCollectionEntries } from "./persistence-contract";
 
 export interface LocalFirstCollections {
@@ -224,16 +225,22 @@ function patchCollections(
 			for (const { name, patch } of collections) {
 				const request = store.get(name);
 				request.onsuccess = () => {
-					const raw = request.result as { layoutVersion?: number; entries?: StoredCollectionEntries; deletedKeys?: string[] } | undefined;
+					const raw = request.result as { layoutVersion?: number; entries?: StoredCollectionEntries; deletedKeys?: string[]; deletedKeyTimes?: number[] } | undefined;
 					if (raw && (raw.layoutVersion ?? 1) > COLLECTION_LAYOUT_VERSION) {
 						tx.abort(); return;
 					}
 					const entries = new Map(raw?.entries ?? []);
-					const deleted = new Set(raw?.deletedKeys ?? []);
+					// Removal markers expire like the localStorage journal's; untimed legacy ones at once.
+					const now = Date.now();
+					const deleted = new Map<string, number>();
+					(raw?.deletedKeys ?? []).forEach((key, index) => {
+						const at = raw?.deletedKeyTimes?.[index] ?? 0;
+						if (now - at <= REMOVAL_MARKER_TTL_MS) deleted.set(key, at);
+					});
 					const isOutbox = name === "mutationOutbox" || name === "yjsUpdateOutbox";
 					for (const key of patch.deletes) {
 						entries.delete(key);
-						if (isOutbox) deleted.add(key);
+						if (isOutbox) deleted.set(key, now);
 					}
 					for (const [key, value] of patch.sets) {
 						// A receipt/removal always wins over a stale tab's retry state.
@@ -245,7 +252,7 @@ function patchCollections(
 							} catch (error) { reject(error); tx.abort(); return; }
 						} else if (!isOutbox || !deleted.has(key)) entries.set(key, value);
 					}
-					store.put({ name, layoutVersion: COLLECTION_LAYOUT_VERSION, entries: Array.from(entries), deletedKeys: Array.from(deleted) });
+					store.put({ name, layoutVersion: COLLECTION_LAYOUT_VERSION, entries: Array.from(entries), deletedKeys: Array.from(deleted.keys()), deletedKeyTimes: Array.from(deleted.values()) });
 				};
 			}
 			tx.oncomplete = () => resolve();

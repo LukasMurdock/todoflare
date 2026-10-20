@@ -240,6 +240,12 @@ editor ─ Y.Doc update ─► cache in IndexedDB ─► Yjs outbox (persist fir
 - **Acknowledged means durable.** An outbox entry is removed only after the
   DO has committed it. A repeated outbox ID with the same digest is re-acked
   (another tab's replay); a different digest closes the socket.
+- Removing an entry leaves a removal marker in both outboxes (localStorage
+  `…:removed:<id>`, IndexedDB `deletedKeys`) so a stale tab cannot rewrite it.
+  Markers expire after 7 days (`REMOVAL_MARKER_TTL_MS`,
+  `src/lib/local-first/outbox-journal.ts`); a later resurrection only replays
+  an update the DO re-acks. Unexpired markers once filled localStorage
+  (one per acknowledged edit) and paused editing.
 - There is no state-vector exchange: on reconnect the server sends its whole
   document and the client its whole unacknowledged outbox, and Yjs merges.
 - Presence is derived on the server from sessions; awareness (cursors) is
