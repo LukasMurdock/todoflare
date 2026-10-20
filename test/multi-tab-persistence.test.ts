@@ -4,6 +4,7 @@ import { createIndexedDbBackedDb, type LocalFirstDatabase } from "../src/lib/loc
 import { LocalYjsUpdateOutbox, createLocalStorageYjsOutboxStorage, createLocalFirstYjsOutboxStorage } from "../src/lib/sync/yjs-update-outbox";
 import { LocalMutationQueueService, createLocalStorageMutationQueueStorage, createLocalFirstMutationQueueStorage } from "../src/lib/sync/mutation-queue-service";
 import { createAccountEditCommand } from "../src/lib/sync/contracts";
+import { REMOVAL_MARKER_TTL_MS } from "../src/lib/local-first/outbox-journal";
 
 class MemoryStorage implements Storage {
 	values = new Map<string, string>();
@@ -29,6 +30,7 @@ describe("independent browser tabs", () => {
 		for (const db of openDatabases.splice(0)) await db.close();
 		Reflect.deleteProperty(globalThis, "window");
 		vi.restoreAllMocks();
+		vi.useRealTimers();
 	});
 
 	it("preserves both tabs' Yjs edits in both journals and prevents receipt resurrection", async () => {
@@ -74,6 +76,64 @@ describe("independent browser tabs", () => {
 		vi.spyOn(storage, "setItem").mockImplementation(() => { throw new DOMException("Full", "QuotaExceededError"); });
 		expect(() => outbox.enqueue({ accountId, columnId: "a", kind: "sync", payload: new Uint8Array([0, 0]) })).toThrow("Full");
 		expect(outbox.getAllEntries()).toHaveLength(1);
+	});
+
+	it("recovers a journal that legacy removal markers filled to quota", () => {
+		const quota = 200_000;
+		const setItem = storage.setItem.bind(storage);
+		vi.spyOn(storage, "setItem").mockImplementation((key, value) => {
+			let used = key.length + value.length;
+			for (const [k, v] of storage.values) if (k !== key) used += k.length + v.length;
+			if (used > quota) throw new DOMException("Full", "QuotaExceededError");
+			setItem(key, value);
+		});
+		for (let i = 0; ; i++) {
+			try { storage.setItem(`yjs:removed:${crypto.randomUUID()}`, "1"); } catch { break; }
+		}
+		expect(() => new LocalYjsUpdateOutbox({ storage: createLocalStorageYjsOutboxStorage("yjs") })
+			.enqueue({ accountId, columnId: "a", kind: "sync", payload: new Uint8Array([0, 0]) })).not.toThrow();
+		expect(Array.from(storage.values.keys()).filter((key) => key.startsWith("yjs:removed:"))).toHaveLength(0);
+	});
+
+	it("keeps a fresh removal marker blocking resurrection, then expires it with its row", () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		const outbox = new LocalYjsUpdateOutbox({ storage: createLocalStorageYjsOutboxStorage("yjs") });
+		const id = outbox.enqueue({ accountId, columnId: "column", kind: "sync", payload: new Uint8Array([0, 0]) });
+		const stale = outbox.getAllEntries();
+		outbox.acknowledgeSync(accountId, "column", id);
+		const journal = createLocalStorageYjsOutboxStorage("yjs");
+		journal.write([...journal.read(), ...stale]);
+		expect(storage.getItem(`yjs:row:${id}`)).toBeNull();
+		expect(createLocalStorageYjsOutboxStorage("yjs").read()).toEqual([]);
+		// A stale tab's direct row write survives only until its marker expires.
+		storage.setItem(`yjs:row:${id}`, JSON.stringify(stale));
+		vi.setSystemTime(Date.now() + REMOVAL_MARKER_TTL_MS + 1);
+		expect(createLocalStorageYjsOutboxStorage("yjs").read()).toEqual([]);
+		expect(storage.getItem(`yjs:removed:${id}`)).toBeNull();
+		expect(storage.getItem(`yjs:row:${id}`)).toBeNull();
+	});
+
+	it("expires IndexedDB outbox removal keys", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		const db = await openDb();
+		const outbox = new LocalYjsUpdateOutbox({ storage: createLocalFirstYjsOutboxStorage(db) });
+		const input = { accountId, columnId: "column", kind: "sync" as const, payload: new Uint8Array([0, 0]) };
+		const acked = outbox.enqueue(input);
+		await db.flush();
+		outbox.acknowledgeSync(accountId, "column", acked);
+		await db.flush();
+		const readDeletedKeys = () => new Promise<string[]>((resolve) => {
+			const r = indexedDB.open("todoflare-local-first");
+			r.onsuccess = () => {
+				const get = r.result.transaction("collections").objectStore("collections").get("yjsUpdateOutbox");
+				get.onsuccess = () => { r.result.close(); resolve(get.result.deletedKeys); };
+			};
+		});
+		expect(await readDeletedKeys()).toEqual([acked]);
+		vi.setSystemTime(Date.now() + REMOVAL_MARKER_TTL_MS + 1);
+		outbox.enqueue(input);
+		await db.flush();
+		expect(await readDeletedKeys()).toEqual([]);
 	});
 
 	it("rejects flush when an IndexedDB transaction fails instead of reporting durability", async () => {

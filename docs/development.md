@@ -60,6 +60,8 @@ any unread body after every response (`src/server/http/drain-unread-body.ts`);
 - **Browser state**: DevTools → Application. IndexedDB `todoflare-local-first`
   holds the account snapshot, document cache and outboxes; localStorage holds
   guest columns (`todoflare-columns`), checkpoints and the outbox journals.
+  "Editing paused" with IndexedDB still `durable` means a localStorage write
+  failed, usually the quota: sum key sizes by prefix in the console.
 - **Unsynced work**: the account menu's recovery download exports every
   pending command and Yjs update as JSON.
 - **Sync state**: `syncStateSummary` and `yjsOutboxSummary` in
