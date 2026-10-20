@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { reorderColumnOrder } from "../server/account-record-store";
 import { parseDeletedColumnRecords } from "../server/persistence-records";
 
 interface AccountCoordinatorEnv {
@@ -126,13 +127,7 @@ export class AccountCoordinatorSql extends DurableObject<AccountCoordinatorEnv> 
 					(columnId) => columnId !== mutation.columnId,
 				);
 			} else if (mutation.kind === "account-reorder") {
-				const current = new Set(account.columnOrder);
-				const requested = mutation.columnOrder.filter((columnId) => current.has(columnId));
-				const requestedSet = new Set(requested);
-				account.columnOrder = [
-					...requested,
-					...account.columnOrder.filter((columnId) => !requestedSet.has(columnId)),
-				];
+				account.columnOrder = reorderColumnOrder(account.columnOrder, mutation.columnOrder);
 			} else {
 				account.hiddenSharedColumns = mutation.hiddenSharedColumns;
 			}

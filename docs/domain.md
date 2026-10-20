@@ -75,8 +75,9 @@ board. Removing a shared column hides it; it does not delete it.
 **Public link / public ID**: an optional read-only URL `/p/:publicId` for one
 column, viewable without an account. Re-enabling keeps the same ID.
 
-**Trash**: a deleted column stays restorable for 30 days, then is **purged**
-(permanently deleted, after a final backup).
+**Trash**: a deleted column stays restorable for 30 days from its first
+deletion, then is **purged** (permanently deleted, after a final backup).
+Deleting it again while it is in trash does not move that date.
 
 **Presence / awareness**: who is in a column right now (presence, derived by
 the server) and their cursors (awareness, relayed). Never stored durably.

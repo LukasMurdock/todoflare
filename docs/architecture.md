@@ -215,7 +215,9 @@ UI ─► submit(command) ─► LocalMutationQueueService.enqueue (journal + In
 
 Delete is the clearest example (`src/server/workflows/delete-column.ts`): KV
 projections are removed before the DO fields they mirror, so a retry can
-still find them, and the trash record is written last as the commit. Every
+still find them, and the trash record is written last as the commit. The
+room keeps the first deletion time, so a repeat or retried delete leaves
+the purge date alone. Every
 write boundary has a failure-injection test in
 `test/column-lifecycle-workflows.test.ts`.
 

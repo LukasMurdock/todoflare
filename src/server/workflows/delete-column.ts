@@ -147,11 +147,13 @@ export async function deleteColumn<TColumnRoomId>(
 	}
 	await afterWrite?.("column-public");
 
-	const deletedAt = now();
 	const trashResponse = await stub.fetch(new Request("http://do/trash", {
-		method: "POST", body: JSON.stringify({ deletedAt }),
+		method: "POST", body: JSON.stringify({ deletedAt: now() }),
 	}));
 	if (!trashResponse.ok) throw new Error(`Failed to mark column trash: ${trashResponse.status}`);
+	// The room keeps the first deletion time of an already-trashed column.
+	const { deletedAt } = (await trashResponse.json()) as { deletedAt: number };
+	if (!Number.isFinite(deletedAt)) throw new Error("Column trash response has no deletion time");
 	await mutateAccountRecord(env, trashKey, {
 		kind: "trash-upsert",
 		columnId,

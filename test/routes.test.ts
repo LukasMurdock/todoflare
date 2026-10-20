@@ -530,6 +530,47 @@ describe("Worker routes", () => {
 		expect(occurrences).toBe(1);
 	});
 
+	it("saves each column once when a reorder repeats one", async () => {
+		const accountId = await createAccount();
+		const first = await createColumn(accountId);
+		const second = await createColumn(accountId);
+		const res = await SELF.fetch("http://example.com/api/account/columns", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json", ...accountHeaders(accountId) },
+			body: JSON.stringify({ columnOrder: [second, second, first, second] }),
+		});
+		expect(res.ok).toBe(true);
+		const data = (await (await SELF.fetch("http://example.com/api/account", {
+			headers: accountHeaders(accountId),
+		})).json()) as { account: { columnOrder: string[] } };
+		expect(data.account.columnOrder.filter((id) => id === first || id === second)).toEqual([second, first]);
+		expect(new Set(data.account.columnOrder).size).toBe(data.account.columnOrder.length);
+	});
+
+	it("keeps the first deletion time when a trashed column is deleted again", async () => {
+		const accountId = await createAccount();
+		const columnId = await createColumn(accountId);
+		const del = async () => {
+			const res = await SELF.fetch(`http://example.com/api/column/${columnId}`, {
+				method: "DELETE",
+				headers: accountHeaders(accountId),
+			});
+			expect(res.ok).toBe(true);
+			return ((await res.json()) as { deleteAfter: number }).deleteAfter;
+		};
+		const trashedAt = async () => {
+			const data = (await (await SELF.fetch("http://example.com/api/account", {
+				headers: accountHeaders(accountId),
+			})).json()) as { deletedColumns: Array<{ columnId: string; deletedAt: number }> };
+			return data.deletedColumns.find((c) => c.columnId === columnId)?.deletedAt;
+		};
+		const firstDeleteAfter = await del();
+		const firstDeletedAt = await trashedAt();
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		expect(await del()).toBe(firstDeleteAfter);
+		expect(await trashedAt()).toBe(firstDeletedAt);
+	});
+
 	it("moves deleted columns into garbage can list", async () => {
 		const accountId = await createAccount();
 		const columnId = await createColumn(accountId);
