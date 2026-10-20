@@ -5,6 +5,7 @@ import type {
 } from "./contracts";
 import { shouldApplyAccessLossPolicy } from "./replay-response";
 import { ACCOUNT_COMMANDS } from "../api/account-commands";
+import type { SyncFailureDoc } from "../local-first/collections";
 
 export function columnIdForAccountCommand(
 	command: AccountCommandDescriptor,
@@ -54,15 +55,7 @@ export function summarizeReplayReport(
 }
 
 /** A rejected command as it appears in the sync debug snapshot. */
-export interface RecordedSyncFailure {
-	failedAt: number;
-	opType: TerminalReplayFailure["opType"];
-	columnId: string | null;
-	reason: TerminalReplayFailure["reason"];
-	status: number | null;
-	code: string | null;
-	message: string | null;
-}
+export type RecordedSyncFailure = SyncFailureDoc;
 
 export function recordSyncFailure(failure: TerminalReplayFailure, now: number): RecordedSyncFailure {
 	return {

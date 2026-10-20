@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { createAccount, createColumn } from "./helpers/account-api";
+import { getSyncStateSnapshot } from "./helpers/local-first-readers";
 import { bootstrapAuthenticatedPage, LOCAL_COLUMNS_KEY, WELCOME_KEY } from "./helpers/ui-session";
 
 test("holding Cmd/Ctrl highlights links in the editor and releasing clears it", async ({ page }) => {
@@ -121,6 +122,42 @@ test("Mod+/ opens shortcuts once from inside the editor and from the page", asyn
 	await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 	await page.keyboard.press("ControlOrMeta+/");
 	await expect(dialog).toBeVisible();
+});
+
+test("a rejected change is still in the sync debug snapshot after a reload", async ({ page, context, request, baseURL }) => {
+	const appUrl = baseURL ?? "http://127.0.0.1:4173";
+	const accountId = await createAccount(request, appUrl);
+	await createColumn(request, appUrl, accountId);
+	const columnId = await createColumn(request, appUrl, accountId);
+	await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+	await page.route(`**/api/column/${columnId}`, (route) =>
+		route.request().method() === "DELETE"
+			? route.fulfill({ status: 404, json: { error: "Column not found", code: "not_found", message: "Column not found" } })
+			: route.fallback(),
+	);
+	await bootstrapAuthenticatedPage(page, accountId);
+
+	const editors = page.getByRole("textbox", { name: "Todo editor" });
+	await expect(editors).toHaveCount(2, { timeout: 15000 });
+	await page.getByRole("button", { name: "Delete column" }).last().click();
+	await expect(page.getByText("Some offline changes could not be synced")).toBeVisible({ timeout: 15000 });
+	// The toast shows before IndexedDB commits the record; reload only once it has.
+	await expect.poll(async () => (await getSyncStateSnapshot(page, accountId))?.recentSyncFailureCount, { timeout: 15000 }).toBe(1);
+	await page.reload();
+	await expect(editors).toHaveCount(2, { timeout: 15000 });
+
+	const compactAccountId = accountId.replace(/\D/g, "");
+	const readSnapshot = async () => {
+		await page.getByRole("button", { name: `${compactAccountId.slice(0, 4)}...${compactAccountId.slice(-4)}` }).click();
+		await page.getByRole("menuitem", { name: /Copy Sync Debug Snapshot/ }).click();
+		await page.keyboard.press("Escape");
+		return JSON.parse(await page.evaluate(() => navigator.clipboard.readText())) as {
+			recentSyncFailures: unknown[];
+		};
+	};
+	await expect.poll(async () => (await readSnapshot()).recentSyncFailures, { timeout: 15000 }).toEqual([
+		expect.objectContaining({ opType: "column.delete", reason: "not_found", status: 404, code: "not_found" }),
+	]);
 });
 
 test("a rejected change says what the server answered", async ({ page, request, baseURL }) => {

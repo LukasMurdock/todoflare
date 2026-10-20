@@ -94,21 +94,24 @@ export function wait(ms: number): Promise<void> {
 	});
 }
 
+/** Waits for another owner's result; a rerunnable request may take the claim over instead. */
 export async function waitForPendingIdempotentCompletion(
 	stub: DurableObjectStub,
 	fingerprint: string,
-): Promise<Response | null> {
+	rerunnable = false,
+): Promise<Response | { kind: "acquired"; ownerToken: string } | null> {
 	const deadline = Date.now() + IDEMPOTENCY_PENDING_WAIT_MS;
 
 	while (Date.now() < deadline) {
 		await wait(IDEMPOTENCY_PENDING_POLL_MS);
-		const outcome = await beginIdempotentRequest(stub, fingerprint);
+		const outcome = await beginIdempotentRequest(stub, fingerprint, rerunnable);
 		if (outcome.kind === "conflict") return idempotencyKeyConflictResponse();
 		if (outcome.kind === "completed") {
 			return toIdempotentReplayResponse(outcome.status, outcome.body);
 		}
 		if (outcome.kind === "indeterminate") return idempotencyOutcomeUnknownResponse();
 		if (outcome.kind === "acquired") {
+			if (rerunnable) return outcome;
 			throw new Error("Idempotency coordinator unexpectedly released an active claim");
 		}
 	}
@@ -126,6 +129,7 @@ export type IdempotencyBeginOutcome =
 export async function beginIdempotentRequest(
 	stub: DurableObjectStub,
 	fingerprint: string,
+	rerunnable = false,
 ): Promise<IdempotencyBeginOutcome> {
 	const response = await stub.fetch(
 		new Request("http://idempotency/begin", {
@@ -134,6 +138,7 @@ export async function beginIdempotentRequest(
 			body: JSON.stringify({
 				fingerprint,
 				pendingExpiresAt: Date.now() + IDEMPOTENCY_CACHE_TTL_SECONDS * 1000,
+				rerunnable,
 			}),
 		}),
 	);
@@ -181,6 +186,13 @@ export interface IdempotentWriteOptions {
 	accountId?: string | null;
 	requestFingerprintSource?: string;
 	successSchema?: z.ZodType;
+	/**
+	 * The handler is safe to run again after a failure or a lost outcome: it
+	 * converges on the same state, like the lifecycle reconciler re-running a
+	 * journaled operation. A retry then re-runs it instead of reporting
+	 * `idempotency_outcome_unknown`, which clients drop.
+	 */
+	rerunnable?: boolean;
 }
 
 export async function validateSuccessfulWriteResponse(
@@ -223,9 +235,10 @@ export async function withIdempotentWrite(
 	const stub = c.env.IDEMPOTENCY_COORDINATOR.get(
 		c.env.IDEMPOTENCY_COORDINATOR.idFromName(cacheKey),
 	);
+	const rerunnable = options.rerunnable ?? false;
 	let outcome: IdempotencyBeginOutcome;
 	try {
-		outcome = await beginIdempotentRequest(stub, fingerprint);
+		outcome = await beginIdempotentRequest(stub, fingerprint, rerunnable);
 	} catch (error) {
 		console.error("Idempotency coordinator unavailable", error);
 		return idempotencyCoordinatorUnavailableResponse();
@@ -239,19 +252,22 @@ export async function withIdempotentWrite(
 	}
 	if (outcome.kind === "indeterminate") return idempotencyOutcomeUnknownResponse();
 	if (outcome.kind === "pending") {
+		let waited: Awaited<ReturnType<typeof waitForPendingIdempotentCompletion>>;
 		try {
-			const response =
-				(await waitForPendingIdempotentCompletion(stub, fingerprint)) ??
-				idempotencyRequestInProgressResponse();
-			return validateSuccessfulWriteResponse(
-				response,
-				options.successSchema,
-			);
+			waited = await waitForPendingIdempotentCompletion(stub, fingerprint, rerunnable);
 		} catch (error) {
 			console.error("Idempotency coordinator unavailable while waiting", error);
 			return idempotencyCoordinatorUnavailableResponse();
 		}
+		if (waited === null || waited instanceof Response) {
+			return validateSuccessfulWriteResponse(
+				waited ?? idempotencyRequestInProgressResponse(),
+				options.successSchema,
+			);
+		}
+		outcome = waited;
 	}
+	const { ownerToken } = outcome;
 
 	try {
 		const response = await validateSuccessfulWriteResponse(
@@ -261,20 +277,20 @@ export async function withIdempotentWrite(
 		const body = await response.clone().json().catch(() => undefined);
 		if (response.status < 500 && typeof body !== "undefined") {
 			await finishIdempotentRequest(stub, "complete", {
-				ownerToken: outcome.ownerToken,
+				ownerToken,
 				status: response.status,
 				body,
 			});
 		} else {
 			await finishIdempotentRequest(stub, "indeterminate", {
-				ownerToken: outcome.ownerToken,
+				ownerToken,
 			});
 		}
 
 		return response;
 	} catch (err) {
 		await finishIdempotentRequest(stub, "indeterminate", {
-			ownerToken: outcome.ownerToken,
+			ownerToken,
 		}).catch((markError) => {
 			console.error("Failed to mark idempotency outcome indeterminate", markError);
 		});

@@ -115,6 +115,40 @@ describe("request coordinators", () => {
 		});
 	});
 
+	it("hands an unknown outcome to a rerunnable request and rejects the old owner", async () => {
+		const stub = env.IDEMPOTENCY_COORDINATOR.get(
+			env.IDEMPOTENCY_COORDINATOR.idFromName(`test:${crypto.randomUUID()}`),
+		);
+		const post = (path: string, body: unknown) =>
+			stub.fetch(new Request(`http://idempotency/${path}`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(body),
+			}));
+		const begin = async (options: { rerunnable?: boolean; pendingLeaseMs?: number } = {}) =>
+			(await (await post("begin", { fingerprint: "same-request", pendingExpiresAt: Date.now() + 60_000, ...options })).json()) as { kind: string; ownerToken?: string };
+
+		const first = await begin();
+		expect(first.kind).toBe("acquired");
+		// A live claim is never taken over.
+		expect(await begin({ rerunnable: true })).toEqual({ kind: "pending" });
+		// Past its lease, the rerunnable request owns it.
+		const second = await begin({ rerunnable: true, pendingLeaseMs: 0 });
+		expect(second.kind).toBe("acquired");
+		expect(second.ownerToken).not.toBe(first.ownerToken);
+		expect(await begin({ rerunnable: true })).toEqual({ kind: "pending" });
+
+		expect((await post("indeterminate", { ownerToken: second.ownerToken, expiresAt: Date.now() + 60_000 })).ok).toBe(true);
+		expect(await begin()).toEqual({ kind: "indeterminate" });
+		const third = await begin({ rerunnable: true });
+		expect(third.kind).toBe("acquired");
+
+		const stale = await post("complete", { ownerToken: first.ownerToken, status: 200, body: { stale: true }, expiresAt: Date.now() + 60_000 });
+		expect(stale.status).toBe(409);
+		expect((await post("complete", { ownerToken: third.ownerToken, status: 200, body: { success: true }, expiresAt: Date.now() + 60_000 })).ok).toBe(true);
+		expect(await begin({ rerunnable: true })).toEqual({ kind: "completed", status: 200, body: { success: true } });
+	});
+
 	it("atomically enforces the configured rate limit under concurrency", async () => {
 		const key = `concurrent:${crypto.randomUUID()}`;
 		const results = await Promise.all(

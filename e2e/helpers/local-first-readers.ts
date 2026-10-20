@@ -9,6 +9,7 @@ export interface SyncStateSnapshot {
 	lastReplayLatencyMs: number | null;
 	revokeDiscardCount: number;
 	convergenceFailureCount: number;
+	recentSyncFailureCount: number;
 }
 
 export async function getYjsOutboxCountForColumn(
@@ -259,6 +260,7 @@ export async function getSyncStateSnapshot(
 										lastReplayLatencyMs?: unknown;
 										revokeDiscardCount?: unknown;
 										convergenceFailureCount?: unknown;
+										recentSyncFailures?: unknown;
 								  }
 								| undefined;
 
@@ -297,6 +299,9 @@ export async function getSyncStateSnapshot(
 									typeof snapshot.convergenceFailureCount === "number"
 										? snapshot.convergenceFailureCount
 										: 0,
+								recentSyncFailureCount: Array.isArray(snapshot.recentSyncFailures)
+									? snapshot.recentSyncFailures.length
+									: 0,
 							});
 							return;
 						}

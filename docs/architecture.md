@@ -323,7 +323,11 @@ a purge if the column was restored meanwhile). See
   `src/lib/local-first/persistence-contract.ts`, outbox entries parsed before
   replay. Both sides of a contract validate it, from one schema.
 - **Idempotency**: every replayable write has a key; `IdempotencyCoordinatorSql`
-  stores the outcome for 24 h and replays it.
+  stores the outcome for 24 h and replays it. After a 5xx, a throw or a
+  lapsed lease the outcome is unknown; a `rerunnable` write (every queued
+  account command, not import) re-runs on the next retry instead of
+  answering `idempotency_outcome_unknown`
+  ([0015](decisions/0015-rerunnable-idempotent-writes.md)).
 - **Rate limits**: `src/lib/rate-limit.ts` over `RateLimitCoordinatorSql`,
   applied per handler.
 - **XState** for behavior with real lifecycles (convergence, column sessions);

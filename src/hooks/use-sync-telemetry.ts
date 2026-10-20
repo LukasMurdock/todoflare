@@ -12,6 +12,7 @@ import type { ReplayReport } from "../lib/sync/contracts";
 import type { SyncMode } from "../lib/sync/mode-machine";
 import { normalizeAccountId } from "../lib/account";
 import { readAllLocalStorageQuarantine } from "../lib/local-first/local-storage-quarantine";
+import { MAX_RECENT_SYNC_FAILURES } from "../lib/local-first/persistence-contract";
 
 export interface SyncStateSummary {
 	queueDepth: number;
@@ -25,11 +26,9 @@ export interface SyncStateSummary {
 	storageLastError: string | null;
 	quarantinedRecords: number;
 	quarantinedDurableMutations: number;
-	/** Most recent first; this session only, so reproduce before copying a snapshot. */
+	/** Most recent first; persisted with the sync state, so they survive a reload. */
 	recentSyncFailures: RecordedSyncFailure[];
 }
-
-const MAX_RECENT_SYNC_FAILURES = 20;
 
 function syncStateDocId(accountId: string | null): string {
 	return accountId ? `sync:${normalizeAccountId(accountId)}` : "sync:anonymous";
@@ -136,6 +135,11 @@ export function useSyncTelemetry(params: {
 				setConvergenceFailureCount((current) =>
 					Math.max(current, snapshot?.convergenceFailureCount ?? 0),
 				);
+				setRecentSyncFailures((current) =>
+					[...current, ...(snapshot?.recentSyncFailures ?? [])]
+						.sort((a, b) => b.failedAt - a.failedAt)
+						.slice(0, MAX_RECENT_SYNC_FAILURES),
+				);
 				setHydratedDocId(activeDocId);
 			})
 			.catch((error: unknown) => {
@@ -207,6 +211,7 @@ export function useSyncTelemetry(params: {
 					lastReplayLatencyMs,
 					revokeDiscardCount,
 					convergenceFailureCount,
+					recentSyncFailures,
 					updatedAt: Date.now(),
 				});
 			})
@@ -216,6 +221,7 @@ export function useSyncTelemetry(params: {
 	}, [
 		activeDocId,
 		convergenceFailureCount,
+		recentSyncFailures,
 		hydratedDocId,
 		lastReplayAt,
 		lastReplayLatencyMs,

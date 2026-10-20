@@ -55,7 +55,8 @@ export async function runJournaledLifecycle<T extends { ok: boolean }>(
 /**
  * Routes for offline-capable account commands. The method, path and body
  * contract come from ACCOUNT_COMMANDS; the mapped type makes a command without
- * a server handler a compile error.
+ * a server handler a compile error. Every handler is safe to repeat, so each
+ * is a rerunnable idempotent write (decision 0015).
  */
 export const accountCommandHandlers: {
 	[T in AccountCommandType]: (c: Context<{ Bindings: Bindings }>) => Promise<Response>;
@@ -79,6 +80,7 @@ export const accountCommandHandlers: {
 				scope: `account:${normalizeAccountId(accountId)}:columns`,
 				accountId,
 				successSchema: ACCOUNT_COMMANDS["column.reorder"].response,
+				rerunnable: true,
 			},
 			async () => {
 				const normalizedId = normalizeAccountId(accountId);
@@ -121,6 +123,7 @@ export const accountCommandHandlers: {
 				scope: `account:${normalizeAccountId(accountId)}:hidden`,
 				accountId,
 				successSchema: ACCOUNT_COMMANDS["column.hide_shared"].response,
+				rerunnable: true,
 			},
 			async () => {
 				const normalizedId = normalizeAccountId(accountId);
@@ -169,6 +172,7 @@ export const accountCommandHandlers: {
 				accountId,
 				requestFingerprintSource: JSON.stringify(body.data),
 				successSchema: ACCOUNT_COMMANDS["column.create"].response,
+				rerunnable: true,
 			},
 			async () => {
 				const accountData = await accountRecordStore(c.env).get(
@@ -333,6 +337,7 @@ export const accountCommandHandlers: {
 				scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:delete`,
 				accountId,
 				successSchema: ACCOUNT_COMMANDS["column.delete"].response,
+				rerunnable: true,
 			},
 			async () => {
 				const result = await runJournaledLifecycle(
@@ -373,6 +378,7 @@ export const accountCommandHandlers: {
 				scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:restore`,
 				accountId,
 				successSchema: ACCOUNT_COMMANDS["column.restore"].response,
+				rerunnable: true,
 			},
 			async () => {
 				const result = await runJournaledLifecycle(
@@ -417,6 +423,7 @@ export const accountCommandHandlers: {
 				accountId,
 				requestFingerprintSource: JSON.stringify({ targetAccountId }),
 				successSchema: ACCOUNT_COMMANDS["column.share"].response,
+				rerunnable: true,
 			},
 			async () => {
 				const result = await runJournaledLifecycle(
@@ -467,6 +474,7 @@ export const accountCommandHandlers: {
 				scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:revoke:${normalizeAccountId(targetAccountId)}`,
 				accountId,
 				successSchema: ACCOUNT_COMMANDS["column.revoke"].response,
+				rerunnable: true,
 			},
 			async () => {
 				const result = await runJournaledLifecycle(
@@ -514,6 +522,7 @@ export const accountCommandHandlers: {
 				scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:public:enable`,
 				accountId,
 				successSchema: ACCOUNT_COMMANDS["column.public.enable"].response,
+				rerunnable: true,
 			},
 			async () => {
 				const result = await runJournaledLifecycle(
@@ -559,6 +568,7 @@ export const accountCommandHandlers: {
 				scope: `account:${normalizeAccountId(accountId)}:column:${columnId}:public:disable`,
 				accountId,
 				successSchema: ACCOUNT_COMMANDS["column.public.disable"].response,
+				rerunnable: true,
 			},
 			async () => {
 				const result = await runJournaledLifecycle(
