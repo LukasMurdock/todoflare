@@ -29,3 +29,4 @@ Rules:
 | [0012](0012-own-oauth-server-public-clients.md) | Todoflare is its own OAuth server, for public clients only | Accepted |
 | [0013](0013-frozen-release-verification.md) | Production writes reopen only after verifying the frozen build | Accepted |
 | [0014](0014-xstate-for-lifecycles.md) | XState for convergence and connection lifecycles | Accepted |
+| [0015](0015-rerunnable-idempotent-writes.md) | Rerunnable writes retry an unknown outcome instead of dropping it | Accepted |

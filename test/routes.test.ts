@@ -913,12 +913,8 @@ describe("Worker routes", () => {
 		});
 	});
 
-	it("reports an unknown outcome for a claim left pending by a request that died", async () => {
-		const accountId = await createAccount();
+	const claimDelete = async (accountId: string, columnId: string, idempotencyKey: string) => {
 		const normalizedAccountId = normalizeAccountId(accountId);
-		const columnId = await createColumn(accountId);
-		const idempotencyKey = crypto.randomUUID();
-
 		const path = `/api/column/${columnId}`;
 		const scope = `account:${normalizedAccountId}:column:${columnId}:delete`;
 		const cacheKey = `idempotency:${scope}:${normalizedAccountId}:${idempotencyKey}`;
@@ -936,6 +932,21 @@ describe("Worker routes", () => {
 			}),
 		);
 		expect(claim.ok).toBe(true);
+		return { coordinator, path, ownerToken: ((await claim.json()) as { ownerToken: string }).ownerToken };
+	};
+	const expectTrashed = async (accountId: string, columnId: string) => {
+		const data = (await (await SELF.fetch("http://example.com/api/account", {
+			headers: accountHeaders(accountId),
+		})).json()) as { account: { columnOrder: string[] }; deletedColumns: Array<{ columnId: string }> };
+		expect(data.account.columnOrder).not.toContain(columnId);
+		expect(data.deletedColumns.some((c) => c.columnId === columnId)).toBe(true);
+	};
+
+	it("re-runs a queued command whose earlier request died holding its claim", async () => {
+		const accountId = await createAccount();
+		const columnId = await createColumn(accountId);
+		const idempotencyKey = crypto.randomUUID();
+		const { coordinator, path } = await claimDelete(accountId, columnId, idempotencyKey);
 		// Claims written before leases existed carry no claim time, like the
 		// ones production requests left behind; they must not block for a day.
 		await runInDurableObject(coordinator, async (_instance, state) => {
@@ -944,10 +955,63 @@ describe("Worker routes", () => {
 
 		const response = await SELF.fetch(`http://example.com${path}`, {
 			method: "DELETE",
-			headers: {
-				...accountHeaders(accountId),
-				"X-Idempotency-Key": idempotencyKey,
-			},
+			headers: { ...accountHeaders(accountId), "X-Idempotency-Key": idempotencyKey },
+		});
+
+		expect(response.status).toBe(200);
+		await expectTrashed(accountId, columnId);
+	});
+
+	it("re-runs a queued command after a server error left its outcome unknown", async () => {
+		const accountId = await createAccount();
+		const columnId = await createColumn(accountId);
+		const idempotencyKey = crypto.randomUUID();
+		const { coordinator, path, ownerToken } = await claimDelete(accountId, columnId, idempotencyKey);
+		// What a 5xx response or a thrown handler records.
+		const marked = await coordinator.fetch(new Request("http://idempotency/indeterminate", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ ownerToken, expiresAt: Date.now() + 60_000 }),
+		}));
+		expect(marked.ok).toBe(true);
+
+		const headers = { ...accountHeaders(accountId), "X-Idempotency-Key": idempotencyKey };
+		const response = await SELF.fetch(`http://example.com${path}`, { method: "DELETE", headers });
+		expect(response.status).toBe(200);
+		await expectTrashed(accountId, columnId);
+		// The re-run's result is now the recorded one.
+		const replay = await SELF.fetch(`http://example.com${path}`, { method: "DELETE", headers });
+		expect(replay.status).toBe(200);
+		expect(replay.headers.get("X-Idempotency-Replay")).toBe("1");
+	});
+
+	it("still reports an unknown outcome for a write that is not safe to repeat", async () => {
+		const accountId = await createAccount();
+		const normalizedAccountId = normalizeAccountId(accountId);
+		const idempotencyKey = crypto.randomUUID();
+		const exported = await SELF.fetch("http://example.com/api/account/export", { headers: accountHeaders(accountId) });
+		const body = JSON.stringify(await exported.json());
+		const cacheKey = `idempotency:account:${normalizedAccountId}:import:${normalizedAccountId}:${idempotencyKey}`;
+		const coordinator = env.IDEMPOTENCY_COORDINATOR.get(
+			env.IDEMPOTENCY_COORDINATOR.idFromName(cacheKey),
+		);
+		const claim = await coordinator.fetch(new Request("http://idempotency/begin", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				fingerprint: await sha256Hex(`POST /api/account/import\n${body}`),
+				pendingExpiresAt: Date.now() + 24 * 60 * 60 * 1000,
+			}),
+		}));
+		expect(claim.ok).toBe(true);
+		await runInDurableObject(coordinator, async (_instance, state) => {
+			state.storage.sql.exec("UPDATE idempotency_record SET claimed_at = NULL");
+		});
+
+		const response = await SELF.fetch("http://example.com/api/account/import", {
+			method: "POST",
+			headers: { ...accountHeaders(accountId), "Content-Type": "application/json", "X-Idempotency-Key": idempotencyKey },
+			body,
 		});
 
 		expect(response.status).toBe(409);

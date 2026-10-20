@@ -6,6 +6,8 @@ const RECORD_ID = 1;
  * How long a claim may stay pending. A request that dies mid-handler never
  * finishes its claim; past the lease its outcome is unknown rather than in
  * progress, so clients stop waiting and reconcile with the server instead.
+ * A rerunnable request (one whose handler is safe to repeat) takes over an
+ * unknown outcome instead, so a transient failure is retried, not dropped.
  */
 export const IDEMPOTENCY_PENDING_LEASE_MS = 2 * 60 * 1000;
 
@@ -26,6 +28,7 @@ interface BeginRequest {
 	fingerprint: string;
 	pendingExpiresAt: number;
 	pendingLeaseMs?: number;
+	rerunnable?: boolean;
 }
 
 interface CompleteRequest {
@@ -83,7 +86,8 @@ export class IdempotencyCoordinatorSql extends DurableObject<unknown> {
 			request.fingerprint.length === 0 ||
 			!Number.isFinite(request.pendingExpiresAt) ||
 			(request.pendingLeaseMs !== undefined &&
-				(!Number.isFinite(request.pendingLeaseMs) || request.pendingLeaseMs < 0))
+				(!Number.isFinite(request.pendingLeaseMs) || request.pendingLeaseMs < 0)) ||
+			(request.rerunnable !== undefined && typeof request.rerunnable !== "boolean")
 		) {
 			return jsonError("Invalid idempotency begin request");
 		}
@@ -128,7 +132,21 @@ export class IdempotencyCoordinatorSql extends DurableObject<unknown> {
 		}
 
 		const leaseMs = request.pendingLeaseMs ?? IDEMPOTENCY_PENDING_LEASE_MS;
-		if (row.state === "pending" && (row.claimed_at === null || now - row.claimed_at >= leaseMs)) {
+		const leaseLapsed = row.state === "pending" && (row.claimed_at === null || now - row.claimed_at >= leaseMs);
+		if (request.rerunnable && (leaseLapsed || row.state === "indeterminate")) {
+			// The previous owner's late result is rejected by its stale token.
+			const ownerToken = crypto.randomUUID();
+			this.ctx.storage.sql.exec(
+				"UPDATE idempotency_record SET state = 'pending', owner_token = ?, status = NULL, body = NULL, expires_at = ?, claimed_at = ? WHERE id = ?",
+				ownerToken,
+				request.pendingExpiresAt,
+				now,
+				RECORD_ID,
+			);
+			await this.ctx.storage.setAlarm(request.pendingExpiresAt);
+			return Response.json({ kind: "acquired", ownerToken });
+		}
+		if (leaseLapsed) {
 			this.ctx.storage.sql.exec(
 				"UPDATE idempotency_record SET state = 'indeterminate' WHERE id = ? AND state = 'pending'",
 				RECORD_ID,

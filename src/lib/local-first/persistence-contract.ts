@@ -7,7 +7,7 @@ import {
 	publicLinkContractSchema,
 } from "../api/account-contract";
 import { parseQueuedMutation } from "../sync/account-command-parser";
-import { TERMINAL_REPLAY_REASONS } from "../sync/contracts";
+import { ACCOUNT_COMMAND_TYPES, TERMINAL_REPLAY_REASONS } from "../sync/contracts";
 import { SYNC_MODES } from "../sync/mode-machine";
 import {
 	YJS_OUTBOX_KINDS,
@@ -20,6 +20,8 @@ import {
 	type YjsUpdateOutboxDoc,
 } from "./collections";
 
+/** Rejected commands kept in the sync state for diagnosis. */
+export const MAX_RECENT_SYNC_FAILURES = 20;
 const finiteNumber = z.number().finite();
 const nonNegativeInteger = z.number().int().nonnegative();
 const nullableFiniteNumber = finiteNumber.nullable();
@@ -83,6 +85,22 @@ const syncStateSchema = z
 		lastReplayLatencyMs: nullableFiniteNumber,
 		revokeDiscardCount: nonNegativeInteger,
 		convergenceFailureCount: nonNegativeInteger,
+		recentSyncFailures: z
+			.array(
+				z
+					.object({
+						failedAt: finiteNumber,
+						opType: z.enum(ACCOUNT_COMMAND_TYPES),
+						columnId: z.string().nullable(),
+						reason: z.enum(TERMINAL_REPLAY_REASONS),
+						status: nonNegativeInteger.nullable(),
+						code: z.string().nullable(),
+						message: z.string().nullable(),
+					})
+					.strict(),
+			)
+			.max(MAX_RECENT_SYNC_FAILURES)
+			.optional(),
 		updatedAt: finiteNumber,
 	})
 	.strict();

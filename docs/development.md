@@ -65,7 +65,9 @@ any unread body after every response (`src/server/http/drain-unread-body.ts`);
 - **Unsynced work**: the account menu's recovery download exports every
   pending command and Yjs update as JSON.
 - **Sync state**: `syncStateSummary` and `yjsOutboxSummary` in
-  `SyncProvider`; the client mode comes from `deriveSyncMode`.
+  `SyncProvider`; the client mode comes from `deriveSyncMode`. The last 20
+  commands the server rejected (`recentSyncFailures`) are kept in the
+  IndexedDB sync state and appear in the copied sync debug snapshot.
 - **Worker logs are off in production by design** (and enforced). Reproduce on
   staging or locally; scripts print the request that failed.
 - **Agents**: `node scripts/agent-mcp-smoke.mjs` drives the MCP endpoint;

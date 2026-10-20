@@ -4,7 +4,7 @@ import type {
 	DeletedColumn,
 	PublicLinkResponse,
 } from "@/types/account";
-import type { TerminalReplayReason } from "@/lib/sync/contracts";
+import type { AccountCommandType, TerminalReplayReason } from "@/lib/sync/contracts";
 import type { SyncMode } from "@/lib/sync/mode-machine";
 
 export interface AccountSnapshotDoc {
@@ -60,7 +60,20 @@ export interface SyncStateDoc {
 	lastReplayLatencyMs: number | null;
 	revokeDiscardCount: number;
 	convergenceFailureCount: number;
+	/** Newest first; kept so a rejection can be diagnosed after a reload. */
+	recentSyncFailures?: SyncFailureDoc[];
 	updatedAt: number;
+}
+
+/** A queued command the server rejected for good, as the debug snapshot shows it. */
+export interface SyncFailureDoc {
+	failedAt: number;
+	opType: AccountCommandType;
+	columnId: string | null;
+	reason: TerminalReplayReason;
+	status: number | null;
+	code: string | null;
+	message: string | null;
 }
 
 export interface MutationOutboxDoc {
