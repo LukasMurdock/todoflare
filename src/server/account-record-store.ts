@@ -1,5 +1,15 @@
 import { parseDeletedColumnRecords } from "./persistence-records";
 
+/**
+ * Applies a requested order to the account's columns: known requested IDs
+ * first, then the rest in their current order. Unknown IDs are ignored and
+ * each column appears once, which also repairs an order saved with duplicates.
+ */
+export function reorderColumnOrder(current: readonly string[], requested: readonly string[]): string[] {
+	const known = new Set(current);
+	return Array.from(new Set([...requested.filter((id) => known.has(id)), ...current]));
+}
+
 export interface AccountRecordStore {
 	get(key: string): Promise<string | null>;
 	put(key: string, value: string): Promise<void>;
@@ -136,13 +146,7 @@ export async function mutateAccountRecord<TAccountCoordinatorId>(
 		} else if (mutation.kind === "account-remove-column") {
 			account.columnOrder = account.columnOrder.filter((id) => id !== mutation.columnId);
 		} else if (mutation.kind === "account-reorder") {
-			const current = new Set(account.columnOrder);
-			const requested = mutation.columnOrder.filter((id) => current.has(id));
-			const requestedSet = new Set(requested);
-			account.columnOrder = [
-				...requested,
-				...account.columnOrder.filter((id) => !requestedSet.has(id)),
-			];
+			account.columnOrder = reorderColumnOrder(account.columnOrder, mutation.columnOrder);
 		} else {
 			account.hiddenSharedColumns = mutation.hiddenSharedColumns;
 		}

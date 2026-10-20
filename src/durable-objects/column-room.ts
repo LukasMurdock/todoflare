@@ -764,9 +764,11 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 			if (!this.meta) return new Response("Column not found", { status: 404 });
 			const { deletedAt } = await request.json() as { deletedAt: number };
 			if (!Number.isFinite(deletedAt) || deletedAt < 0) return new Response("Invalid deletion timestamp", { status: 400 });
-			this.ctx.storage.sql.exec("INSERT INTO column_lifecycle VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET trashed_at = excluded.trashed_at", deletedAt);
+			// Deleting a trashed column again keeps its first time, so its purge date never moves.
+			this.ctx.storage.sql.exec("INSERT INTO column_lifecycle VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET trashed_at = COALESCE(column_lifecycle.trashed_at, excluded.trashed_at)", deletedAt);
+			const trashedAt = this.ctx.storage.sql.exec<{ trashed_at: number }>("SELECT trashed_at FROM column_lifecycle WHERE id = 1").one().trashed_at;
 			this.closeDeletedSessions();
-			return Response.json({ success: true });
+			return Response.json({ success: true, deletedAt: trashedAt });
 		}
 		if (request.method === "POST" && url.pathname === "/restore-active") {
 			if (isReadOnlyMode(this.env)) return readOnlyModeResponse();

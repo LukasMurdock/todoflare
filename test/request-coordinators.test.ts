@@ -1,6 +1,7 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { checkRateLimit } from "../src/lib/rate-limit";
+import { finishIdempotentRequest } from "../src/server/http/idempotency";
 
 describe("request coordinators", () => {
 	it("atomically admits one idempotency owner", async () => {
@@ -147,6 +148,24 @@ describe("request coordinators", () => {
 		expect(stale.status).toBe(409);
 		expect((await post("complete", { ownerToken: third.ownerToken, status: 200, body: { success: true }, expiresAt: Date.now() + 60_000 })).ok).toBe(true);
 		expect(await begin({ rerunnable: true })).toEqual({ kind: "completed", status: 200, body: { success: true } });
+	});
+
+	it("lets a superseded owner finish without an error and keeps the new result", async () => {
+		const stub = env.IDEMPOTENCY_COORDINATOR.get(
+			env.IDEMPOTENCY_COORDINATOR.idFromName(`test:${crypto.randomUUID()}`),
+		);
+		const begin = async (options: { rerunnable?: boolean; pendingLeaseMs?: number } = {}) =>
+			(await (await stub.fetch(new Request("http://idempotency/begin", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ fingerprint: "same-request", pendingExpiresAt: Date.now() + 60_000, ...options }),
+			}))).json()) as { kind: string; ownerToken: string };
+		const slow = await begin();
+		const retry = await begin({ rerunnable: true, pendingLeaseMs: 0 });
+		await finishIdempotentRequest(stub, "complete", { ownerToken: retry.ownerToken, status: 200, body: { from: "retry" } });
+		await expect(finishIdempotentRequest(stub, "complete", { ownerToken: slow.ownerToken, status: 200, body: { from: "slow" } })).resolves.toBeUndefined();
+		await expect(finishIdempotentRequest(stub, "indeterminate", { ownerToken: slow.ownerToken })).resolves.toBeUndefined();
+		expect(await begin()).toEqual({ kind: "completed", status: 200, body: { from: "retry" } });
 	});
 
 	it("atomically enforces the configured rate limit under concurrency", async () => {

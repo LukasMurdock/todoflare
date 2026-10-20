@@ -161,6 +161,8 @@ export async function finishIdempotentRequest(
 			}),
 		}),
 	);
+	// 409: a rerunnable retry took this claim over; its result is the recorded one.
+	if (response.status === 409) return;
 	if (!response.ok) throw new Error(`Idempotency coordinator failed: ${response.status}`);
 }
 
