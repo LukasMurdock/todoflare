@@ -18,6 +18,8 @@ export type Bindings = {
 	READ_ONLY_MODE?: string;
 	/** "true" serves agent access; anything else hides every agent route. */
 	AGENT_ACCESS_ENABLED?: string;
+	/** "production" or "staging"; only production invites crawlers. */
+	ENVIRONMENT?: string;
 	BACKUPS?: R2Bucket;
 	BACKUP_ADMIN_TOKEN?: string;
 	AUTO_BACKUP_ENABLED?: string;

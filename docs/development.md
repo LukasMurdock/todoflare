@@ -118,7 +118,8 @@ assert every store). See [0008](decisions/0008-named-workflows-for-multi-store-w
 Tools are in `src/server/agent-access/tools.ts`. Declare the required level;
 reads use `authorizeColumn`, writes go through `editColumn` and the column DO's
 `/agent-edit`, never directly to storage. Add the tool to the permission table
-in `test/agent-mcp-permissions.test.ts` (both protocol eras). Agents must
+in `test/agent-mcp-permissions.test.ts` (both protocol eras). `llms.txt` and
+the MCP server card list tools from the same table, so they follow without edits. Agents must
 never gain sharing, public-link, delete, trash, account or agent-management
 abilities ([0010](decisions/0010-agent-access-model.md)).
 

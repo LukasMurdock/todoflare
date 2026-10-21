@@ -22,6 +22,7 @@ import { registerAgentRoutes } from "./server/routes/agents";
 import { registerMcpRoutes } from "./server/routes/mcp";
 import { registerOAuthRoutes } from "./server/routes/oauth";
 import { registerAuthRoutes, registerAuthStatusRoute } from "./server/routes/auth";
+import { registerDiscoveryRoutes } from "./server/routes/discovery";
 import { registerColumnRoutes } from "./server/routes/columns";
 import { registerPublicRoutes } from "./server/routes/public";
 
@@ -76,6 +77,7 @@ registerPublicRoutes(app);
 registerAgentRoutes(app);
 registerMcpRoutes(app);
 registerOAuthRoutes(app);
+registerDiscoveryRoutes(app);
 registerAdminBackupRoutes(app);
 
 // Keep the clock endpoint for testing
