@@ -2,3 +2,6 @@
   X-Frame-Options: DENY
   Content-Security-Policy: frame-ancestors 'none'
   Referrer-Policy: no-referrer
+
+/
+  Link: </.well-known/api-catalog>; rel="api-catalog", </llms.txt>; rel="service-doc"; type="text/markdown"

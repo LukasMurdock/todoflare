@@ -19,7 +19,7 @@ Todoflare owns:
 - account order, hidden shared columns and trash
 - offline durability in the browser: snapshots and outboxes in IndexedDB
 - agent connections, per-column grants, its own OAuth 2.1 authorization
-  server, and the MCP endpoint
+  server, the MCP endpoint and the documents that advertise it
 - backups, restore and the release safety procedure
 
 It deliberately does not own:
@@ -79,7 +79,7 @@ src/
   index.tsx             Worker entry: middleware, route registration, scheduled(), DO exports
   server/
     routes/             One register*Routes(app) per area (account, account-commands, columns,
-                        public, agents, mcp, oauth, admin-backups, auth)
+                        public, agents, mcp, oauth, discovery, admin-backups, auth)
     workflows/          Named multi-store operations: share, revoke, delete, restore, public
                         link, clone, export, restore-from-backup, reconcile, purge
     http/               Guards (read-only), idempotency, request validation, error envelopes
@@ -295,6 +295,13 @@ MCP client ─ POST /api/mcp, Authorization: Bearer tfa_… ─► src/server/ro
   `/oauth/authorize`, where approval creates the connection and its grants
   ([0012](decisions/0012-own-oauth-server-public-clients.md)). Details:
   [proposals/agent-access.md](proposals/agent-access.md).
+- Before connecting, agents and crawlers can find the endpoint from
+  `/llms.txt`, the MCP server card `/.well-known/mcp/server-card.json`, the
+  RFC 9727 catalog `/.well-known/api-catalog` (linked from `/` by a `Link`
+  header in `public/_headers`) and `/robots.txt`, all generated in
+  `src/server/routes/discovery.ts` from the same constants the endpoint uses
+  ([0016](decisions/0016-generated-agent-discovery.md)). Only production
+  `robots.txt` admits crawlers, and never to `/p/`, `/oauth/` or `/api/`.
 
 ### 8. Sign-in and account creation
 
