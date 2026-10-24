@@ -6,7 +6,8 @@ import { setSessionCookie } from "better-auth/cookies";
 import { z } from "zod";
 import { generateAccountId } from "../lib/account";
 import { AUTH_BASE_PATH, AUTH_ROUTES } from "../lib/api/routes";
-import { credentialInventory, USER_VERIFICATION } from "./auth-policy";
+import { credentialInventory, isProvisional, USER_VERIFICATION } from "./auth-policy";
+import { rewriteJsonResponse } from "./http/responses";
 
 export type AuthState = "provisional" | "passkey";
 
@@ -58,8 +59,9 @@ function recoveryPlugin(env: AuthBindings) {
 				AUTH_ROUTES.generateRecoveryCode.path,
 				{ method: AUTH_ROUTES.generateRecoveryCode.method, use: [sensitiveSessionMiddleware] },
 				async (ctx) => {
-					const { passkeys } = await credentialInventory(env.AUTH_DB, ctx.context.session.user.id);
-					if (passkeys === 0) throw APIError.fromStatus("UNAUTHORIZED");
+					if (isProvisional(await credentialInventory(env.AUTH_DB, ctx.context.session.user.id))) {
+						throw APIError.fromStatus("UNAUTHORIZED");
+					}
 					const code = recoveryCode();
 					await env.AUTH_DB.prepare(
 						'UPDATE "user" SET "recoveryCodeHash" = ?, "updatedAt" = ? WHERE "id" = ?',
@@ -194,6 +196,7 @@ export async function cleanupAbandonedProvisionalUsers(
 	env: AuthBindings,
 	retentionMs = 7 * 24 * 60 * 60 * 1_000,
 ): Promise<number> {
+	// isProvisional() in auth-policy.ts, in SQL: no passkey row.
 	const result = await env.AUTH_DB.prepare(
 		`DELETE FROM "user"
 		 WHERE "authState" = 'provisional'
@@ -217,16 +220,6 @@ export function stripSyntheticEmails(value: unknown): unknown {
 	);
 }
 
-export async function sanitizedAuthResponse(response: Response): Promise<Response> {
-	const contentType = response.headers.get("Content-Type") ?? "";
-	if (!contentType.includes("application/json")) return response;
-	const body = await response.clone().json().catch(() => null);
-	if (body === null) return response;
-	const headers = new Headers(response.headers);
-	headers.delete("Content-Length");
-	return Response.json(stripSyntheticEmails(body), {
-		status: response.status,
-		statusText: response.statusText,
-		headers,
-	});
+export function sanitizedAuthResponse(response: Response): Promise<Response> {
+	return rewriteJsonResponse(response, stripSyntheticEmails);
 }

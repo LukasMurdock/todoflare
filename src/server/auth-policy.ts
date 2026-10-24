@@ -6,11 +6,14 @@ import {
 import { namesAnotherAccount } from "../lib/account-request-headers";
 import { AUTH_ROUTES, type ApiRoute } from "../lib/api/routes";
 import type { AuthErrorCode, AuthErrorEnvelope } from "../lib/api/errors";
+import { readOnlyModeResponse } from "./read-only-mode";
+import { rewriteJsonResponse } from "./http/responses";
 
 /**
  * Who may call which better-auth endpoint, and what each one must prove
  * ([0017](../../docs/decisions/0017-verified-passkeys-and-recent-credential-changes.md)).
- * src/server/routes/auth.ts applies it to every request under AUTH_BASE_PATH.
+ * serveAuthEndpoint applies it; src/server/routes/auth.ts mounts that under
+ * AUTH_BASE_PATH.
  */
 
 /** How recently an account must have signed in to change its credentials. */
@@ -60,7 +63,7 @@ export const AUTH_ENDPOINTS: Readonly<Record<string, AuthEndpointPolicy>> = {
 	"POST /sign-out": { whileFrozen: true },
 	"POST /sign-in/anonymous": {},
 	"POST /revoke-other-sessions": { expectedAccount: true },
-	"GET /passkey/list-user-passkeys": { whileFrozen: true },
+	"GET /passkey/list-user-passkeys": { whileFrozen: true, expectedAccount: true },
 	"GET /passkey/generate-authenticate-options": { whileFrozen: true, requestsUserVerification: true },
 	"POST /passkey/verify-authentication": { whileFrozen: true, userVerification: "authentication" },
 	"GET /passkey/generate-register-options": { recentSignIn: "unlessUnenrolled", expectedAccount: true },
@@ -74,7 +77,18 @@ export function authEndpointPolicy(method: string, path: string): AuthEndpointPo
 	return Object.hasOwn(AUTH_ENDPOINTS, `${method} ${path}`) ? AUTH_ENDPOINTS[`${method} ${path}`] : undefined;
 }
 
-export function authError(code: AuthErrorCode, status: number, message: string): Response {
+/** What each refusal means to the client; one entry per AUTH_ERROR_CODES. */
+const AUTH_ERRORS = {
+	unauthorized: { status: 401, message: "Sign in first" },
+	not_found: { status: 404, message: "Not found" },
+	account_mismatch: { status: 401, message: "Another account signed in on this device. Reload to continue." },
+	recent_authentication_required: { status: 401, message: "Confirm it's you with a passkey, then try again" },
+	last_recovery_method: { status: 409, message: "Add another passkey or a recovery code before removing this one" },
+	user_verification_required: { status: 400, message: "Your passkey must confirm it's you with a PIN, fingerprint or face" },
+} as const satisfies Record<AuthErrorCode, { status: number; message: string }>;
+
+function authError(code: AuthErrorCode): Response {
+	const { status, message } = AUTH_ERRORS[code];
 	const body: AuthErrorEnvelope = { error: code, code, message };
 	return Response.json(body, { status, headers: { "Cache-Control": "private, no-store" } });
 }
@@ -95,6 +109,12 @@ export async function credentialInventory(db: D1Database, accountId: string): Pr
 		.first<{ passkeys: number; recoveryCode: number | null }>();
 	return { passkeys: row?.passkeys ?? 0, recoveryCode: row?.recoveryCode === 1 };
 }
+
+/**
+ * A sign-up that has not added its passkey: it cannot sync, share or create a
+ * recovery code. `isAnonymous` is not trusted for this; a passkey row is.
+ */
+export const isProvisional = (inventory: CredentialInventory) => inventory.passkeys === 0;
 
 /** Nothing to sign in again with: a sign-up that has not added its passkey. */
 export const isUnenrolled = (inventory: CredentialInventory) =>
@@ -143,50 +163,50 @@ interface PolicySession {
 	session: { createdAt: Date | string | number };
 }
 
+export interface AuthRequest {
+	request: Request;
+	/** Path relative to AUTH_BASE_PATH. */
+	path: string;
+	db: D1Database;
+	/** READ_ONLY_MODE is on. */
+	frozen: boolean;
+	session: () => Promise<PolicySession | null>;
+	/** better-auth's handler, called only once the policy allows the request. */
+	handle: () => Promise<Response>;
+}
+
 /**
- * Applies a row of AUTH_ENDPOINTS. Returns the refusal, or null to proceed.
- * The caller supplies the session lookup, so this module needs nothing from
- * better-auth's configuration.
+ * Serves one request under AUTH_BASE_PATH by its AUTH_ENDPOINTS row: every
+ * field of AuthEndpointPolicy is interpreted here and nowhere else.
  */
-export async function enforceAuthPolicy(
-	request: Request,
-	db: D1Database,
-	policy: AuthEndpointPolicy,
-	session: () => Promise<PolicySession | null>,
-): Promise<Response | null> {
+export async function serveAuthEndpoint(auth: AuthRequest): Promise<Response> {
+	const policy = authEndpointPolicy(auth.request.method, auth.path);
+	if (auth.frozen && !policy?.whileFrozen) return readOnlyModeResponse();
+	if (!policy) return authError("not_found");
+	const refused = await refusal(policy, auth);
+	if (refused) return authError(refused);
+	const response = await auth.handle();
+	return policy.requestsUserVerification && response.ok
+		? rewriteJsonResponse(response, (options) => ({ ...options, userVerification: USER_VERIFICATION }))
+		: response;
+}
+
+async function refusal(policy: AuthEndpointPolicy, { request, db, session }: AuthRequest): Promise<AuthErrorCode | null> {
 	const checksRecency = policy.recentSignIn === "always" || policy.recentSignIn === "unlessUnenrolled";
 	if (policy.expectedAccount || checksRecency || policy.keepsRecoveryMethod) {
 		const current = await session();
-		if (!current) return authError("unauthorized", 401, "Sign in first");
-		if (policy.expectedAccount && namesAnotherAccount(request.headers, current.user.id)) {
-			return authError("account_mismatch", 401, "Another account signed in on this device. Reload to continue.");
-		}
+		if (!current) return "unauthorized";
+		if (policy.expectedAccount && namesAnotherAccount(request.headers, current.user.id)) return "account_mismatch";
 		if (checksRecency || policy.keepsRecoveryMethod) {
 			const inventory = await credentialInventory(db, current.user.id);
 			const exempt = policy.recentSignIn === "unlessUnenrolled" && isUnenrolled(inventory);
-			if (checksRecency && !exempt && !isRecentSession(current.session.createdAt)) {
-				return authError("recent_authentication_required", 401, "Confirm it's you with a passkey, then try again");
-			}
-			if (policy.keepsRecoveryMethod && isLastRecoveryMethod(inventory)) {
-				return authError("last_recovery_method", 409, "Add another passkey or a recovery code before removing this one");
-			}
+			if (checksRecency && !exempt && !isRecentSession(current.session.createdAt)) return "recent_authentication_required";
+			if (policy.keepsRecoveryMethod && isLastRecoveryMethod(inventory)) return "last_recovery_method";
 		}
 	}
 	if (policy.userVerification) {
 		const body = await request.clone().json().catch(() => null);
-		if (!userVerified(policy.userVerification, body)) {
-			return authError("user_verification_required", 400, "Your passkey must confirm it's you with a PIN, fingerprint or face");
-		}
+		if (!userVerified(policy.userVerification, body)) return "user_verification_required";
 	}
 	return null;
-}
-
-/** Ask authenticators for the verification the server will require. */
-export async function withRequestedUserVerification(response: Response): Promise<Response> {
-	if (!response.ok) return response;
-	const options = await response.clone().json().catch(() => null) as Record<string, unknown> | null;
-	if (!options || typeof options !== "object") return response;
-	const headers = new Headers(response.headers);
-	headers.delete("Content-Length");
-	return Response.json({ ...options, userVerification: USER_VERIFICATION }, { status: response.status, headers });
 }

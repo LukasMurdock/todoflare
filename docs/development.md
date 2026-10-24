@@ -99,7 +99,10 @@ the client, add its row and decide its policy there: served while frozen,
 recent sign-in, expected account, user verification. For a Todoflare endpoint
 inside Better Auth (like the recovery code), declare `{ method, path }` in
 `AUTH_ROUTES` in `src/lib/api/routes.ts`, define the plugin endpoint from it
-in `src/server/auth.ts`, and call it with `authClient.$fetch`.
+in `src/server/auth.ts`, and call it with `authClient.$fetch`. A call that
+changes an account's credentials belongs in `accountCredentials` in
+`src/lib/auth-client.ts`, which names the account on each call; give the
+endpoint's row `expectedAccount` so the server checks it.
 `test/auth-policy.test.ts` checks every row against Better Auth's endpoints.
 
 ### Add an offline-capable metadata command

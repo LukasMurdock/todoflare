@@ -21,9 +21,10 @@ account left every other session, including a thief's, signed in.
 - One table, `AUTH_ENDPOINTS` in `src/server/auth-policy.ts`, lists every
   Better Auth endpoint reachable over HTTP and the policy each must satisfy.
   The auth route applies it to every request; an unlisted endpoint answers
-  404. Better Auth's plugins define about 40 endpoints (email, social,
-  account linking, user updates) and Todoflare uses 12, so the reachable
-  surface is the table, not the plugin set.
+  404. Better Auth's plugins define many more endpoints than Todoflare uses
+  (email, social, account linking, user updates), so the reachable surface is
+  the table, not the plugin set. One function, `serveAuthEndpoint`,
+  interprets every field of a row.
 - **User verification.** Verification ceremonies are refused with
   `user_verification_required` unless their authenticator data reports UV,
   and sign-in options are rewritten to ask for it. At sign-in the assertion
@@ -42,7 +43,10 @@ account left every other session, including a thief's, signed in.
 - **Expected account.** Rows marked `expectedAccount` are refused with
   `account_mismatch` when `X-Todoflare-Expected-Account` names another account
   than the session's, so a change queued in one tab cannot land on an account
-  another tab signed in to. Sign-up and the credential manager send it. The
+  another tab signed in to. The client's `accountCredentials(accountId)` sends
+  it on each credential call, for sign-up and the credential manager; when
+  adding a passkey, Better Auth's client sends it on `verify-registration`,
+  the request that stores the passkey. The
   client answers `recent_authentication_required` with a passkey confirmation
   (a fresh sign-in, limited to the account's own passkeys), checks it signed
   in the same account, and retries the change.

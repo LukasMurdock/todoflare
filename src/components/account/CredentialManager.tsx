@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-	authClient,
-	authFailure,
-	generateRecoveryCode,
-	reauthenticate,
+	accountCredentials,
 	RecentAuthenticationRequiredError,
+	type AccountCredentials,
+	type ListedPasskey,
 } from "@/lib/auth-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,7 +14,6 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
-import { accountRequestHeaders } from "@/lib/account-request-headers";
 
 interface CredentialManagerProps {
 	accountId: string | null;
@@ -23,11 +21,7 @@ interface CredentialManagerProps {
 	onOpenChange: (open: boolean) => void;
 }
 
-interface ListedPasskey {
-	id: string;
-	name?: string | null;
-	createdAt?: Date | string | null;
-}
+type CredentialChange = (credentials: AccountCredentials) => Promise<void>;
 
 export function CredentialManager({ accountId, open, onOpenChange }: CredentialManagerProps) {
 	const [passkeys, setPasskeys] = useState<ListedPasskey[]>([]);
@@ -36,77 +30,73 @@ export function CredentialManager({ accountId, open, onOpenChange }: CredentialM
 	const [notice, setNotice] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
-	// The change the server refused for want of a recent sign-in, and the
+	const credentials = useMemo(() => (accountId ? accountCredentials(accountId) : null), [accountId]);
+	// The change the server refused for want of a recent sign-in, with the
 	// account it was for; it is retried once the user confirms with a passkey.
-	const [pending, setPending] = useState<{ accountId: string; fallback: string; action: () => Promise<void> } | null>(null);
-	// Every change names the account shown here, so the server refuses it if
-	// another tab has since signed in as someone else.
-	const headers = accountId ? accountRequestHeaders(accountId) : {};
+	const [pending, setPending] = useState<{ credentials: AccountCredentials; fallback: string; change: CredentialChange } | null>(null);
 
-	const refresh = useCallback(async () => {
-		const result = await authClient.passkey.listUserPasskeys();
-		if (result.error) setError(result.error.message ?? "Unable to load passkeys");
-		else setPasskeys((result.data ?? []) as ListedPasskey[]);
+	const refresh = useCallback(async (on: AccountCredentials) => {
+		try {
+			setPasskeys(await on.listPasskeys());
+		} catch (cause) {
+			setError(cause instanceof Error && cause.message ? cause.message : "Unable to load passkeys");
+		}
 	}, []);
 
 	useEffect(() => {
-		if (open) void refresh();
-	}, [open, refresh]);
+		if (open && credentials) void refresh(credentials);
+	}, [open, credentials, refresh]);
 
 	// A pending change belongs to one opening of the dialog for one account.
 	useEffect(() => {
 		setPending(null);
-	}, [open, accountId]);
+	}, [open, credentials]);
 
-	const run = async (fallback: string, action: () => Promise<void>) => {
+	const run = async (
+		fallback: string,
+		change: CredentialChange,
+		{ on = credentials, confirmFirst = false }: { on?: AccountCredentials | null; confirmFirst?: boolean } = {},
+	) => {
+		if (!on) return;
 		setBusy(true);
 		setError(null);
 		setNotice(null);
 		try {
-			await action();
+			if (confirmFirst) await on.reauthenticate();
+			await change(on);
 			setPending(null);
 		} catch (cause) {
-			if (cause instanceof RecentAuthenticationRequiredError && accountId) setPending({ accountId, fallback, action });
+			if (cause instanceof RecentAuthenticationRequiredError) setPending({ credentials: on, fallback, change });
 			else setError(cause instanceof Error && cause.message ? cause.message : fallback);
 		} finally {
 			setBusy(false);
 		}
 	};
 
-	const add = () => run("Passkey registration failed", async () => {
-		const result = await authClient.passkey.addPasskey({
-			name: name.trim() || `Passkey ${passkeys.length + 1}`,
-			fetchOptions: { headers },
-		});
-		if (result.error) throw authFailure(result.error);
+	const add = () => run("Passkey registration failed", async (on) => {
+		await on.addPasskey(name.trim() || `Passkey ${passkeys.length + 1}`);
 		setName("");
-		await refresh();
+		await refresh(on);
 	});
 
-	const remove = (id: string) => run("Passkey removal failed", async () => {
-		const result = await authClient.passkey.deletePasskey({ id, fetchOptions: { headers } });
-		if (result.error) throw authFailure(result.error);
-		await refresh();
+	const remove = (id: string) => run("Passkey removal failed", async (on) => {
+		await on.deletePasskey(id);
+		await refresh(on);
 		setNotice("Passkey removed. If a device was lost, also sign out other sessions.");
 	});
 
-	const createRecoveryCode = () => run("Recovery code creation failed", async () => {
-		setRecoveryCode(await generateRecoveryCode(headers));
+	const createRecoveryCode = () => run("Recovery code creation failed", async (on) => {
+		setRecoveryCode(await on.generateRecoveryCode());
 	});
 
-	const signOutOtherSessions = () => run("Unable to sign out other sessions", async () => {
-		const result = await authClient.revokeOtherSessions({ fetchOptions: { headers } });
-		if (result.error) throw authFailure(result.error);
+	const signOutOtherSessions = () => run("Unable to sign out other sessions", async (on) => {
+		await on.revokeOtherSessions();
 		setNotice("Other sessions are signed out.");
 	});
 
 	const confirmAndRetry = () => {
 		if (!pending) return;
-		const { accountId: expected, fallback, action } = pending;
-		return run(fallback, async () => {
-			await reauthenticate(expected);
-			await action();
-		});
+		return run(pending.fallback, pending.change, { on: pending.credentials, confirmFirst: true });
 	};
 
 	return (

@@ -1,7 +1,7 @@
 import { normalizeAccountId, validateAccountId } from "./account";
 import type { AuthBindings } from "../server/auth";
 import { getRequestSession } from "../server/session";
-import { credentialInventory } from "../server/auth-policy";
+import { credentialInventory, isProvisional } from "../server/auth-policy";
 import { namesAnotherAccount } from "./account-request-headers";
 
 export type AccountCredentialResult =
@@ -41,9 +41,7 @@ export async function requireAccountCredential(
 
 	if (namesAnotherAccount(request.headers, session.user.id)) return unauthorized();
 
-	// `isAnonymous` is intentionally not trusted as the promotion signal. A user
-	// becomes permanent only once Better Auth has stored at least one passkey.
-	if ((await credentialInventory(env.AUTH_DB, session.user.id)).passkeys === 0) return unauthorized();
+	if (isProvisional(await credentialInventory(env.AUTH_DB, session.user.id))) return unauthorized();
 
 	return { ok: true, accountId: normalizeAccountId(session.user.id) };
 }

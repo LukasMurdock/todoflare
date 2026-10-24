@@ -160,6 +160,10 @@ describe("passkey security policy", () => {
 			});
 			expect(refused).toMatchObject({ status: 401, body: { error: "account_mismatch" } });
 		}
+		const listed = await browser.json<{ error?: string }>("/api/auth/passkey/list-user-passkeys", {
+			headers: { "X-Todoflare-Expected-Account": other },
+		});
+		expect(listed).toMatchObject({ status: 401, body: { error: "account_mismatch" } });
 		const accepted = await browser.json("/api/auth/recovery-code/generate", {
 			method: "POST",
 			headers: { "X-Todoflare-Expected-Account": accountId },
