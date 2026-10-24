@@ -86,7 +86,7 @@ src/
     agent-access/       MCP protocol, tools, access decision, Yjs edits and undo, D1 store
     oauth/              Authorization server: clients (CIMD, DCR), codes, tokens
     auth.ts, session.ts Better Auth configuration and per-request session
-    passkey-policy.ts   User-verification and recent-sign-in checks
+    auth-policy.ts      AUTH_ENDPOINTS: reachable better-auth endpoints and their policy
     persistence-records.ts  Schemas for every KV/DO record
     column-backups.ts, account-backup.ts, backup-catalog.ts  Backups
   durable-objects/
@@ -312,8 +312,9 @@ Account ID; the email is synthetic and never leaves the auth subsystem) →
 provisional users are deleted by cron after 7 days. Requests carry
 `X-Todoflare-Expected-Account`; a mismatch with the cookie's user is 401, so
 work queued for one account can never run as another. Later credential
-changes need a recent sign-in, and `src/server/passkey-policy.ts` refuses
-passkey ceremonies without user verification
+changes need a recent sign-in and passkey ceremonies need user verification;
+`AUTH_ENDPOINTS` in `src/server/auth-policy.ts` lists every reachable
+better-auth endpoint with its policy, and anything unlisted is 404
 ([0017](decisions/0017-verified-passkeys-and-recent-credential-changes.md)).
 
 ### 9. The hourly cron

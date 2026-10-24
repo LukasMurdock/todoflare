@@ -11,7 +11,9 @@ import ts from "typescript";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const routeModules = new Set(["src/lib/api/routes.ts", "src/lib/api/account-commands.ts"]);
 const routeLiteral = /^\/(api|p)\//;
-const allowed = (text) => text === "/api/*" || text.startsWith("/api/admin/");
+const allowed = (text) => text === "/api/*" || text === "/api/auth/*" || text.startsWith("/api/admin/");
+// better-auth's prefix; a template built on it spells out an auth path.
+const AUTH_BASE_PATH = { name: "AUTH_BASE_PATH", value: "/api/auth" };
 
 function sourceFiles(dir) {
 	return readdirSync(path.join(root, dir), { withFileTypes: true }).flatMap((entry) => {
@@ -27,7 +29,12 @@ export function findRouteLiterals(fileName, text) {
 	const visit = (node) => {
 		let literal = null;
 		if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) literal = node.text;
-		else if (ts.isTemplateExpression(node)) literal = node.head.text;
+		else if (ts.isTemplateExpression(node)) {
+			const [first] = node.templateSpans;
+			literal = node.head.text === "" && ts.isIdentifier(first.expression) && first.expression.text === AUTH_BASE_PATH.name
+				? AUTH_BASE_PATH.value + first.literal.text
+				: node.head.text;
+		}
 		if (literal !== null && routeLiteral.test(literal) && !allowed(literal)) {
 			const { line } = source.getLineAndCharacterOfPosition(node.getStart());
 			found.push(`${fileName}:${line + 1}  ${literal}`);
@@ -39,8 +46,8 @@ export function findRouteLiterals(fileName, text) {
 }
 
 // Self-check: the rule must still catch the patterns it exists to prevent.
-const probe = findRouteLiterals("probe.ts", 'fetch("/api/account"); fetch(`/api/column/${id}/ws`); go(`/p/${publicId}`);');
-if (probe.length !== 3) {
+const probe = findRouteLiterals("probe.ts", 'fetch("/api/account"); fetch(`/api/column/${id}/ws`); go(`/p/${publicId}`); fetch(`${AUTH_BASE_PATH}/recovery-code/generate`);');
+if (probe.length !== 4) {
 	console.error("check-route-literals self-check failed:", probe);
 	process.exit(1);
 }

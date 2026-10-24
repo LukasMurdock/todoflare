@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
 	authClient,
 	authFailure,
+	generateRecoveryCode,
 	reauthenticate,
 	RecentAuthenticationRequiredError,
 } from "@/lib/auth-client";
@@ -14,7 +15,6 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
-import { AUTH_BASE_PATH } from "@/lib/api/routes";
 import { accountRequestHeaders } from "@/lib/account-request-headers";
 
 interface CredentialManagerProps {
@@ -38,7 +38,7 @@ export function CredentialManager({ accountId, open, onOpenChange }: CredentialM
 	const [busy, setBusy] = useState(false);
 	// The change the server refused for want of a recent sign-in, and the
 	// account it was for; it is retried once the user confirms with a passkey.
-	const [pending, setPending] = useState<{ accountId: string; action: () => Promise<void> } | null>(null);
+	const [pending, setPending] = useState<{ accountId: string; fallback: string; action: () => Promise<void> } | null>(null);
 	// Every change names the account shown here, so the server refuses it if
 	// another tab has since signed in as someone else.
 	const headers = accountId ? accountRequestHeaders(accountId) : {};
@@ -58,7 +58,7 @@ export function CredentialManager({ accountId, open, onOpenChange }: CredentialM
 		setPending(null);
 	}, [open, accountId]);
 
-	const run = async (action: () => Promise<void>, fallback: string) => {
+	const run = async (fallback: string, action: () => Promise<void>) => {
 		setBusy(true);
 		setError(null);
 		setNotice(null);
@@ -66,50 +66,47 @@ export function CredentialManager({ accountId, open, onOpenChange }: CredentialM
 			await action();
 			setPending(null);
 		} catch (cause) {
-			if (cause instanceof RecentAuthenticationRequiredError && accountId) setPending({ accountId, action });
-			else setError(cause instanceof Error ? cause.message : fallback);
+			if (cause instanceof RecentAuthenticationRequiredError && accountId) setPending({ accountId, fallback, action });
+			else setError(cause instanceof Error && cause.message ? cause.message : fallback);
 		} finally {
 			setBusy(false);
 		}
 	};
 
-	const add = () => run(async () => {
+	const add = () => run("Passkey registration failed", async () => {
 		const result = await authClient.passkey.addPasskey({
 			name: name.trim() || `Passkey ${passkeys.length + 1}`,
 			fetchOptions: { headers },
 		});
-		if (result.error) throw authFailure(result.error, "Passkey registration failed");
+		if (result.error) throw authFailure(result.error);
 		setName("");
 		await refresh();
-	}, "Passkey registration failed");
+	});
 
-	const remove = (id: string) => run(async () => {
+	const remove = (id: string) => run("Passkey removal failed", async () => {
 		const result = await authClient.passkey.deletePasskey({ id, fetchOptions: { headers } });
-		if (result.error) throw authFailure(result.error, "Passkey removal failed");
+		if (result.error) throw authFailure(result.error);
 		await refresh();
 		setNotice("Passkey removed. If a device was lost, also sign out other sessions.");
-	}, "Passkey removal failed");
+	});
 
-	const createRecoveryCode = () => run(async () => {
-		const response = await fetch(`${AUTH_BASE_PATH}/recovery-code/generate`, { method: "POST", headers });
-		const body = (await response.json().catch(() => null)) as { recoveryCode?: string; error?: string; message?: string } | null;
-		if (!response.ok || !body?.recoveryCode) throw authFailure(body, "Recovery code creation failed");
-		setRecoveryCode(body.recoveryCode);
-	}, "Recovery code creation failed");
+	const createRecoveryCode = () => run("Recovery code creation failed", async () => {
+		setRecoveryCode(await generateRecoveryCode(headers));
+	});
 
-	const signOutOtherSessions = () => run(async () => {
+	const signOutOtherSessions = () => run("Unable to sign out other sessions", async () => {
 		const result = await authClient.revokeOtherSessions({ fetchOptions: { headers } });
-		if (result.error) throw authFailure(result.error, "Unable to sign out other sessions");
+		if (result.error) throw authFailure(result.error);
 		setNotice("Other sessions are signed out.");
-	}, "Unable to sign out other sessions");
+	});
 
 	const confirmAndRetry = () => {
 		if (!pending) return;
-		const { accountId: expected, action } = pending;
-		return run(async () => {
+		const { accountId: expected, fallback, action } = pending;
+		return run(fallback, async () => {
 			await reauthenticate(expected);
 			await action();
-		}, "Passkey confirmation failed");
+		});
 	};
 
 	return (

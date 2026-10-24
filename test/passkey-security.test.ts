@@ -125,14 +125,6 @@ describe("passkey security policy", () => {
 		expect(await passkeyCount(accountId)).toBe(2);
 	});
 
-	it("needs a recent sign-in to list sessions, since the list carries session tokens", async () => {
-		const { browser, accountId } = await enrolledAccount();
-		expect((await browser.fetch("/api/auth/list-sessions")).status).toBe(200);
-		await ageSessions(accountId, 2 * 24 * 60);
-		const stale = await browser.json<{ error?: string }>("/api/auth/list-sessions");
-		expect(stale).toMatchObject({ status: 401, body: { error: "recent_authentication_required" } });
-	});
-
 	it("lets an account with no credentials enroll its first passkey on any session", async () => {
 		const browser = new Browser();
 		const accountId = await browser.signInAnonymously();

@@ -91,6 +91,17 @@ any unread body after every response (`src/server/http/drain-unread-body.ts`);
 5. If the path has a new `:param`, add a sample to `SAMPLE_PARAMS` in
    `test/route-registration.test.ts`.
 
+### Expose or add an auth endpoint
+
+Better Auth endpoints are reachable only through a row of `AUTH_ENDPOINTS` in
+`src/server/auth-policy.ts`; anything unlisted answers 404. To use one from
+the client, add its row and decide its policy there: served while frozen,
+recent sign-in, expected account, user verification. For a Todoflare endpoint
+inside Better Auth (like the recovery code), declare `{ method, path }` in
+`AUTH_ROUTES` in `src/lib/api/routes.ts`, define the plugin endpoint from it
+in `src/server/auth.ts`, and call it with `authClient.$fetch`.
+`test/auth-policy.test.ts` checks every row against Better Auth's endpoints.
+
 ### Add an offline-capable metadata command
 
 1. Add an entry to `ACCOUNT_COMMANDS` in `src/lib/api/account-commands.ts`

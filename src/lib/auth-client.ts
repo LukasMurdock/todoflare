@@ -1,7 +1,8 @@
 import { createAuthClient } from "better-auth/client";
 import { anonymousClient } from "better-auth/client/plugins";
 import { passkeyClient } from "@better-auth/passkey/client";
-import { API_ROUTES, AUTH_BASE_PATH } from "./api/routes";
+import { API_ROUTES, AUTH_BASE_PATH, AUTH_ROUTES } from "./api/routes";
+import type { AuthErrorCode } from "./api/errors";
 import { normalizeAccountId } from "./account";
 
 export const authClient = createAuthClient({
@@ -29,31 +30,42 @@ export async function recoverAccount(
 	accountId: string,
 	recoveryCode: string,
 ): Promise<{ accountId: string; recoveryCode: string }> {
-	const response = await fetch(`${AUTH_BASE_PATH}/recovery-code/recover`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ accountId: accountId.replace(/\D/g, ""), recoveryCode }),
-	});
-	const body = (await response.json()) as {
-		accountId?: string;
-		recoveryCode?: string;
-		message?: string;
-	};
-	if (!response.ok || !body.accountId || !body.recoveryCode) {
-		throw new Error(body.message ?? "Recovery failed");
-	}
-	return { accountId: body.accountId, recoveryCode: body.recoveryCode };
+	const { data, error } = await authClient.$fetch<{ accountId: string; recoveryCode: string }>(
+		AUTH_ROUTES.recoverAccount.path,
+		{
+			method: AUTH_ROUTES.recoverAccount.method,
+			body: { accountId: accountId.replace(/\D/g, ""), recoveryCode },
+		},
+	);
+	if (error || !data?.accountId || !data.recoveryCode) throw authFailure(error, "Recovery failed");
+	return data;
+}
+
+/** Creates or replaces the account's recovery code; it is shown only once. */
+export async function generateRecoveryCode(headers: Record<string, string>): Promise<string> {
+	const { data, error } = await authClient.$fetch<{ recoveryCode: string }>(
+		AUTH_ROUTES.generateRecoveryCode.path,
+		{ method: AUTH_ROUTES.generateRecoveryCode.method, headers },
+	);
+	if (error || !data?.recoveryCode) throw authFailure(error, "Recovery code creation failed");
+	return data.recoveryCode;
 }
 
 /** A credential change refused because the session is not a recent sign-in. */
 export class RecentAuthenticationRequiredError extends Error {}
 
+const RECENT_AUTHENTICATION_REQUIRED: AuthErrorCode = "recent_authentication_required";
+
+/**
+ * Turns a refused auth call into an error the account UI can act on. Without
+ * a fallback, an error the server did not explain has an empty message.
+ */
 export function authFailure(
-	body: { error?: unknown; message?: unknown } | null | undefined,
-	fallback: string,
+	body: { code?: unknown; message?: unknown } | null | undefined,
+	fallback = "",
 ): Error {
 	const message = typeof body?.message === "string" && body.message ? body.message : fallback;
-	return body?.error === "recent_authentication_required"
+	return body?.code === RECENT_AUTHENTICATION_REQUIRED
 		? new RecentAuthenticationRequiredError(message)
 		: new Error(message);
 }

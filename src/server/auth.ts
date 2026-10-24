@@ -5,7 +5,8 @@ import { APIError, createAuthEndpoint, sensitiveSessionMiddleware } from "better
 import { setSessionCookie } from "better-auth/cookies";
 import { z } from "zod";
 import { generateAccountId } from "../lib/account";
-import { AUTH_BASE_PATH } from "../lib/api/routes";
+import { AUTH_BASE_PATH, AUTH_ROUTES } from "../lib/api/routes";
+import { credentialInventory, USER_VERIFICATION } from "./auth-policy";
 
 export type AuthState = "provisional" | "passkey";
 
@@ -54,15 +55,11 @@ function recoveryPlugin(env: AuthBindings) {
 		id: "todoflare-recovery",
 		endpoints: {
 			generateRecoveryCode: createAuthEndpoint(
-				"/recovery-code/generate",
-				{ method: "POST", use: [sensitiveSessionMiddleware] },
+				AUTH_ROUTES.generateRecoveryCode.path,
+				{ method: AUTH_ROUTES.generateRecoveryCode.method, use: [sensitiveSessionMiddleware] },
 				async (ctx) => {
-					const passkey = await env.AUTH_DB.prepare(
-						'SELECT 1 AS present FROM "passkey" WHERE "userId" = ? LIMIT 1',
-					)
-						.bind(ctx.context.session.user.id)
-						.first();
-					if (!passkey) throw APIError.fromStatus("UNAUTHORIZED");
+					const { passkeys } = await credentialInventory(env.AUTH_DB, ctx.context.session.user.id);
+					if (passkeys === 0) throw APIError.fromStatus("UNAUTHORIZED");
 					const code = recoveryCode();
 					await env.AUTH_DB.prepare(
 						'UPDATE "user" SET "recoveryCodeHash" = ?, "updatedAt" = ? WHERE "id" = ?',
@@ -73,9 +70,9 @@ function recoveryPlugin(env: AuthBindings) {
 				},
 			),
 			recoverAccount: createAuthEndpoint(
-				"/recovery-code/recover",
+				AUTH_ROUTES.recoverAccount.path,
 				{
-					method: "POST",
+					method: AUTH_ROUTES.recoverAccount.method,
 					body: z.object({
 						accountId: z.string().regex(/^\d{16}$/),
 						recoveryCode: z.string().min(40).max(128),
@@ -139,7 +136,7 @@ export function createAuth(env: AuthBindings, requestOrigin: string) {
 		trustedOrigins: [origin],
 		// freshAge 0 turns off Better Auth's own 24-hour freshness check, which
 		// would refuse the first passkey of a sign-up resumed a day later. The
-		// auth route owns freshness instead (src/server/routes/auth.ts, 0017).
+		// recentSignIn rows of AUTH_ENDPOINTS own freshness instead (auth-policy.ts).
 		session: { expiresIn: 7 * 24 * 60 * 60, updateAge: 24 * 60 * 60, freshAge: 0 },
 		emailAndPassword: { enabled: false },
 		account: { accountLinking: { enabled: false } },
@@ -179,7 +176,7 @@ export function createAuth(env: AuthBindings, requestOrigin: string) {
 				origin,
 				authenticatorSelection: {
 					residentKey: "required",
-					userVerification: "required",
+					userVerification: USER_VERIFICATION,
 				},
 				registration: {
 					afterVerification: async ({ ctx, user }) => {
