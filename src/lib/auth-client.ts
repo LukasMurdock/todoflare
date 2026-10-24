@@ -48,6 +48,11 @@ export class RecentAuthenticationRequiredError extends Error {}
 
 const RECENT_AUTHENTICATION_REQUIRED: AuthErrorCode = "recent_authentication_required";
 
+/** Whether a refusal asks the user to confirm with a passkey first. */
+export function isRecentAuthenticationRequired(body: { code?: unknown } | null | undefined): boolean {
+	return body?.code === RECENT_AUTHENTICATION_REQUIRED;
+}
+
 /**
  * Turns a refused auth call into an error the account UI can act on. Without
  * a fallback, an error the server did not explain has an empty message.
@@ -57,7 +62,7 @@ export function authFailure(
 	fallback = "",
 ): Error {
 	const message = typeof body?.message === "string" && body.message ? body.message : fallback;
-	return body?.code === RECENT_AUTHENTICATION_REQUIRED
+	return isRecentAuthenticationRequired(body)
 		? new RecentAuthenticationRequiredError(message)
 		: new Error(message);
 }

@@ -93,6 +93,12 @@ const AUTH_ERRORS = {
 	user_verification_required: { status: 400, message: "Your passkey must confirm it's you with a PIN, fingerprint or face" },
 } as const satisfies Record<AuthErrorCode, { status: number; message: string }>;
 
+/**
+ * The refusal for a credential change from a session that is not a recent
+ * sign-in. Agent routes outside AUTH_BASE_PATH answer with it too.
+ */
+export const recentSignInRequired = () => authError("recent_authentication_required");
+
 function authError(code: AuthErrorCode): Response {
 	const { status, message } = AUTH_ERRORS[code];
 	const body: AuthErrorEnvelope = { error: code, code, message };

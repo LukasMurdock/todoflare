@@ -14,7 +14,7 @@ import { accountRecordStore } from "../account-record-store";
 import { columnTitle, readColumnBlocks } from "../agent-access/column-content";
 import { mapWithConcurrency } from "../bounded-concurrency";
 import { parseAccountRecord, parseSharedColumnIndex } from "../persistence-records";
-import { requireAccountCredential } from "../../lib/http-account-auth";
+import { requireAccountCredential, requireRecentSignIn } from "../../lib/http-account-auth";
 import { agentStore, type AgentStoreFailure } from "../agent-access/store";
 import { loadColumnAccessState } from "../agent-access/column-state";
 import { apiErrorResponse, durableObjectUnavailableResponse } from "../http/responses";
@@ -69,6 +69,9 @@ export function registerAgentRoutes(app: App) {
 		if (!auth.ok) return auth.response;
 		const readOnly = blockWritesIfReadOnly(c);
 		if (readOnly) return readOnly;
+		// The token outlives this session, so a stale or stolen one must not mint it.
+		const stale = await requireRecentSignIn(c.req.raw, c.env);
+		if (stale) return stale;
 		const body = await validateJsonBody(c, createAgentBodySchema);
 		if (!body.ok) return body.response;
 		const grants = body.data.grants ?? [];
@@ -119,6 +122,9 @@ export function registerAgentRoutes(app: App) {
 		if (!auth.ok) return auth.response;
 		const readOnly = blockWritesIfReadOnly(c);
 		if (readOnly) return readOnly;
+		// A grant can widen what an existing token reaches.
+		const stale = await requireRecentSignIn(c.req.raw, c.env);
+		if (stale) return stale;
 		const path = validateRequestInput(c, grantPathSchema, {
 			agentId: c.req.param("agentId"),
 			id: c.req.param("id"),

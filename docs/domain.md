@@ -46,8 +46,9 @@ formatted Account ID. Signing in creates an HttpOnly **session** cookie
 (7 days, renewed daily while used).
 
 **Recent sign-in**: a session created in the last 5 minutes. Adding or
-removing a passkey and creating a recovery code require one; the user
-confirms with a passkey to get it. An account's first passkey is exempt.
+removing a passkey, creating a recovery code, connecting an agent, setting an
+agent's grant and approving an OAuth client require one; the user confirms
+with a passkey to get it. An account's first passkey is exempt.
 
 **Recovery code**: an emergency credential for when every passkey is lost.
 Stored hashed; rotated each time it is used. Using it signs out every other

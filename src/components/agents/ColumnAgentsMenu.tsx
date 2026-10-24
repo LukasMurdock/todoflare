@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { replaceAgentConnection, useAgentConnections } from "@/hooks/useAgentConnections";
 import { agentsApi } from "@/lib/agents/agents-api";
+import { useRecentSignIn } from "@/hooks/use-recent-sign-in";
+import { ConfirmSignIn } from "@/components/account/ConfirmSignIn";
 import type { AgentChange, AgentGrantLevel } from "@/lib/api/agent-contract";
 import { AgentChangeDiffView } from "./AgentChangeDiff";
 import { AgentLevelSelect } from "./AgentLevelSelect";
@@ -33,6 +35,14 @@ export function ColumnAgentsMenu({ accountId, columnId }: ColumnAgentsMenuProps)
 	const [open, setOpen] = useState(false);
 	const [changes, setChanges] = useState<AgentChange[] | null>(null);
 	const [busy, setBusy] = useState(false);
+	// Widening an agent's access needs a recent sign-in.
+	const recent = useRecentSignIn(accountId);
+	const { cancel } = recent;
+	// While a refused change waits for confirmation, nothing else may change.
+	const locked = busy || recent.pending;
+	useEffect(() => {
+		if (!open) cancel();
+	}, [open, cancel]);
 
 	const loadChanges = useCallback(() => {
 		agentsApi.changes(accountId, columnId).then(setChanges, () => setChanges([]));
@@ -49,10 +59,26 @@ export function ColumnAgentsMenu({ accountId, columnId }: ColumnAgentsMenuProps)
 	const setLevel = async (agentId: string, level: AgentGrantLevel | null) => {
 		setBusy(true);
 		try {
-			const updated = level ? await agentsApi.setGrant(accountId, agentId, columnId, level) : await agentsApi.removeGrant(accountId, agentId, columnId);
-			replaceAgentConnection(accountId, updated);
+			if (level) {
+				await recent.attempt(async () => {
+					replaceAgentConnection(accountId, await agentsApi.setGrant(accountId, agentId, columnId, level));
+				}, "Could not change access");
+			} else {
+				replaceAgentConnection(accountId, await agentsApi.removeGrant(accountId, agentId, columnId));
+			}
 		} catch (cause) {
-			toast.error(cause instanceof Error ? cause.message : "Could not change access");
+			toast.error(cause instanceof Error && cause.message ? cause.message : "Could not change access");
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	const confirm = async () => {
+		setBusy(true);
+		try {
+			await recent.confirm();
+		} catch (cause) {
+			toast.error(cause instanceof Error && cause.message ? cause.message : "Could not change access");
 		} finally {
 			setBusy(false);
 		}
@@ -92,12 +118,13 @@ export function ColumnAgentsMenu({ accountId, columnId }: ColumnAgentsMenuProps)
 									<AgentLevelSelect
 										label={`${agent.name} access to this column`}
 										value={agent.grants.find((grant) => grant.columnId === columnId)?.level ?? null}
-										disabled={busy}
+										disabled={locked}
 										onChange={(level) => setLevel(agent.id, level)}
 									/>
 								</div>
 							))
 						)}
+						{recent.pending && <ConfirmSignIn busy={busy} onConfirm={confirm} onCancel={recent.cancel} />}
 					</section>
 					<section className="space-y-2 border-t pt-3">
 						<h4 className="text-sm font-medium">Recent agent changes</h4>
@@ -118,7 +145,7 @@ export function ColumnAgentsMenu({ accountId, columnId }: ColumnAgentsMenuProps)
 											</p>
 										</div>
 										{!change.undoneAt && (
-											<Button variant="ghost" size="sm" className="h-7 shrink-0 px-2" disabled={busy} onClick={() => undo(change)} aria-label={`Undo: ${change.summary}`}>
+											<Button variant="ghost" size="sm" className="h-7 shrink-0 px-2" disabled={locked} onClick={() => undo(change)} aria-label={`Undo: ${change.summary}`}>
 												<Undo2 className="mr-1 h-3 w-3" />
 												Undo
 											</Button>
