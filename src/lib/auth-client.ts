@@ -100,7 +100,8 @@ export function accountCredentials(accountId: string) {
 		generateRecoveryCode: async () => {
 			const { recoveryCode } = await settled(authClient.$fetch<{ recoveryCode?: string }>(
 				AUTH_ROUTES.generateRecoveryCode.path,
-				{ method: AUTH_ROUTES.generateRecoveryCode.method, headers },
+				// better-auth refuses a POST without a JSON body (415).
+				{ method: AUTH_ROUTES.generateRecoveryCode.method, headers, body: {} },
 			));
 			if (!recoveryCode) throw new Error("");
 			return recoveryCode;
