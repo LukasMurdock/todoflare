@@ -360,8 +360,10 @@ Breaking one of these is a bug even if every test passes.
 - An Account ID alone never authenticates. Only a passkey session (or a
   recovery code) does. Synthetic emails never leave the auth subsystem.
 - A passkey ceremony without user verification never succeeds, and a
-  credential that outlives its session (passkey, recovery code) is added only
-  from a recent sign-in ([0017](decisions/0017-verified-passkeys-and-recent-credential-changes.md)).
+  credential that outlives its session (passkey, recovery code, agent
+  connection or grant) is added only from a recent sign-in
+  ([0017](decisions/0017-verified-passkeys-and-recent-credential-changes.md),
+  [0019](decisions/0019-agent-credentials-need-recent-sign-in.md)).
 - A valid edit made offline is kept until the server acknowledges it; an
   expired session never discards local work.
 - Every replayable metadata write carries an idempotency key, and replay is

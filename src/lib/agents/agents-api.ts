@@ -10,6 +10,7 @@ import {
 } from "../api/agent-contract";
 import { API_ROUTES, routePath, type ApiRoute } from "../api/routes";
 import { accountRequestHeaders } from "../account-request-headers";
+import { isRecentAuthenticationRequired, RecentAuthenticationRequiredError } from "../auth-client";
 
 /** The agent API is switched off on this deployment; agent UI hides itself. */
 export class AgentAccessDisabledError extends Error {
@@ -38,6 +39,9 @@ async function request<T extends z.ZodType>(
 	});
 	const json = (await response.json().catch(() => null)) as { error?: string; display?: string; message?: string; code?: string } | null;
 	if (response.status === 404 && json?.code === "not_found" && route === API_ROUTES.listAgents) throw new AgentAccessDisabledError();
+	if (!response.ok && isRecentAuthenticationRequired(json)) {
+		throw new RecentAuthenticationRequiredError(agentErrorMessage(response.status, json));
+	}
 	if (!response.ok) throw new AgentApiError(agentErrorMessage(response.status, json));
 	const parsed = schema.safeParse(json);
 	if (!parsed.success) throw new AgentApiError("Unexpected response from the server");
@@ -50,6 +54,7 @@ export function agentErrorMessage(status: number, body: { display?: string; mess
 }
 
 const revokedSchema = z.object({ success: z.literal(true) });
+const decisionResponseSchema = z.object({ redirectTo: z.string() });
 
 export const agentsApi = {
 	list: (accountId: string) => request(accountId, API_ROUTES.listAgents, API_ROUTES.listAgents.path, listAgentsResponseSchema).then((r) => r.agents),
@@ -65,6 +70,9 @@ export const agentsApi = {
 		request(accountId, API_ROUTES.grantableColumns, API_ROUTES.grantableColumns.path, grantableColumnsResponseSchema).then((r) => r.columns),
 	changes: (accountId: string, columnId: string) =>
 		request(accountId, API_ROUTES.listAgentChanges, routePath(API_ROUTES.listAgentChanges.path, { id: columnId }), listAgentChangesResponseSchema).then((r) => r.changes),
+	/** The person's answer on the OAuth consent page; approving needs a recent sign-in. */
+	decideAuthorization: (accountId: string, decision: Record<string, unknown>) =>
+		request(accountId, API_ROUTES.decideAuthorization, API_ROUTES.decideAuthorization.path, decisionResponseSchema, decision).then((r) => r.redirectTo),
 	undo: (accountId: string, columnId: string, changeId: string) =>
 		request(accountId, API_ROUTES.undoAgentChange, routePath(API_ROUTES.undoAgentChange.path, { id: columnId, changeId }), undoAgentChangeResponseSchema),
 };

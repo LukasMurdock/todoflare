@@ -5,8 +5,9 @@ import { Input } from "@/components/ui/input";
 import { useSyncContext } from "@/contexts/sync-context";
 import { agentsApi } from "@/lib/agents/agents-api";
 import type { AgentGrantLevel, GrantableColumn } from "@/lib/api/agent-contract";
-import { accountRequestHeaders } from "@/lib/account-request-headers";
 import { API_ROUTES } from "@/lib/api/routes";
+import { useRecentSignIn } from "@/hooks/use-recent-sign-in";
+import { ConfirmSignIn } from "@/components/account/ConfirmSignIn";
 import { AgentColumnPicker } from "./AgentColumnPicker";
 
 const AUTHORIZATION_PARAMS = ["response_type", "client_id", "redirect_uri", "code_challenge", "code_challenge_method", "state", "resource", "scope"] as const;
@@ -53,6 +54,9 @@ export function OAuthConsentPage() {
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const signedIn = !!accountId && authenticationStatus === "authenticated";
+	const recent = useRecentSignIn(signedIn ? accountId : null);
+	// While a refused approval waits for confirmation, its choices are frozen.
+	const locked = busy || recent.pending;
 
 	useEffect(() => {
 		if (page.kind !== "loading") return;
@@ -74,26 +78,32 @@ export function OAuthConsentPage() {
 		}
 	}, [page.kind, signedIn, accountId, columns]);
 
-	const decide = async (decision: "approve" | "deny") => {
-		if (!accountId) return;
+	const leave = (to: string) => {
+		setPage({ kind: "leaving", to });
+		window.location.assign(to);
+	};
+
+	const run = async (action: () => Promise<void>) => {
 		setBusy(true);
 		setError(null);
 		try {
-			const grants = Object.entries(levels).map(([columnId, level]) => ({ columnId, level }));
-			const response = await fetch(API_ROUTES.decideAuthorization.path, {
-				method: API_ROUTES.decideAuthorization.method,
-				credentials: "same-origin",
-				headers: { ...accountRequestHeaders(accountId), "Content-Type": "application/json" },
-				body: JSON.stringify(decision === "deny" ? { decision, params } : { decision, params, name: name.trim() || "Agent", expiresInDays, grants }),
-			});
-			const body = (await response.json().catch(() => null)) as { redirectTo?: string; display?: string; message?: string } | null;
-			if (!response.ok || !body?.redirectTo) throw new Error(body?.display ?? body?.message ?? "Could not complete the request");
-			setPage({ kind: "leaving", to: body.redirectTo });
-			window.location.assign(body.redirectTo);
+			await action();
 		} catch (cause) {
-			setError(cause instanceof Error ? cause.message : "Could not complete the request");
+			setError(cause instanceof Error && cause.message ? cause.message : "Could not complete the request");
+		} finally {
 			setBusy(false);
 		}
+	};
+
+	const decide = (decision: "approve" | "deny") => {
+		if (!accountId) return;
+		if (decision === "deny") {
+			return run(async () => leave(await agentsApi.decideAuthorization(accountId, { decision, params })));
+		}
+		const grants = Object.entries(levels).map(([columnId, level]) => ({ columnId, level }));
+		const body = { decision, params, name: name.trim() || "Agent", expiresInDays, grants };
+		// Approving mints a connection that outlives the session, so it may need a recent sign-in.
+		return run(() => recent.attempt(async () => leave(await agentsApi.decideAuthorization(accountId, body)), "Could not complete the request"));
 	};
 
 	if (page.kind === "framed") {
@@ -172,14 +182,15 @@ export function OAuthConsentPage() {
 					<section className="space-y-2 border-t pt-4">
 						<h2 className="text-sm font-medium">Choose what it can use</h2>
 						<p className="text-xs text-muted-foreground">It can only use the columns you choose here, at the level you set. You can change this later in Todoflare under Agents.</p>
-						<AgentColumnPicker columns={columns} levels={levels} onChange={setLevels} disabled={busy} />
+						<AgentColumnPicker columns={columns} levels={levels} onChange={setLevels} disabled={locked} />
 					</section>
 					<section className="flex gap-2 border-t pt-4">
-						<Input aria-label="Name for this connection" value={name} maxLength={80} onChange={(event) => setName(event.target.value)} />
+						<Input aria-label="Name for this connection" value={name} maxLength={80} disabled={locked} onChange={(event) => setName(event.target.value)} />
 						<select
 							aria-label="Access lasts"
 							className="h-9 rounded-md border border-input bg-background px-2 text-sm"
 							value={expiresInDays}
+							disabled={locked}
 							onChange={(event) => setExpiresInDays(Number(event.target.value))}
 						>
 							{EXPIRY_CHOICES.map((days) => (
@@ -189,12 +200,13 @@ export function OAuthConsentPage() {
 							))}
 						</select>
 					</section>
+					{recent.pending && <ConfirmSignIn busy={busy} onConfirm={() => run(recent.confirm)} onCancel={recent.cancel} />}
 					{error && <p className="text-sm text-destructive">{error}</p>}
 					<div className="flex justify-end gap-2">
-						<Button variant="outline" disabled={busy} onClick={() => decide("deny")}>
+						<Button variant="outline" disabled={locked} onClick={() => decide("deny")}>
 							Cancel
 						</Button>
-						<Button disabled={busy} onClick={() => decide("approve")}>
+						<Button disabled={locked} onClick={() => decide("approve")}>
 							{chosen === 0 ? "Connect without columns" : `Allow ${chosen} column${chosen === 1 ? "" : "s"}`}
 						</Button>
 					</div>

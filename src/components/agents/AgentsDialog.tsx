@@ -6,6 +6,8 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { refreshAgentConnections, removeAgentConnection, replaceAgentConnection, useAgentConnections } from "@/hooks/useAgentConnections";
 import { agentsApi, mcpEndpointUrl } from "@/lib/agents/agents-api";
+import { useRecentSignIn } from "@/hooks/use-recent-sign-in";
+import { ConfirmSignIn } from "@/components/account/ConfirmSignIn";
 import type { AgentConnection, AgentGrantLevel, GrantableColumn } from "@/lib/api/agent-contract";
 import { AgentColumnPicker } from "./AgentColumnPicker";
 import { AgentLevelSelect } from "./AgentLevelSelect";
@@ -104,9 +106,9 @@ function Step({ number, title, children }: { number: number; title: React.ReactN
 	);
 }
 
-function BackButton({ onClick }: { onClick(): void }) {
+function BackButton({ onClick, disabled = false }: { onClick(): void; disabled?: boolean }) {
 	return (
-		<Button variant="ghost" size="sm" className="-ml-2 h-7 px-2" onClick={onClick}>
+		<Button variant="ghost" size="sm" className="-ml-2 h-7 px-2" disabled={disabled} onClick={onClick}>
 			<ArrowLeft className="h-3 w-3" />
 			Back
 		</Button>
@@ -135,11 +137,20 @@ export function AgentsDialog({ accountId, open, onOpenChange }: AgentsDialogProp
 		try {
 			await action();
 		} catch (cause) {
-			setError(cause instanceof Error ? cause.message : "Something went wrong");
+			setError(cause instanceof Error && cause.message ? cause.message : "Something went wrong");
 		} finally {
 			setBusy(false);
 		}
 	};
+	// Connecting an agent or widening its grants needs a recent sign-in.
+	const recent = useRecentSignIn(accountId);
+	const { cancel } = recent;
+	// While a refused change waits for confirmation, nothing else may change.
+	const locked = busy || recent.pending;
+	const grant = (action: () => Promise<void>) => run(() => recent.attempt(action, "Something went wrong"));
+	useEffect(() => {
+		cancel();
+	}, [open, view.kind, cancel]);
 
 	const go = (next: View) => {
 		setError(null);
@@ -161,7 +172,7 @@ export function AgentsDialog({ accountId, open, onOpenChange }: AgentsDialogProp
 					{state.status === "disabled" ? (
 						<p className="text-sm text-muted-foreground">Agent access is not available on this server yet.</p>
 					) : view.kind === "home" ? (
-						<Home accountId={accountId} state={state} columns={columns} busy={busy} run={run} onChoose={(app) => go({ kind: "setup", app })} />
+						<Home accountId={accountId} state={state} columns={columns} busy={locked} run={run} grant={grant} onChoose={(app) => go({ kind: "setup", app })} />
 					) : view.kind === "setup" && view.app === "claude-ai" ? (
 						<ClaudeAiSetup endpoint={endpoint} onBack={() => go({ kind: "home" })} />
 					) : view.kind === "setup" && view.app === "chatgpt" ? (
@@ -171,10 +182,10 @@ export function AgentsDialog({ accountId, open, onOpenChange }: AgentsDialogProp
 							key={tokenApp}
 							app={tokenApp}
 							columns={columns}
-							busy={busy}
+							busy={locked}
 							onBack={() => go({ kind: "home" })}
 							onCreate={(name, expiresInDays, levels) =>
-								run(async () => {
+								grant(async () => {
 									const grants = Object.entries(levels).map(([columnId, level]) => ({ columnId, level }));
 									const result = await agentsApi.create(accountId, name, expiresInDays, grants);
 									replaceAgentConnection(accountId, result.agent);
@@ -185,6 +196,7 @@ export function AgentsDialog({ accountId, open, onOpenChange }: AgentsDialogProp
 					) : view.kind === "connected" ? (
 						<TokenConnected view={view} endpoint={endpoint} onDone={() => go({ kind: "home" })} />
 					) : null}
+					{recent.pending && <ConfirmSignIn busy={busy} onConfirm={() => run(recent.confirm)} onCancel={recent.cancel} />}
 					{error && <p className="text-sm text-destructive">{error}</p>}
 				</div>
 			</DialogContent>
@@ -221,6 +233,7 @@ function Home({
 	columns,
 	busy,
 	run,
+	grant,
 	onChoose,
 }: {
 	accountId: string;
@@ -228,6 +241,8 @@ function Home({
 	columns: GrantableColumn[] | null;
 	busy: boolean;
 	run(action: () => Promise<void>): Promise<void>;
+	/** Like run, for a change that may need a recent sign-in. */
+	grant(action: () => Promise<void>): Promise<void>;
 	onChoose(app: AgentApp): void;
 }) {
 	const [confirming, setConfirming] = useState<string | null>(null);
@@ -236,7 +251,7 @@ function Home({
 	const titleOf = (columnId: string) => columns?.find((column) => column.columnId === columnId)?.title || "Untitled column";
 
 	const setLevel = (agent: AgentConnection, columnId: string, level: AgentGrantLevel | null) =>
-		run(async () => {
+		(level ? grant : run)(async () => {
 			const updated = level ? await agentsApi.setGrant(accountId, agent.id, columnId, level) : await agentsApi.removeGrant(accountId, agent.id, columnId);
 			replaceAgentConnection(accountId, updated);
 		});
@@ -366,7 +381,7 @@ function TokenSetup({
 
 	return (
 		<section className="space-y-4">
-			<BackButton onClick={onBack} />
+			<BackButton onClick={onBack} disabled={busy} />
 			<h3 className="text-base font-semibold">Connect {title}</h3>
 			<ol className="space-y-5">
 				<Step number={1} title="Choose which columns it can use">
@@ -375,11 +390,12 @@ function TokenSetup({
 				</Step>
 				<Step number={2} title="Name it and choose how long it lasts">
 					<div className="flex gap-2">
-						<Input aria-label="Agent name" value={name} maxLength={80} onChange={(event) => setName(event.target.value)} placeholder="Agent name" />
+						<Input aria-label="Agent name" value={name} maxLength={80} disabled={busy} onChange={(event) => setName(event.target.value)} placeholder="Agent name" />
 						<select
 							aria-label="Access lasts"
 							className="h-9 rounded-md border border-input bg-background px-2 text-sm"
 							value={expiresInDays}
+							disabled={busy}
 							onChange={(event) => setExpiresInDays(Number(event.target.value))}
 						>
 							{EXPIRY_CHOICES.map((choice) => (

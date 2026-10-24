@@ -84,8 +84,10 @@ any unread body after every response (`src/server/http/drain-unread-body.ts`);
 3. Register it in a `src/server/routes/*.ts` module with
    `app.on(API_ROUTES.x.method, API_ROUTES.x.path, handler)`. Add the guards
    it needs yourself: `blockWritesIfReadOnly` for writes,
-   `requireAccountCredential`, `checkRateLimit`, `withIdempotentWrite`. None
-   are global.
+   `requireAccountCredential`, `requireRecentSignIn` for a write that hands
+   out a credential outliving the session, `checkRateLimit`,
+   `withIdempotentWrite`. None are global. A client call that may be refused
+   for a stale session runs through `useRecentSignIn`, with `ConfirmSignIn`.
 4. Build client URLs with `routePath(API_ROUTES.x.path, params)`. A literal
    `/api/…` anywhere else fails `check:route-literals`.
 5. If the path has a new `:param`, add a sample to `SAMPLE_PARAMS` in

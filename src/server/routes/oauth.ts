@@ -2,7 +2,7 @@ import { z } from "zod";
 import { AGENT_CONNECTION_DEFAULT_DAYS, AGENT_CONNECTION_MAX_DAYS, initialAgentGrantsSchema } from "../../lib/api/agent-contract";
 import { API_ROUTES } from "../../lib/api/routes";
 import { hasColumnAccess } from "../../lib/column-access";
-import { requireAccountCredential } from "../../lib/http-account-auth";
+import { requireAccountCredential, requireRecentSignIn } from "../../lib/http-account-auth";
 import { checkRateLimit, getClientIP, ipRateLimitKey, RATE_LIMITS } from "../../lib/rate-limit";
 import { loadColumnAccessState } from "../agent-access/column-state";
 import { agentStore } from "../agent-access/store";
@@ -163,6 +163,9 @@ export function registerOAuthRoutes(app: App) {
 		}
 		const readOnly = blockWritesIfReadOnly(c);
 		if (readOnly) return readOnly;
+		// Approval mints a connection that outlives this session; declining does not.
+		const stale = await requireRecentSignIn(c.req.raw, c.env);
+		if (stale) return stale;
 		const { name, expiresInDays, grants } = body.data;
 		// An account can delegate only what it can reach itself, right now.
 		for (const grant of grants) {

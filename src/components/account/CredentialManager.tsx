@@ -1,10 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-	accountCredentials,
-	RecentAuthenticationRequiredError,
-	type AccountCredentials,
-	type ListedPasskey,
-} from "@/lib/auth-client";
+import { accountCredentials, type AccountCredentials, type ListedPasskey } from "@/lib/auth-client";
+import { useRecentSignIn } from "@/hooks/use-recent-sign-in";
+import { ConfirmSignIn } from "./ConfirmSignIn";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -21,8 +18,6 @@ interface CredentialManagerProps {
 	onOpenChange: (open: boolean) => void;
 }
 
-type CredentialChange = (credentials: AccountCredentials) => Promise<void>;
-
 export function CredentialManager({ accountId, open, onOpenChange }: CredentialManagerProps) {
 	const [passkeys, setPasskeys] = useState<ListedPasskey[]>([]);
 	const [name, setName] = useState("");
@@ -31,9 +26,10 @@ export function CredentialManager({ accountId, open, onOpenChange }: CredentialM
 	const [error, setError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 	const credentials = useMemo(() => (accountId ? accountCredentials(accountId) : null), [accountId]);
-	// The change the server refused for want of a recent sign-in, with the
-	// account it was for; it is retried once the user confirms with a passkey.
-	const [pending, setPending] = useState<{ credentials: AccountCredentials; fallback: string; change: CredentialChange } | null>(null);
+	const recent = useRecentSignIn(accountId);
+	const { cancel } = recent;
+	// While a refused change waits for confirmation, nothing else may change.
+	const locked = busy || recent.pending;
 
 	const refresh = useCallback(async (on: AccountCredentials) => {
 		try {
@@ -47,57 +43,50 @@ export function CredentialManager({ accountId, open, onOpenChange }: CredentialM
 		if (open && credentials) void refresh(credentials);
 	}, [open, credentials, refresh]);
 
-	// A pending change belongs to one opening of the dialog for one account.
+	// A kept change belongs to one opening of the dialog.
 	useEffect(() => {
-		setPending(null);
-	}, [open, credentials]);
+		cancel();
+	}, [open, cancel]);
 
-	const run = async (
-		fallback: string,
-		change: CredentialChange,
-		{ on = credentials, confirmFirst = false }: { on?: AccountCredentials | null; confirmFirst?: boolean } = {},
-	) => {
-		if (!on) return;
+	const run = async (fallback: string, action: () => Promise<void>) => {
 		setBusy(true);
 		setError(null);
 		setNotice(null);
 		try {
-			if (confirmFirst) await on.reauthenticate();
-			await change(on);
-			setPending(null);
+			await action();
 		} catch (cause) {
-			if (cause instanceof RecentAuthenticationRequiredError) setPending({ credentials: on, fallback, change });
-			else setError(cause instanceof Error && cause.message ? cause.message : fallback);
+			setError(cause instanceof Error && cause.message ? cause.message : fallback);
 		} finally {
 			setBusy(false);
 		}
 	};
 
-	const add = () => run("Passkey registration failed", async (on) => {
+	const change = (fallback: string, action: (on: AccountCredentials) => Promise<void>) => {
+		if (!credentials) return;
+		const on = credentials;
+		return run(fallback, () => recent.attempt(() => action(on), fallback));
+	};
+
+	const add = () => change("Passkey registration failed", async (on) => {
 		await on.addPasskey(name.trim() || `Passkey ${passkeys.length + 1}`);
 		setName("");
 		await refresh(on);
 	});
 
-	const remove = (passkey: ListedPasskey) => run("Passkey removal failed", async (on) => {
+	const remove = (passkey: ListedPasskey) => change("Passkey removal failed", async (on) => {
 		await on.deletePasskey(passkey);
 		await refresh(on);
 		setNotice("Passkey removed. If a device was lost, also sign out other sessions.");
 	});
 
-	const createRecoveryCode = () => run("Recovery code creation failed", async (on) => {
+	const createRecoveryCode = () => change("Recovery code creation failed", async (on) => {
 		setRecoveryCode(await on.generateRecoveryCode());
 	});
 
-	const signOutOtherSessions = () => run("Unable to sign out other sessions", async (on) => {
+	const signOutOtherSessions = () => change("Unable to sign out other sessions", async (on) => {
 		await on.revokeOtherSessions();
 		setNotice("Other sessions are signed out.");
 	});
-
-	const confirmAndRetry = () => {
-		if (!pending) return;
-		return run(pending.fallback, pending.change, { on: pending.credentials, confirmFirst: true });
-	};
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
@@ -112,28 +101,23 @@ export function CredentialManager({ accountId, open, onOpenChange }: CredentialM
 					{passkeys.map((passkey) => (
 						<div key={passkey.id} className="flex items-center justify-between gap-3 rounded border p-2">
 							<span className="text-sm">{passkey.name || "Passkey"}</span>
-							<Button variant="outline" size="sm" disabled={busy} onClick={() => remove(passkey)}>
+							<Button variant="outline" size="sm" disabled={locked} onClick={() => remove(passkey)}>
 								Remove
 							</Button>
 						</div>
 					))}
 					<div className="flex gap-2">
-						<Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Passkey name" />
-						<Button disabled={busy} onClick={add}>Add passkey</Button>
+						<Input value={name} disabled={locked} onChange={(event) => setName(event.target.value)} placeholder="Passkey name" />
+						<Button disabled={locked} onClick={add}>Add passkey</Button>
 					</div>
-					<Button variant="outline" disabled={busy} onClick={createRecoveryCode}>
+					<Button variant="outline" disabled={locked} onClick={createRecoveryCode}>
 						Create or rotate recovery code
 					</Button>
-					<Button variant="outline" disabled={busy} onClick={signOutOtherSessions}>
+					<Button variant="outline" disabled={locked} onClick={signOutOtherSessions}>
 						Sign out other sessions
 					</Button>
-					{pending && (
-						<div className="space-y-2 rounded border p-3">
-							<p className="text-sm">Confirm it's you with a passkey to make this change.</p>
-							<Button className="w-full" disabled={busy} onClick={confirmAndRetry}>
-								Confirm with passkey
-							</Button>
-						</div>
+					{recent.pending && (
+						<ConfirmSignIn busy={busy} onConfirm={() => run(recent.fallback ?? "Passkey confirmation failed", recent.confirm)} onCancel={recent.cancel} />
 					)}
 					{recoveryCode && (
 						<div className="rounded border border-amber-500/50 bg-amber-500/10 p-3">
