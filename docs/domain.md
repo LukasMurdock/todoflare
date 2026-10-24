@@ -41,8 +41,9 @@ never finished. `provisioning` is the next state: passkey added, KV account
 record not yet written.
 
 **Passkey**: the only everyday credential. It must be user-verified (PIN or
-biometric) to register or sign in. Signing in creates an HttpOnly **session**
-cookie (7 days, renewed daily while used).
+biometric) to register or sign in. Password managers show it under the
+formatted Account ID. Signing in creates an HttpOnly **session** cookie
+(7 days, renewed daily while used).
 
 **Recent sign-in**: a session created in the last 5 minutes. Adding or
 removing a passkey and creating a recovery code require one; the user

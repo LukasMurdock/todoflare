@@ -79,8 +79,8 @@ export function CredentialManager({ accountId, open, onOpenChange }: CredentialM
 		await refresh(on);
 	});
 
-	const remove = (id: string) => run("Passkey removal failed", async (on) => {
-		await on.deletePasskey(id);
+	const remove = (passkey: ListedPasskey) => run("Passkey removal failed", async (on) => {
+		await on.deletePasskey(passkey);
 		await refresh(on);
 		setNotice("Passkey removed. If a device was lost, also sign out other sessions.");
 	});
@@ -112,7 +112,7 @@ export function CredentialManager({ accountId, open, onOpenChange }: CredentialM
 					{passkeys.map((passkey) => (
 						<div key={passkey.id} className="flex items-center justify-between gap-3 rounded border p-2">
 							<span className="text-sm">{passkey.name || "Passkey"}</span>
-							<Button variant="outline" size="sm" disabled={busy} onClick={() => remove(passkey.id)}>
+							<Button variant="outline" size="sm" disabled={busy} onClick={() => remove(passkey)}>
 								Remove
 							</Button>
 						</div>

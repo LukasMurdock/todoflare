@@ -5,6 +5,7 @@ import { API_ROUTES, AUTH_BASE_PATH, AUTH_ROUTES } from "./api/routes";
 import type { AuthErrorCode } from "./api/errors";
 import { normalizeAccountId } from "./account";
 import { accountRequestHeaders } from "./account-request-headers";
+import { passkeyUser } from "./passkey-identity";
 
 export const authClient = createAuthClient({
 	basePath: AUTH_BASE_PATH,
@@ -61,6 +62,41 @@ export function authFailure(
 		: new Error(message);
 }
 
+/**
+ * Tells the browser's password manager what the server knows, through the
+ * WebAuthn Signal API where the browser has it. Best effort: a manager that
+ * ignores signals keeps working, and a failure never reaches the user. The RP
+ * ID is this page's host, which is what auth.ts uses (each deployment's
+ * AUTH_RP_ID is its hostname).
+ */
+function signal(send: (credentials: typeof PublicKeyCredential, rpId: string) => Promise<void>) {
+	if (typeof PublicKeyCredential === "undefined") return;
+	void Promise.resolve()
+		.then(() => send(PublicKeyCredential, window.location.hostname))
+		.catch(() => undefined);
+}
+
+/** Names the account on its passkeys, including ones registered under an older name. */
+export function signalPasskeyAccount(accountId: string): void {
+	const { id: userId, name, displayName } = passkeyUser(accountId);
+	signal(async (credentials, rpId) => {
+		if ("signalCurrentUserDetails" in credentials) await credentials.signalCurrentUserDetails({ rpId, userId, name, displayName });
+	});
+}
+
+/**
+ * Lets the password manager drop a passkey the server has just deleted. Only
+ * a confirmed deletion is signalled: signalAllAcceptedCredentials would need
+ * a provably complete list, but the plugin's list stops at 100 rows and can
+ * be read just before another tab registers a passkey, and a manager may act
+ * on that signal irreversibly.
+ */
+function signalDeletedPasskey(credentialId: string): void {
+	signal(async (credentials, rpId) => {
+		if ("signalUnknownCredential" in credentials) await credentials.signalUnknownCredential({ rpId, credentialId });
+	});
+}
+
 interface AuthResult<T> {
 	data: T | null;
 	error: { code?: unknown; message?: unknown } | null;
@@ -74,6 +110,7 @@ async function settled<T>(call: Promise<AuthResult<T>>): Promise<T> {
 
 export interface ListedPasskey {
 	id: string;
+	credentialID: string;
 	name?: string | null;
 	createdAt?: Date | string | null;
 }
@@ -94,7 +131,10 @@ export function accountCredentials(accountId: string) {
 		accountId,
 		listPasskeys: () => settled(authClient.passkey.listUserPasskeys({ fetchOptions })) as Promise<ListedPasskey[]>,
 		addPasskey: (name: string) => settled(authClient.passkey.addPasskey({ name, fetchOptions })),
-		deletePasskey: (id: string) => settled(authClient.passkey.deletePasskey({ id, fetchOptions })),
+		deletePasskey: async (passkey: ListedPasskey) => {
+			await settled(authClient.passkey.deletePasskey({ id: passkey.id, fetchOptions }));
+			signalDeletedPasskey(passkey.credentialID);
+		},
 		revokeOtherSessions: () => settled(authClient.revokeOtherSessions({ fetchOptions })),
 		/** Creates or replaces the recovery code; it is shown only once. */
 		generateRecoveryCode: async () => {
@@ -118,6 +158,7 @@ export function accountCredentials(accountId: string) {
 			if (!status.accountId || normalizeAccountId(status.accountId) !== normalizeAccountId(accountId)) {
 				throw new Error("Another account is signed in on this device. Reload to continue.");
 			}
+			signalPasskeyAccount(accountId);
 		},
 	};
 }

@@ -1,6 +1,8 @@
 import { applyD1Migrations, env, SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { softwareAuthenticator, type SoftwareAuthenticator } from "./helpers/software-authenticator";
+import { displayAccountId } from "../src/lib/account";
+import { passkeyUser } from "../src/lib/passkey-identity";
 
 const ORIGIN = "http://localhost:5173";
 
@@ -95,6 +97,19 @@ describe("passkey security policy", () => {
 
 		expect((await browser.register(authenticator, true)).status).toBe(200);
 		expect(await passkeyCount(accountId)).toBe(1);
+	});
+
+	it("names every passkey after its account, not the passkey's label", async () => {
+		const browser = new Browser();
+		const accountId = await browser.signInAnonymously();
+		const options = await browser.json<{ user: unknown }>("/api/auth/passkey/generate-register-options?name=Laptop");
+		expect(options.body.user).toEqual(passkeyUser(accountId));
+		expect(passkeyUser(accountId)).toMatchObject({ name: displayAccountId(accountId) });
+		// The same handle for every passkey of the account, so one signal reaches all of them.
+		expect((await browser.register(await softwareAuthenticator(ORIGIN, "localhost"))).status).toBe(200);
+		await ageSessions(accountId, 0);
+		const second = await browser.json<{ user: { id: string } }>("/api/auth/passkey/generate-register-options?name=Phone");
+		expect(second.body.user.id).toBe(passkeyUser(accountId).id);
 	});
 
 	it("requires and enforces user verification at sign-in", async () => {

@@ -1,5 +1,6 @@
-// What crawlers and agents find before they connect: robots.txt, llms.txt,
-// the MCP server card and the RFC 9727 API catalog.
+// What crawlers, agents and credential managers find before they connect:
+// robots.txt, llms.txt, the MCP server card, the RFC 9727 API catalog and the
+// W3C passkey endpoints document.
 import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { API_ROUTES } from "../src/lib/api/routes";
@@ -37,6 +38,15 @@ describe("robots.txt", () => {
 				"Disallow: /api/",
 			]),
 		);
+	});
+});
+
+describe("passkey endpoints", () => {
+	it("is an empty JSON object, served directly", async () => {
+		const response = await SELF.fetch(`${BASE}${API_ROUTES.passkeyEndpoints.path}`, { redirect: "manual" });
+		expect(response.status).toBe(200);
+		expect(response.headers.get("Content-Type")).toMatch(/^application\/json/);
+		expect(await response.json()).toEqual({});
 	});
 });
 
