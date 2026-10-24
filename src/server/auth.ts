@@ -95,6 +95,9 @@ function recoveryPlugin(env: AuthBindings) {
 					}
 					const user = await ctx.context.internalAdapter.findUserById(ctx.body.accountId);
 					if (!user) throw APIError.fromStatus("UNAUTHORIZED");
+					// Recovery usually follows a lost or stolen device: end every
+					// session it may still hold before issuing this one.
+					await ctx.context.internalAdapter.deleteUserSessions(user.id);
 					const session = await ctx.context.internalAdapter.createSession(user.id);
 					if (!session) throw APIError.fromStatus("INTERNAL_SERVER_ERROR");
 					const nextCode = recoveryCode();
@@ -134,7 +137,10 @@ export function createAuth(env: AuthBindings, requestOrigin: string) {
 		secret: env.BETTER_AUTH_SECRET ?? DEVELOPMENT_SECRET,
 		database: env.AUTH_DB,
 		trustedOrigins: [origin],
-		session: { expiresIn: 7 * 24 * 60 * 60, updateAge: 24 * 60 * 60 },
+		// freshAge 0 turns off Better Auth's own 24-hour freshness check, which
+		// would refuse the first passkey of a sign-up resumed a day later. The
+		// auth route owns freshness instead (src/server/routes/auth.ts, 0017).
+		session: { expiresIn: 7 * 24 * 60 * 60, updateAge: 24 * 60 * 60, freshAge: 0 },
 		emailAndPassword: { enabled: false },
 		account: { accountLinking: { enabled: false } },
 		user: {

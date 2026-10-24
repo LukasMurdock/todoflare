@@ -86,6 +86,7 @@ src/
     agent-access/       MCP protocol, tools, access decision, Yjs edits and undo, D1 store
     oauth/              Authorization server: clients (CIMD, DCR), codes, tokens
     auth.ts, session.ts Better Auth configuration and per-request session
+    passkey-policy.ts   User-verification and recent-sign-in checks
     persistence-records.ts  Schemas for every KV/DO record
     column-backups.ts, account-backup.ts, backup-catalog.ts  Backups
   durable-objects/
@@ -310,7 +311,10 @@ Account ID; the email is synthetic and never leaves the auth subsystem) →
 `addPasskey` → `POST /api/account` creates the KV account record. Abandoned
 provisional users are deleted by cron after 7 days. Requests carry
 `X-Todoflare-Expected-Account`; a mismatch with the cookie's user is 401, so
-work queued for one account can never run as another.
+work queued for one account can never run as another. Later credential
+changes need a recent sign-in, and `src/server/passkey-policy.ts` refuses
+passkey ceremonies without user verification
+([0017](decisions/0017-verified-passkeys-and-recent-credential-changes.md)).
 
 ### 9. The hourly cron
 
@@ -349,6 +353,9 @@ Breaking one of these is a bug even if every test passes.
 
 - An Account ID alone never authenticates. Only a passkey session (or a
   recovery code) does. Synthetic emails never leave the auth subsystem.
+- A passkey ceremony without user verification never succeeds, and a
+  credential that outlives its session (passkey, recovery code) is added only
+  from a recent sign-in ([0017](decisions/0017-verified-passkeys-and-recent-credential-changes.md)).
 - A valid edit made offline is kept until the server acknowledges it; an
   expired session never discards local work.
 - Every replayable metadata write carries an idempotency key, and replay is

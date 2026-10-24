@@ -146,9 +146,14 @@ export async function createAccountProjection(
 			}
 			status = await fetchAuthStatus(signal);
 		}
+		if (!status.accountId) throw malformedResponse("Account creation did not start a session");
+		// Bind the rest of sign-up to this account: if another tab signs in as
+		// someone else meanwhile, the server refuses instead of enrolling them.
+		const headers = accountRequestHeaders(status.accountId);
 		if (status.state === "provisional") {
 			const passkeyResult = await authClient.passkey.addPasskey({
 				name: "Primary passkey",
+				fetchOptions: { headers },
 			});
 			if (passkeyResult.error) {
 				throw malformedResponse(passkeyResult.error.message ?? "Passkey registration failed");
@@ -159,6 +164,7 @@ export async function createAccountProjection(
 			method: API_ROUTES.createAccount.method,
 			signal,
 			credentials: "same-origin",
+			headers,
 		});
 	}
 	if (response.status === 429) {
