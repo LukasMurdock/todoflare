@@ -5,6 +5,7 @@ import {
 } from "@simplewebauthn/server/helpers";
 import { namesAnotherAccount } from "../lib/account-request-headers";
 import { AUTH_ROUTES, type ApiRoute } from "../lib/api/routes";
+import { passkeyUser } from "../lib/passkey-identity";
 import type { AuthErrorCode, AuthErrorEnvelope } from "../lib/api/errors";
 import { readOnlyModeResponse } from "./read-only-mode";
 import { rewriteJsonResponse } from "./http/responses";
@@ -44,8 +45,13 @@ export interface AuthEndpointPolicy {
 	expectedAccount?: true;
 	/** Refused unless the authenticator data reports user verification. */
 	userVerification?: "registration" | "authentication";
-	/** The returned options are rewritten to ask for USER_VERIFICATION. */
-	requestsUserVerification?: true;
+	/**
+	 * The returned WebAuthn options are rewritten. `authentication` asks for
+	 * USER_VERIFICATION, which the plugin only prefers. `registration` names
+	 * the account with passkeyUser() instead of the plugin's random handle and
+	 * the request's passkey label.
+	 */
+	webauthnOptions?: "authentication" | "registration";
 	/** Refused if it would remove the account's last way to sign in. */
 	keepsRecoveryMethod?: true;
 }
@@ -64,9 +70,9 @@ export const AUTH_ENDPOINTS: Readonly<Record<string, AuthEndpointPolicy>> = {
 	"POST /sign-in/anonymous": {},
 	"POST /revoke-other-sessions": { expectedAccount: true },
 	"GET /passkey/list-user-passkeys": { whileFrozen: true, expectedAccount: true },
-	"GET /passkey/generate-authenticate-options": { whileFrozen: true, requestsUserVerification: true },
+	"GET /passkey/generate-authenticate-options": { whileFrozen: true, webauthnOptions: "authentication" },
 	"POST /passkey/verify-authentication": { whileFrozen: true, userVerification: "authentication" },
-	"GET /passkey/generate-register-options": { recentSignIn: "unlessUnenrolled", expectedAccount: true },
+	"GET /passkey/generate-register-options": { recentSignIn: "unlessUnenrolled", expectedAccount: true, webauthnOptions: "registration" },
 	"POST /passkey/verify-registration": { recentSignIn: "byChallenge", expectedAccount: true, userVerification: "registration" },
 	"POST /passkey/delete-passkey": { recentSignIn: "always", expectedAccount: true, keepsRecoveryMethod: true },
 	[endpoint(AUTH_ROUTES.generateRecoveryCode)]: { recentSignIn: "always", expectedAccount: true },
@@ -186,9 +192,12 @@ export async function serveAuthEndpoint(auth: AuthRequest): Promise<Response> {
 	const refused = await refusal(policy, auth);
 	if (refused) return authError(refused);
 	const response = await auth.handle();
-	return policy.requestsUserVerification && response.ok
-		? rewriteJsonResponse(response, (options) => ({ ...options, userVerification: USER_VERIFICATION }))
-		: response;
+	if (!policy.webauthnOptions || !response.ok) return response;
+	if (policy.webauthnOptions === "authentication") {
+		return rewriteJsonResponse(response, (options) => ({ ...options, userVerification: USER_VERIFICATION }));
+	}
+	const current = await auth.session();
+	return current ? rewriteJsonResponse(response, (options) => ({ ...options, user: passkeyUser(current.user.id) })) : response;
 }
 
 async function refusal(policy: AuthEndpointPolicy, { request, db, session }: AuthRequest): Promise<AuthErrorCode | null> {

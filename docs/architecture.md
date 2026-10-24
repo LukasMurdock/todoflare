@@ -303,6 +303,11 @@ MCP client ─ POST /api/mcp, Authorization: Bearer tfa_… ─► src/server/ro
   `src/server/routes/discovery.ts` from the same constants the endpoint uses
   ([0016](decisions/0016-generated-agent-discovery.md)). Only production
   `robots.txt` admits crawlers, and never to `/p/`, `/oauth/` or `/api/`.
+- Credential managers find `/.well-known/passkey-endpoints` (`{}` for now),
+  generated in the same module. Passkeys name their account with
+  `passkeyUser` (`src/lib/passkey-identity.ts`), and the client tells password
+  managers about renames and deletions through the WebAuthn Signal API
+  ([0018](decisions/0018-passkeys-name-their-account.md)).
 
 ### 8. Sign-in and account creation
 

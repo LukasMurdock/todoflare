@@ -2,7 +2,7 @@ import {
 	normalizeAccountId,
 	validateAccountId,
 } from "../account";
-import { accountCredentials, authClient, fetchAuthStatus } from "../auth-client";
+import { accountCredentials, authClient, fetchAuthStatus, signalPasskeyAccount } from "../auth-client";
 import { usingE2EAuthFixture } from "../e2e-auth";
 import { accountRequestHeaders } from "../account-request-headers";
 import {
@@ -195,6 +195,7 @@ export async function signInWithPasskey(autoFill = false): Promise<string> {
 	if (!status.accountId || !["passkey", "provisioning"].includes(status.state)) {
 		throw malformedResponse("Passkey session did not resolve an account");
 	}
+	signalPasskeyAccount(status.accountId);
 	if (status.state === "provisioning") {
 		const response = await fetch(API_ROUTES.createAccount.path, {
 			method: API_ROUTES.createAccount.method,

@@ -41,6 +41,7 @@ export const API_ROUTES = {
 	llmsTxt: { method: "GET", path: "/llms.txt" },
 	mcpServerCard: { method: "GET", path: "/.well-known/mcp/server-card.json" },
 	apiCatalog: { method: "GET", path: "/.well-known/api-catalog" },
+	passkeyEndpoints: { method: "GET", path: "/.well-known/passkey-endpoints" },
 	oauthRegister: { method: "POST", path: "/api/oauth/register" },
 	oauthToken: { method: "POST", path: "/api/oauth/token" },
 	describeAuthorization: { method: "GET", path: "/api/oauth/authorization" },

@@ -8,8 +8,8 @@ import { CAPABILITIES, SERVER_INFO, SERVER_INSTRUCTIONS } from "./mcp";
 import type { App, AppContext, Bindings } from "../bindings";
 
 /**
- * Documents that tell crawlers and agents what this origin is and how to
- * connect to it. Nothing here is behind a login, and nothing here describes
+ * Documents that tell crawlers, agents and credential managers what this
+ * origin is and how to connect to it. Nothing here is behind a login, and nothing here describes
  * anyone's columns: the board itself is reachable only through the MCP
  * endpoint, with the access a person granted.
  */
@@ -126,6 +126,12 @@ export function registerDiscoveryRoutes(app: App) {
 	);
 	app.on(API_ROUTES.mcpServerCard.method, API_ROUTES.mcpServerCard.path, (c) =>
 		isAgentAccessEnabled(c.env) ? c.json(mcpServerCard(origin(c)), 200, { ...CACHE, ...CORS }) : disabled(),
+	);
+	// W3C Passkey Endpoints: tells credential managers this origin supports
+	// passkeys. Enrollment and management are dialogs, not pages a manager could
+	// link to, so it names none. Must be a 200 JSON object with no redirect.
+	app.on(API_ROUTES.passkeyEndpoints.method, API_ROUTES.passkeyEndpoints.path, (c) =>
+		c.json({}, 200, CACHE),
 	);
 	app.on(API_ROUTES.apiCatalog.method, API_ROUTES.apiCatalog.path, (c) => {
 		if (!isAgentAccessEnabled(c.env)) return disabled();
