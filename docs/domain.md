@@ -40,11 +40,17 @@ sign-up, before a passkey exists. Cannot share or sync. Deleted after 7 days if
 never finished. `provisioning` is the next state: passkey added, KV account
 record not yet written.
 
-**Passkey**: the only everyday credential. Signing in creates an HttpOnly
-**session** cookie (7 days, renewed daily while used).
+**Passkey**: the only everyday credential. It must be user-verified (PIN or
+biometric) to register or sign in. Signing in creates an HttpOnly **session**
+cookie (7 days, renewed daily while used).
+
+**Recent sign-in**: a session created in the last 5 minutes. Adding or
+removing a passkey and creating a recovery code require one; the user
+confirms with a passkey to get it. An account's first passkey is exempt.
 
 **Recovery code**: an emergency credential for when every passkey is lost.
-Stored hashed; rotated each time it is used.
+Stored hashed; rotated each time it is used. Using it signs out every other
+session.
 
 **Synthetic email**: the undeliverable `account-…@accounts.invalid` address
 Better Auth requires. An implementation detail that must never be shown,

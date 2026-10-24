@@ -51,6 +51,17 @@ export const API_ROUTES = {
 /** better-auth mounts its own routes under this prefix on both sides. */
 export const AUTH_BASE_PATH = "/api/auth";
 
+/**
+ * Todoflare's own endpoints inside better-auth, relative to AUTH_BASE_PATH.
+ * The server plugin defines them from this table and the client calls them
+ * through `authClient.$fetch`. Which better-auth endpoints are reachable at all,
+ * and under what policy, is src/server/auth-policy.ts.
+ */
+export const AUTH_ROUTES = {
+	generateRecoveryCode: { method: "POST", path: "/recovery-code/generate" },
+	recoverAccount: { method: "POST", path: "/recovery-code/recover" },
+} as const satisfies Record<string, ApiRoute>;
+
 /** Browser page that renders a public read-only column. */
 export const PUBLIC_PAGE_PATH = "/p/:publicId";
 

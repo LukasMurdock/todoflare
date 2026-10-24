@@ -2,7 +2,7 @@ import {
 	normalizeAccountId,
 	validateAccountId,
 } from "../account";
-import { authClient, fetchAuthStatus } from "../auth-client";
+import { accountCredentials, authClient, fetchAuthStatus } from "../auth-client";
 import { usingE2EAuthFixture } from "../e2e-auth";
 import { accountRequestHeaders } from "../account-request-headers";
 import {
@@ -146,19 +146,21 @@ export async function createAccountProjection(
 			}
 			status = await fetchAuthStatus(signal);
 		}
+		if (!status.accountId) throw malformedResponse("Account creation did not start a session");
+		// Bind the rest of sign-up to this account: if another tab signs in as
+		// someone else meanwhile, the server refuses instead of enrolling them.
+		const headers = accountRequestHeaders(status.accountId);
 		if (status.state === "provisional") {
-			const passkeyResult = await authClient.passkey.addPasskey({
-				name: "Primary passkey",
+			await accountCredentials(status.accountId).addPasskey("Primary passkey").catch((cause: unknown) => {
+				throw malformedResponse(cause instanceof Error && cause.message ? cause.message : "Passkey registration failed");
 			});
-			if (passkeyResult.error) {
-				throw malformedResponse(passkeyResult.error.message ?? "Passkey registration failed");
-			}
 		}
 
 		response = await fetch(API_ROUTES.createAccount.path, {
 			method: API_ROUTES.createAccount.method,
 			signal,
 			credentials: "same-origin",
+			headers,
 		});
 	}
 	if (response.status === 429) {

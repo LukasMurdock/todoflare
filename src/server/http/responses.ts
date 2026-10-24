@@ -12,6 +12,22 @@ export function apiErrorResponse(
 	return Response.json({ error: message, code }, { status });
 }
 
+/**
+ * Rebuilds a JSON response with a transformed body, keeping its status and
+ * headers. Anything that is not a JSON object or array passes through.
+ */
+export async function rewriteJsonResponse(
+	response: Response,
+	transform: (body: object) => unknown,
+): Promise<Response> {
+	if (!(response.headers.get("Content-Type") ?? "").includes("application/json")) return response;
+	const body: unknown = await response.clone().json().catch(() => null);
+	if (!body || typeof body !== "object") return response;
+	const headers = new Headers(response.headers);
+	headers.delete("Content-Length");
+	return Response.json(transform(body), { status: response.status, statusText: response.statusText, headers });
+}
+
 export function schemaErrorResponse(
 	kind: "account" | "column_meta" | "shared_index" | "trash",
 	result: Extract<SchemaParseResult<unknown>, { ok: false }>,

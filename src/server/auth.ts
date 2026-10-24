@@ -5,7 +5,9 @@ import { APIError, createAuthEndpoint, sensitiveSessionMiddleware } from "better
 import { setSessionCookie } from "better-auth/cookies";
 import { z } from "zod";
 import { generateAccountId } from "../lib/account";
-import { AUTH_BASE_PATH } from "../lib/api/routes";
+import { AUTH_BASE_PATH, AUTH_ROUTES } from "../lib/api/routes";
+import { credentialInventory, isProvisional, USER_VERIFICATION } from "./auth-policy";
+import { rewriteJsonResponse } from "./http/responses";
 
 export type AuthState = "provisional" | "passkey";
 
@@ -54,15 +56,12 @@ function recoveryPlugin(env: AuthBindings) {
 		id: "todoflare-recovery",
 		endpoints: {
 			generateRecoveryCode: createAuthEndpoint(
-				"/recovery-code/generate",
-				{ method: "POST", use: [sensitiveSessionMiddleware] },
+				AUTH_ROUTES.generateRecoveryCode.path,
+				{ method: AUTH_ROUTES.generateRecoveryCode.method, use: [sensitiveSessionMiddleware] },
 				async (ctx) => {
-					const passkey = await env.AUTH_DB.prepare(
-						'SELECT 1 AS present FROM "passkey" WHERE "userId" = ? LIMIT 1',
-					)
-						.bind(ctx.context.session.user.id)
-						.first();
-					if (!passkey) throw APIError.fromStatus("UNAUTHORIZED");
+					if (isProvisional(await credentialInventory(env.AUTH_DB, ctx.context.session.user.id))) {
+						throw APIError.fromStatus("UNAUTHORIZED");
+					}
 					const code = recoveryCode();
 					await env.AUTH_DB.prepare(
 						'UPDATE "user" SET "recoveryCodeHash" = ?, "updatedAt" = ? WHERE "id" = ?',
@@ -73,9 +72,9 @@ function recoveryPlugin(env: AuthBindings) {
 				},
 			),
 			recoverAccount: createAuthEndpoint(
-				"/recovery-code/recover",
+				AUTH_ROUTES.recoverAccount.path,
 				{
-					method: "POST",
+					method: AUTH_ROUTES.recoverAccount.method,
 					body: z.object({
 						accountId: z.string().regex(/^\d{16}$/),
 						recoveryCode: z.string().min(40).max(128),
@@ -95,6 +94,9 @@ function recoveryPlugin(env: AuthBindings) {
 					}
 					const user = await ctx.context.internalAdapter.findUserById(ctx.body.accountId);
 					if (!user) throw APIError.fromStatus("UNAUTHORIZED");
+					// Recovery usually follows a lost or stolen device: end every
+					// session it may still hold before issuing this one.
+					await ctx.context.internalAdapter.deleteUserSessions(user.id);
 					const session = await ctx.context.internalAdapter.createSession(user.id);
 					if (!session) throw APIError.fromStatus("INTERNAL_SERVER_ERROR");
 					const nextCode = recoveryCode();
@@ -134,7 +136,10 @@ export function createAuth(env: AuthBindings, requestOrigin: string) {
 		secret: env.BETTER_AUTH_SECRET ?? DEVELOPMENT_SECRET,
 		database: env.AUTH_DB,
 		trustedOrigins: [origin],
-		session: { expiresIn: 7 * 24 * 60 * 60, updateAge: 24 * 60 * 60 },
+		// freshAge 0 turns off Better Auth's own 24-hour freshness check, which
+		// would refuse the first passkey of a sign-up resumed a day later. The
+		// recentSignIn rows of AUTH_ENDPOINTS own freshness instead (auth-policy.ts).
+		session: { expiresIn: 7 * 24 * 60 * 60, updateAge: 24 * 60 * 60, freshAge: 0 },
 		emailAndPassword: { enabled: false },
 		account: { accountLinking: { enabled: false } },
 		user: {
@@ -173,7 +178,7 @@ export function createAuth(env: AuthBindings, requestOrigin: string) {
 				origin,
 				authenticatorSelection: {
 					residentKey: "required",
-					userVerification: "required",
+					userVerification: USER_VERIFICATION,
 				},
 				registration: {
 					afterVerification: async ({ ctx, user }) => {
@@ -191,6 +196,7 @@ export async function cleanupAbandonedProvisionalUsers(
 	env: AuthBindings,
 	retentionMs = 7 * 24 * 60 * 60 * 1_000,
 ): Promise<number> {
+	// isProvisional() in auth-policy.ts, in SQL: no passkey row.
 	const result = await env.AUTH_DB.prepare(
 		`DELETE FROM "user"
 		 WHERE "authState" = 'provisional'
@@ -214,16 +220,6 @@ export function stripSyntheticEmails(value: unknown): unknown {
 	);
 }
 
-export async function sanitizedAuthResponse(response: Response): Promise<Response> {
-	const contentType = response.headers.get("Content-Type") ?? "";
-	if (!contentType.includes("application/json")) return response;
-	const body = await response.clone().json().catch(() => null);
-	if (body === null) return response;
-	const headers = new Headers(response.headers);
-	headers.delete("Content-Length");
-	return Response.json(stripSyntheticEmails(body), {
-		status: response.status,
-		statusText: response.statusText,
-		headers,
-	});
+export function sanitizedAuthResponse(response: Response): Promise<Response> {
+	return rewriteJsonResponse(response, stripSyntheticEmails);
 }

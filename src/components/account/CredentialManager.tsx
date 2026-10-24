@@ -1,5 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
-import { authClient } from "@/lib/auth-client";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+	accountCredentials,
+	RecentAuthenticationRequiredError,
+	type AccountCredentials,
+	type ListedPasskey,
+} from "@/lib/auth-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -9,80 +14,89 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
-import { AUTH_BASE_PATH } from "@/lib/api/routes";
 
 interface CredentialManagerProps {
+	accountId: string | null;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 }
 
-interface ListedPasskey {
-	id: string;
-	name?: string | null;
-	createdAt?: Date | string | null;
-}
+type CredentialChange = (credentials: AccountCredentials) => Promise<void>;
 
-export function CredentialManager({ open, onOpenChange }: CredentialManagerProps) {
+export function CredentialManager({ accountId, open, onOpenChange }: CredentialManagerProps) {
 	const [passkeys, setPasskeys] = useState<ListedPasskey[]>([]);
 	const [name, setName] = useState("");
 	const [recoveryCode, setRecoveryCode] = useState<string | null>(null);
+	const [notice, setNotice] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
+	const credentials = useMemo(() => (accountId ? accountCredentials(accountId) : null), [accountId]);
+	// The change the server refused for want of a recent sign-in, with the
+	// account it was for; it is retried once the user confirms with a passkey.
+	const [pending, setPending] = useState<{ credentials: AccountCredentials; fallback: string; change: CredentialChange } | null>(null);
 
-	const refresh = useCallback(async () => {
-		const result = await authClient.passkey.listUserPasskeys();
-		if (result.error) setError(result.error.message ?? "Unable to load passkeys");
-		else setPasskeys((result.data ?? []) as ListedPasskey[]);
+	const refresh = useCallback(async (on: AccountCredentials) => {
+		try {
+			setPasskeys(await on.listPasskeys());
+		} catch (cause) {
+			setError(cause instanceof Error && cause.message ? cause.message : "Unable to load passkeys");
+		}
 	}, []);
 
 	useEffect(() => {
-		if (open) void refresh();
-	}, [open, refresh]);
+		if (open && credentials) void refresh(credentials);
+	}, [open, credentials, refresh]);
 
-	const add = async () => {
+	// A pending change belongs to one opening of the dialog for one account.
+	useEffect(() => {
+		setPending(null);
+	}, [open, credentials]);
+
+	const run = async (
+		fallback: string,
+		change: CredentialChange,
+		{ on = credentials, confirmFirst = false }: { on?: AccountCredentials | null; confirmFirst?: boolean } = {},
+	) => {
+		if (!on) return;
 		setBusy(true);
 		setError(null);
+		setNotice(null);
 		try {
-			const result = await authClient.passkey.addPasskey({
-				name: name.trim() || `Passkey ${passkeys.length + 1}`,
-			});
-			if (result.error) throw new Error(result.error.message ?? "Passkey registration failed");
-			setName("");
-			await refresh();
+			if (confirmFirst) await on.reauthenticate();
+			await change(on);
+			setPending(null);
 		} catch (cause) {
-			setError(cause instanceof Error ? cause.message : "Passkey registration failed");
+			if (cause instanceof RecentAuthenticationRequiredError) setPending({ credentials: on, fallback, change });
+			else setError(cause instanceof Error && cause.message ? cause.message : fallback);
 		} finally {
 			setBusy(false);
 		}
 	};
 
-	const remove = async (id: string) => {
-		setBusy(true);
-		setError(null);
-		try {
-			const result = await authClient.passkey.deletePasskey({ id });
-			if (result.error) throw new Error(result.error.message ?? "Passkey removal failed");
-			await refresh();
-		} catch (cause) {
-			setError(cause instanceof Error ? cause.message : "Passkey removal failed");
-		} finally {
-			setBusy(false);
-		}
-	};
+	const add = () => run("Passkey registration failed", async (on) => {
+		await on.addPasskey(name.trim() || `Passkey ${passkeys.length + 1}`);
+		setName("");
+		await refresh(on);
+	});
 
-	const createRecoveryCode = async () => {
-		setBusy(true);
-		setError(null);
-		try {
-			const response = await fetch(`${AUTH_BASE_PATH}/recovery-code/generate`, { method: "POST" });
-			const body = (await response.json()) as { recoveryCode?: string; message?: string };
-			if (!response.ok || !body.recoveryCode) throw new Error(body.message ?? "Recovery code creation failed");
-			setRecoveryCode(body.recoveryCode);
-		} catch (cause) {
-			setError(cause instanceof Error ? cause.message : "Recovery code creation failed");
-		} finally {
-			setBusy(false);
-		}
+	const remove = (id: string) => run("Passkey removal failed", async (on) => {
+		await on.deletePasskey(id);
+		await refresh(on);
+		setNotice("Passkey removed. If a device was lost, also sign out other sessions.");
+	});
+
+	const createRecoveryCode = () => run("Recovery code creation failed", async (on) => {
+		setRecoveryCode(await on.generateRecoveryCode());
+	});
+
+	const signOutOtherSessions = () => run("Unable to sign out other sessions", async (on) => {
+		await on.revokeOtherSessions();
+		setNotice("Other sessions are signed out.");
+	});
+
+	const confirmAndRetry = () => {
+		if (!pending) return;
+		return run(pending.fallback, pending.change, { on: pending.credentials, confirmFirst: true });
 	};
 
 	return (
@@ -110,12 +124,24 @@ export function CredentialManager({ open, onOpenChange }: CredentialManagerProps
 					<Button variant="outline" disabled={busy} onClick={createRecoveryCode}>
 						Create or rotate recovery code
 					</Button>
+					<Button variant="outline" disabled={busy} onClick={signOutOtherSessions}>
+						Sign out other sessions
+					</Button>
+					{pending && (
+						<div className="space-y-2 rounded border p-3">
+							<p className="text-sm">Confirm it's you with a passkey to make this change.</p>
+							<Button className="w-full" disabled={busy} onClick={confirmAndRetry}>
+								Confirm with passkey
+							</Button>
+						</div>
+					)}
 					{recoveryCode && (
 						<div className="rounded border border-amber-500/50 bg-amber-500/10 p-3">
 							<p className="text-xs">Save this now. It is shown only once.</p>
 							<code className="break-all text-xs">{recoveryCode}</code>
 						</div>
 					)}
+					{notice && <p className="text-sm text-muted-foreground">{notice}</p>}
 					{error && <p className="text-sm text-destructive">{error}</p>}
 				</div>
 			</DialogContent>

@@ -314,7 +314,7 @@ export function AccountBadge() {
 
 	return (
 		<>
-			<CredentialManager open={showCredentials} onOpenChange={setShowCredentials} />
+			<CredentialManager accountId={accountId} open={showCredentials} onOpenChange={setShowCredentials} />
 			{authenticationStatus === "authenticated" && showAgents && (
 				<Suspense fallback={null}>
 					<AgentsDialog accountId={accountId} open={showAgents} onOpenChange={setShowAgents} />
