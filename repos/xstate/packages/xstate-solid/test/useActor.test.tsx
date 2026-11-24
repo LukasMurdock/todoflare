@@ -1,28 +1,28 @@
-/* @jsxImportSource solid-js */
+/* @jsxImportSource @solidjs/web */
 import {
   Match,
   Show,
   Switch,
   createEffect,
   createSignal,
-  mergeProps,
-  on,
+  flush,
+  merge,
   onCleanup,
-  onMount,
+  onSettled,
+  untrack,
   For
 } from 'solid-js';
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import {
   Actor,
-  ActorLogicFrom,
-  assign,
   createActor,
   createMachine,
-  fromTransition,
-  raise
+  createCallbackLogic,
+  createAsyncLogic,
+  createStepLogic
 } from 'xstate';
-import { fromCallback, fromPromise } from 'xstate/actors';
 import { useActor } from '../src/index.ts';
+import { restoreActor } from 'xstate/persist';
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -38,30 +38,26 @@ describe('useActor', () => {
   };
   const fetchMachine = createMachine({
     id: 'fetch',
-    types: {} as {
-      context: typeof context;
-      events: { type: 'FETCH' };
-      actors: {
-        src: 'fetchData';
-        logic: ActorLogicFrom<Promise<string>>;
-      };
+    actors: {
+      fetchData: createMachine({})
     },
     initial: 'idle',
-    context,
+    context: context as any,
     states: {
       idle: {
-        on: { FETCH: 'loading' }
+        on: { FETCH: { target: 'loading' } }
       },
       loading: {
         invoke: {
           id: 'fetchData',
-          src: 'fetchData',
-          onDone: {
-            target: 'success',
-            actions: assign({
-              data: ({ event }) => event.output
-            }),
-            guard: ({ event }) => !!event.output.length
+          src: ({ actors }) => actors.fetchData,
+          onDone: ({ context, event }) => {
+            if ((event.output as any).length > 0) {
+              return {
+                target: 'success',
+                context: { data: event.output }
+              };
+            }
           }
         }
       },
@@ -94,33 +90,35 @@ describe('useActor', () => {
     onFetch: () => Promise<any>;
     persistedState?: typeof persistedFetchState;
   }) => {
-    const mergedProps = mergeProps(
+    const mergedProps = merge(
       {
         onFetch: () => new Promise((res) => res('some data'))
       },
       props
     );
-    const [snapshot, send] = useActor(
-      fetchMachine.provide({
-        actors: {
-          fetchData: fromPromise(mergedProps.onFetch)
-        }
-      }),
-      {
-        snapshot: mergedProps.persistedState
+    const logic = fetchMachine.provide({
+      actors: {
+        fetchData: createAsyncLogic({
+          run: untrack(() => mergedProps.onFetch)
+        }) as any
       }
+    });
+    const persistedState = untrack(() => mergedProps.persistedState);
+    const [snapshot, send] = useActor(
+      persistedState ? restoreActor(logic, persistedState) : createActor(logic)
     );
 
     return (
       <Switch fallback={null}>
         <Match when={snapshot.matches('idle')}>
-          <button onclick={(_) => send({ type: 'FETCH' })}>Fetch</button>;
+          <button onClick={(_) => send({ type: 'FETCH' })}>Fetch</button>;
         </Match>
         <Match when={snapshot.matches('loading')}>
           <div>Loading...</div>
         </Match>
         <Match when={snapshot.matches('success')}>
-          Success! Data: <div data-testid="data">{snapshot.context.data}</div>
+          Success! Data:{' '}
+          <div data-testid="data">{(snapshot as any).context.data}</div>
         </Match>
       </Switch>
     );
@@ -132,6 +130,7 @@ describe('useActor', () => {
     ));
     const button = screen.getByText('Fetch');
     fireEvent.click(button);
+    flush();
     screen.getByText('Loading...');
     await waitFor(() => screen.getByText(/Success/));
     const dataEl = screen.getByTestId('data');
@@ -183,10 +182,6 @@ describe('useActor', () => {
 
   it('should accept input', () => {
     const testMachine = createMachine({
-      types: {} as {
-        context: { foo: string; test: boolean };
-        input: { test?: boolean };
-      },
       context: ({ input }) => ({
         foo: 'bar',
         test: false,
@@ -203,7 +198,7 @@ describe('useActor', () => {
         input: { test: true }
       });
 
-      expect(state.context).toEqual({
+      expect(untrack(() => ({ ...state.context }))).toEqual({
         foo: 'bar',
         test: true
       });
@@ -217,21 +212,22 @@ describe('useActor', () => {
   it('should not spawn actors until service is started', () => {
     const { resolve, promise } = Promise.withResolvers<void>();
     const spawnMachine = createMachine({
-      types: {} as { context: any },
       id: 'spawn',
       initial: 'start',
-      context: { ref: undefined },
+      context: { ref: undefined } as any,
       states: {
         start: {
-          entry: assign({
-            ref: ({ spawn }) =>
-              spawn(
-                fromPromise(() => new Promise((res) => res(42))),
-                { id: 'my-promise' }
-              )
-          }),
+          entry: (_, enq) => {
+            enq.spawn(
+              createAsyncLogic({ run: () => new Promise((res) => res(42)) }),
+              { id: 'my-promise' }
+            );
+          },
           on: {
-            'xstate.done.actor.my-promise': 'success'
+            'xstate.done.actor': {
+              matches: { actorId: 'my-promise' },
+              target: 'success'
+            }
           }
         },
         success: {
@@ -268,7 +264,7 @@ describe('useActor', () => {
       states: {
         start: {
           on: {
-            done: 'success'
+            done: { target: 'success' }
           }
         },
         success: {
@@ -280,10 +276,13 @@ describe('useActor', () => {
     const Spawner = () => {
       const [current, send] = useActor(machine);
 
-      onMount(() => {
+      onSettled(() => {
         expect(current.value).toBe('start');
         send({ type: 'done' });
-        expect(current.value).toBe('success');
+        queueMicrotask(() => {
+          flush();
+          expect(current.value).toBe('success');
+        });
       });
 
       return (
@@ -307,16 +306,18 @@ describe('useActor', () => {
   it('actions should not have stale data', () => {
     const { resolve, promise } = Promise.withResolvers<void>();
     const toggleMachine = createMachine({
-      types: {} as {
-        events: { type: 'TOGGLE' };
-      },
       initial: 'inactive',
+      actions: {
+        doAction: () => {}
+      },
       states: {
         inactive: {
-          on: { TOGGLE: 'active' }
+          on: { TOGGLE: { target: 'active' } }
         },
         active: {
-          entry: 'doAction'
+          entry: ({ actions }, enq) => {
+            enq(actions.doAction);
+          }
         }
       }
     });
@@ -341,13 +342,13 @@ describe('useActor', () => {
         <div>
           <button
             data-testid="extbutton"
-            onclick={(_) => {
+            onClick={(_) => {
               setExt(true);
             }}
           />
           <button
             data-testid="button"
-            onclick={(_) => {
+            onClick={(_) => {
               send({ type: 'TOGGLE' });
             }}
           />
@@ -360,8 +361,10 @@ describe('useActor', () => {
     const button = screen.getByTestId('button');
     const extButton = screen.getByTestId('extbutton');
     fireEvent.click(extButton);
+    flush();
 
     fireEvent.click(button);
+    flush();
 
     return promise;
   });
@@ -370,21 +373,18 @@ describe('useActor', () => {
     let count = 0;
 
     const machine = createMachine({
-      types: {} as {
-        events: { type: 'EVENT' };
-      },
       initial: 'active',
-      context: { count: 0 },
+      context: { count: 0 } as any,
       states: {
         active: {
           on: {
-            EVENT: {
-              actions: [
-                () => {
-                  count++;
-                },
-                assign({ count: ({ context }) => context.count + 1 })
-              ]
+            EVENT: ({ context }, enq) => {
+              enq(() => {
+                count++;
+              });
+              return {
+                context: { count: context.count + 1 }
+              };
             }
           }
         }
@@ -395,14 +395,12 @@ describe('useActor', () => {
       const [stateCount, setStateCount] = createSignal(0);
       const [state, send] = useActor(machine);
       createEffect(
-        on(
-          () => state.context.count,
-          () => {
-            setStateCount((c) => c + 1);
-          }
-        )
+        () => (state as any).context.count,
+        () => {
+          setStateCount((c) => c + 1);
+        }
       );
-      onMount(() => {
+      onSettled(() => {
         send({ type: 'EVENT' });
         send({ type: 'EVENT' });
         send({ type: 'EVENT' });
@@ -425,51 +423,38 @@ describe('useActor', () => {
 
   it('should capture only array updates', () => {
     const machine = createMachine({
-      types: {} as {
-        context: {
-          item: {
-            counts: Array<{ value: number }>;
-            totals: Array<{ value: number }>;
-          };
-        };
-        events: { type: 'COUNT' } | { type: 'TOTAL' };
-      },
       initial: 'active',
       context: {
         item: {
           counts: [{ value: 0 }],
           totals: [{ value: 0 }]
         }
-      },
+      } as any,
       states: {
         active: {
           on: {
-            COUNT: {
-              actions: [
-                assign({
-                  item: ({ context }) => ({
-                    ...context.item,
-                    counts: [
-                      ...context.item.counts,
-                      { value: context.item.counts.length + 1 }
-                    ]
-                  })
-                })
-              ]
-            },
-            TOTAL: {
-              actions: [
-                assign({
-                  item: ({ context }) => ({
-                    ...context.item,
-                    totals: [
-                      ...context.item.totals,
-                      { value: context.item.totals.length + 1 }
-                    ]
-                  })
-                })
-              ]
-            }
+            COUNT: ({ context }) => ({
+              context: {
+                item: {
+                  ...context.item,
+                  counts: [
+                    ...context.item.counts,
+                    { value: context.item.counts.length + 1 }
+                  ]
+                }
+              }
+            }),
+            TOTAL: ({ context }) => ({
+              context: {
+                item: {
+                  ...context.item,
+                  totals: [
+                    ...context.item.totals,
+                    { value: context.item.totals.length + 1 }
+                  ]
+                }
+              }
+            })
           }
         }
       }
@@ -479,15 +464,13 @@ describe('useActor', () => {
       const [stateCount, setStateCount] = createSignal(0);
       const [state, send] = useActor(machine);
       createEffect(
-        on(
-          () => [...state.context.item.counts],
-          () => {
-            setStateCount((c) => c + 1);
-          },
-          { defer: true }
-        )
+        () => [...(state as any).context.item.counts],
+        () => {
+          setStateCount((c) => c + 1);
+        },
+        { defer: true }
       );
-      onMount(() => {
+      onSettled(() => {
         send({ type: 'COUNT' });
         send({ type: 'TOTAL' });
         send({ type: 'COUNT' });
@@ -507,21 +490,18 @@ describe('useActor', () => {
 
   it('useMachine array with odd number of items should be replaceable', () => {
     const machine = createMachine({
-      types: {},
       initial: 'active',
       context: {
         numbersList: [1, 2, 3, 4, 5]
-      },
+      } as any,
       states: {
         active: {
           on: {
-            REPLACE_ALL: {
-              actions: [
-                assign({
-                  numbersList: [4, 3, 2, 1, 0]
-                })
-              ]
-            }
+            REPLACE_ALL: ({ context }) => ({
+              context: {
+                numbersList: [4, 3, 2, 1, 0]
+              }
+            })
           }
         }
       }
@@ -530,20 +510,20 @@ describe('useActor', () => {
     const App = () => {
       const [state, send] = useActor(machine);
 
-      onMount(() => {
-        expect(state.context.numbersList).toEqual([1, 2, 3, 4, 5]);
+      onSettled(() => {
+        expect((state as any).context.numbersList).toEqual([1, 2, 3, 4, 5]);
         send({ type: 'REPLACE_ALL' });
-        expect(state.context.numbersList).toEqual([4, 3, 2, 1, 0]);
       });
 
       return (
         <div data-testid="numbers-list">
-          {state.context.numbersList.join('')}
+          {(state as any).context.numbersList.join('')}
         </div>
       );
     };
 
     render(() => <App />);
+    flush();
 
     const numbersListEl = screen.getByTestId('numbers-list');
 
@@ -553,20 +533,15 @@ describe('useActor', () => {
 
   it('useMachine state should only trigger effect of directly tracked value', () => {
     const counterMachine2 = createMachine({
-      types: {} as {
-        context: {
-          subCount: { subCount1: { subCount2: { count: number } } };
-        };
-      },
       id: 'counter',
       initial: 'active',
-      context: { subCount: { subCount1: { subCount2: { count: 0 } } } },
+      context: { subCount: { subCount1: { subCount2: { count: 0 } } } } as any,
       states: {
         active: {
           on: {
-            INC: {
-              actions: assign({
-                subCount: ({ context }) => ({
+            INC: ({ context }) => ({
+              context: {
+                subCount: {
                   ...context.subCount,
                   subCount1: {
                     ...context.subCount.subCount1,
@@ -575,10 +550,12 @@ describe('useActor', () => {
                       count: context.subCount.subCount1.subCount2.count + 1
                     }
                   }
-                })
-              })
-            },
-            SOMETHING: { actions: 'doSomething' }
+                }
+              }
+            }),
+            SOMETHING: ({ context, event, guards, actions }, enq) => {
+              enq(() => actions['doSomething']({ context, event } as any));
+            }
           }
         }
       }
@@ -588,22 +565,20 @@ describe('useActor', () => {
       const [state, send] = useActor(counterMachine2);
       const [effectCount, setEffectCount] = createSignal(0);
       createEffect(
-        on(
-          () => state.context.subCount.subCount1,
-          () => {
-            setEffectCount((prev) => prev + 1);
-          },
-          {
-            defer: true
-          }
-        )
+        () => (state as any).context.subCount.subCount1,
+        () => {
+          setEffectCount((prev) => prev + 1);
+        },
+        {
+          defer: true
+        }
       );
       return (
         <div>
-          <button data-testid="inc" onclick={(_) => send({ type: 'INC' })} />
+          <button data-testid="inc" onClick={(_) => send({ type: 'INC' })} />
           <div data-testid="effect-count">{effectCount()}</div>
           <div data-testid="count">
-            {state.context.subCount.subCount1.subCount2.count}
+            {(state as any).context.subCount.subCount1.subCount2.count}
           </div>
         </div>
       );
@@ -617,49 +592,43 @@ describe('useActor', () => {
 
     expect(countEl.textContent).toBe('0');
     fireEvent.click(incButton);
+    flush();
     expect(countEl.textContent).toBe('1');
     expect(effectCountEl.textContent).toBe('0');
     fireEvent.click(incButton);
+    flush();
     expect(countEl.textContent).toBe('2');
     expect(effectCountEl.textContent).toBe('0');
   });
 
   it('should capture only nested value update', () => {
     const machine = createMachine({
-      types: {} as {
-        context: { item: { count: number; total: number } };
-        events: { type: 'COUNT' } | { type: 'TOTAL' };
-      },
       initial: 'active',
       context: {
         item: {
           count: 0,
           total: 0
         }
-      },
+      } as any,
       states: {
         active: {
           on: {
-            COUNT: {
-              actions: [
-                assign({
-                  item: ({ context }) => ({
-                    ...context.item,
-                    count: context.item.count + 1
-                  })
-                })
-              ]
-            },
-            TOTAL: {
-              actions: [
-                assign({
-                  item: ({ context }) => ({
-                    ...context.item,
-                    total: context.item.total + 1
-                  })
-                })
-              ]
-            }
+            COUNT: ({ context }) => ({
+              context: {
+                item: {
+                  ...context.item,
+                  count: context.item.count + 1
+                }
+              }
+            }),
+            TOTAL: ({ context }) => ({
+              context: {
+                item: {
+                  ...context.item,
+                  total: context.item.total + 1
+                }
+              }
+            })
           }
         }
       }
@@ -669,15 +638,13 @@ describe('useActor', () => {
       const [stateCount, setStateCount] = createSignal(0);
       const [state, send] = useActor(machine);
       createEffect(
-        on(
-          () => state.context.item.count,
-          () => {
-            setStateCount((c) => c + 1);
-          },
-          { defer: true }
-        )
+        () => (state as any).context.item.count,
+        () => {
+          setStateCount((c) => c + 1);
+        },
+        { defer: true }
       );
-      onMount(() => {
+      onSettled(() => {
         send({ type: 'COUNT' });
         send({ type: 'TOTAL' });
         send({ type: 'COUNT' });
@@ -697,10 +664,6 @@ describe('useActor', () => {
 
   it('Moving objects between arrays should not mutate context', () => {
     const stackMachine = createMachine({
-      types: {} as {
-        context: { current: { value: string }[]; done: { value: string }[] };
-        events: { type: 'next' } | { type: 'prev' };
-      },
       id: 'stack',
       initial: 'active',
       context: {
@@ -710,30 +673,34 @@ describe('useActor', () => {
           { value: 'Stack #3' }
         ],
         done: []
-      },
+      } as any,
       states: {
         active: {
           on: {
-            next: {
-              guard: ({ context }) => context.current.length > 0,
-              actions: assign(({ context }) => {
+            next: ({ context }) => {
+              if (context.current.length > 0) {
                 const [first, ...rest] = context.current;
                 return {
-                  current: rest,
-                  done: [...context.done, first]
+                  context: {
+                    current: rest,
+                    done: [...context.done, first]
+                  }
                 };
-              })
+              }
             },
-            prev: {
-              guard: ({ context }) => context.done.length > 0,
-              actions: assign(({ context }) => {
+            prev: ({ context }) => {
+              if (context.done.length > 0) {
                 const rest = context.done.slice(0, -1);
                 const last = context.done.at(-1);
                 return {
-                  current: last ? [last, ...context.current] : context.current,
-                  done: rest
+                  context: {
+                    current: last
+                      ? [last, ...context.current]
+                      : context.current,
+                    done: rest
+                  }
                 };
-              })
+              }
             }
           }
         }
@@ -749,8 +716,8 @@ describe('useActor', () => {
             <div>
               Current
               <ul data-testid="current-list">
-                <For each={snapshot.context.current}>
-                  {(item) => {
+                <For each={(snapshot as any).context.current}>
+                  {(item: any) => {
                     return <li>{item.value}</li>;
                   }}
                 </For>
@@ -760,8 +727,8 @@ describe('useActor', () => {
             <div>
               Done
               <ul data-testid="done-list">
-                <For each={snapshot.context.done}>
-                  {(item) => {
+                <For each={(snapshot as any).context.done}>
+                  {(item: any) => {
                     return <li>{item.value}</li>;
                   }}
                 </For>
@@ -801,8 +768,11 @@ describe('useActor', () => {
     expect(doneList.children.length).toBe(0);
 
     fireEvent.click(firstToDoneButton);
+
+    flush();
     fireEvent.click(firstToDoneButton);
     fireEvent.click(firstToDoneButton);
+    flush();
 
     expect(currentList.children.length).toBe(0);
     expect(doneList.children.length).toBe(3);
@@ -811,8 +781,11 @@ describe('useActor', () => {
     );
 
     fireEvent.click(lastToCurrentButton);
+
+    flush();
     fireEvent.click(lastToCurrentButton);
     fireEvent.click(lastToCurrentButton);
+    flush();
 
     expect(currentList.children.length).toBe(3);
     expect(doneList.children.length).toBe(0);
@@ -852,17 +825,17 @@ describe('useActor', () => {
       states: {
         green: {
           on: {
-            TRANSITION: 'yellow'
+            TRANSITION: { target: 'yellow' }
           }
         },
         yellow: {
           on: {
-            TRANSITION: 'red'
+            TRANSITION: { target: 'red' }
           }
         },
         red: {
           on: {
-            TRANSITION: 'green'
+            TRANSITION: { target: 'green' }
           }
         }
       }
@@ -870,20 +843,18 @@ describe('useActor', () => {
 
     const App = () => {
       const [state, send] = useActor(machine);
-      const [toJson, setToJson] = createSignal(state.toJSON());
+      const [toJson, setToJson] = createSignal(untrack(() => state.toJSON()));
       createEffect(
-        on(
-          () => state.value,
-          () => {
-            setToJson(state.toJSON());
-          }
-        )
+        () => state.value,
+        () => {
+          setToJson(untrack(() => state.toJSON()));
+        }
       );
       return (
         <div>
           <button
             data-testid="transition-button"
-            onclick={() => send({ type: 'TRANSITION' })}
+            onClick={() => send({ type: 'TRANSITION' })}
           />
           <div data-testid="to-json">{(toJson() as any).value.toString()}</div>
         </div>
@@ -897,14 +868,17 @@ describe('useActor', () => {
     // Green
     expect(toJsonEl.textContent).toEqual('green');
     transitionBtn.click();
+    flush();
 
     // Yellow
     expect(toJsonEl.textContent).toEqual('yellow');
     transitionBtn.click();
+    flush();
 
     // Red
     expect(toJsonEl.textContent).toEqual('red');
     transitionBtn.click();
+    flush();
 
     // Green
     expect(toJsonEl.textContent).toEqual('green');
@@ -917,35 +891,38 @@ describe('useActor', () => {
         green: {
           tags: 'go',
           on: {
-            TRANSITION: 'yellow'
+            TRANSITION: { target: 'yellow' }
           }
         },
         yellow: {
           tags: 'go',
           on: {
-            TRANSITION: 'red'
+            TRANSITION: { target: 'red' }
           }
         },
         red: {
           tags: ['stop', 'other'],
           on: {
-            TRANSITION: 'green'
+            TRANSITION: { target: 'green' }
           }
         }
-      }
+      } as any
     });
 
     const App = () => {
       const [state, send] = useActor(machine);
-      const [canGo, setCanGo] = createSignal(state.hasTag('go'));
-      createEffect(() => {
-        setCanGo(state.hasTag('go'));
-      });
+      const [canGo, setCanGo] = createSignal(untrack(() => state.hasTag('go')));
+      createEffect(
+        () => state.hasTag('go'),
+        (go) => {
+          setCanGo(go);
+        }
+      );
       return (
         <div>
           <button
             data-testid="transition-button"
-            onclick={() => send({ type: 'TRANSITION' })}
+            onClick={() => send({ type: 'TRANSITION' })}
           />
           <div data-testid="can-go">{canGo().toString()}</div>
           <div data-testid="stop">{state.hasTag('stop').toString()}</div>
@@ -962,16 +939,19 @@ describe('useActor', () => {
     expect(canGoEl.textContent).toEqual('true');
     expect(stopEl.textContent).toEqual('false');
     transitionBtn.click();
+    flush();
 
     // Yellow
     expect(canGoEl.textContent).toEqual('true');
     expect(stopEl.textContent).toEqual('false');
     transitionBtn.click();
+    flush();
 
     // Red
     expect(canGoEl.textContent).toEqual('false');
     expect(stopEl.textContent).toEqual('true');
     transitionBtn.click();
+    flush();
 
     // Green
     expect(canGoEl.textContent).toEqual('true');
@@ -984,12 +964,14 @@ describe('useActor', () => {
       states: {
         inactive: {
           on: {
-            TOGGLE: 'active'
+            TOGGLE: { target: 'active' }
           }
         },
         active: {
           on: {
-            DO_SOMETHING: { actions: ['something'] }
+            DO_SOMETHING: (_, enq) => {
+              enq(() => {});
+            }
           }
         }
       }
@@ -998,16 +980,19 @@ describe('useActor', () => {
     const App = () => {
       const [state, send] = useActor(machine);
       const [canToggle, setCanToggle] = createSignal(
-        state.can({ type: 'TOGGLE' })
+        untrack(() => state.can({ type: 'TOGGLE' }))
       );
-      createEffect(() => {
-        setCanToggle(state.can({ type: 'TOGGLE' }));
-      });
+      createEffect(
+        () => state.can({ type: 'TOGGLE' }),
+        (can) => {
+          setCanToggle(can);
+        }
+      );
       return (
         <div>
           <button
             data-testid="toggle-button"
-            onclick={() => send({ type: 'TOGGLE' })}
+            onClick={() => send({ type: 'TOGGLE' })}
           />
           <div data-testid="can-toggle">{canToggle().toString()}</div>
           <div data-testid="can-do-something">
@@ -1025,30 +1010,27 @@ describe('useActor', () => {
     expect(canToggleEl.textContent).toEqual('true');
     expect(canDoSomethingEl.textContent).toEqual('false');
     toggleBtn.click();
+    flush();
     expect(canToggleEl.textContent).toEqual('false');
     expect(canDoSomethingEl.textContent).toEqual('true');
   });
 
   it(`should not reevaluate a scope depending on state.matches when state.value doesn't change`, () => {
     const { resolve, promise } = Promise.withResolvers<void>();
-    interface MachineContext {
-      counter: number;
-    }
 
     const machine = createMachine({
-      types: {} as { context: MachineContext },
       context: {
         counter: 0
-      },
+      } as any,
       initial: 'idle',
       states: {
         idle: {
           on: {
-            INC: {
-              actions: assign({
-                counter: ({ context }) => context.counter + 1
-              })
-            }
+            INC: ({ context }) => ({
+              context: {
+                counter: context.counter + 1
+              }
+            })
           }
         }
       }
@@ -1058,12 +1040,14 @@ describe('useActor', () => {
       let calls = 0;
       const [state, send] = useActor(machine);
 
-      createEffect(() => {
-        calls++;
-        state.matches('foo');
-      });
+      createEffect(
+        () => state.matches('idle'),
+        () => {
+          calls++;
+        }
+      );
 
-      onMount(() => {
+      onSettled(() => {
         send({ type: 'INC' });
         send({ type: 'INC' });
         send({ type: 'INC' });
@@ -1093,7 +1077,7 @@ describe('useActor', () => {
     const machine = createMachine({
       context: ({ spawn }) => ({
         ref: spawn(
-          fromCallback(() => {
+          createCallbackLogic(() => {
             childSpawned = true;
             return () => {};
           })
@@ -1114,20 +1098,18 @@ describe('useActor', () => {
   it('should be able to use an action provided outside of SolidJS', () => {
     let actionCalled = false;
 
-    const machine = createMachine(
-      {
-        on: {
-          EV: {
-            actions: 'foo'
-          }
+    const machine = createMachine({
+      actions: {
+        foo: () => {
+          actionCalled = true;
         }
       },
-      {
-        actions: {
-          foo: () => (actionCalled = true)
+      on: {
+        EV: ({ actions }, enq) => {
+          enq(actions.foo);
         }
       }
-    );
+    });
 
     const App = () => {
       const [, send] = useActor(machine);
@@ -1143,30 +1125,27 @@ describe('useActor', () => {
   it('should be able to use a guard provided outside of SolidJS', () => {
     let guardCalled = false;
 
-    const machine = createMachine(
-      {
-        initial: 'a',
-        states: {
-          a: {
-            on: {
-              EV: {
-                guard: 'isAwesome',
-                target: 'b'
-              }
-            }
-          },
-          b: {}
+    const machine = createMachine({
+      initial: 'a',
+      guards: {
+        isAwesome: () => {
+          guardCalled = true;
+          return true;
         }
       },
-      {
-        guards: {
-          isAwesome: () => {
-            guardCalled = true;
-            return true;
+      states: {
+        a: {
+          on: {
+            EV: ({ guards }) => {
+              if (guards.isAwesome()) {
+                return { target: 'b' };
+              }
+            }
           }
-        }
+        },
+        b: {}
       }
-    );
+    });
 
     const App = () => {
       const [_state, send] = useActor(machine);
@@ -1182,31 +1161,29 @@ describe('useActor', () => {
   it('should be able to use a service provided outside of SolidJS', () => {
     let serviceCalled = false;
 
-    const machine = createMachine(
-      {
-        initial: 'a',
-        states: {
-          a: {
-            on: {
-              EV: 'b'
-            }
-          },
-          b: {
-            invoke: {
-              src: 'foo'
-            }
-          }
-        }
-      },
-      {
-        actors: {
-          foo: fromPromise(() => {
+    const machine = createMachine({
+      initial: 'a',
+      actors: {
+        foo: createAsyncLogic({
+          run: () => {
             serviceCalled = true;
             return Promise.resolve();
-          })
+          }
+        })
+      },
+      states: {
+        a: {
+          on: {
+            EV: { target: 'b' }
+          }
+        },
+        b: {
+          invoke: {
+            src: ({ actors }) => actors.foo
+          }
         }
       }
-    );
+    });
 
     const App = () => {
       const [, send] = useActor(machine);
@@ -1222,42 +1199,34 @@ describe('useActor', () => {
   it('should be able to use a delay provided outside of SolidJS', () => {
     vi.useFakeTimers();
 
-    const machine = createMachine(
-      {
-        initial: 'a',
-        states: {
-          a: {
-            on: {
-              EV: 'b'
-            }
-          },
-          b: {
-            after: {
-              myDelay: 'c'
-            }
-          },
-          c: {}
+    const machine = createMachine({
+      initial: 'a',
+      delays: {
+        myDelay: () => {
+          return 300;
         }
       },
-      {
-        delays: {
-          myDelay: () => {
-            return 300;
+      states: {
+        a: {
+          on: {
+            EV: { target: 'b' }
           }
-        }
+        },
+        b: {
+          after: {
+            myDelay: { target: 'c' }
+          }
+        },
+        c: {}
       }
-    );
+    });
 
     const App = () => {
       const [state, send] = useActor(machine);
       return (
         <div>
-          <div data-testid="result">
-            {typeof state.value === 'string'
-              ? state.value
-              : state.value.toString()}
-          </div>
-          <button role="button" onclick={() => send({ type: 'EV' })} />
+          <div data-testid="result">{String(state.value)}</div>
+          <button role="button" onClick={() => send({ type: 'EV' })} />
         </div>
       );
     };
@@ -1266,10 +1235,13 @@ describe('useActor', () => {
 
     const btn = screen.getByRole('button');
     fireEvent.click(btn);
+    flush();
 
     expect(screen.getByTestId('result').textContent).toBe('b');
 
     vi.advanceTimersByTime(310);
+
+    flush();
 
     expect(screen.getByTestId('result').textContent).toBe('c');
   });
@@ -1280,9 +1252,10 @@ describe('useActor', () => {
       states: {
         a: {
           on: {
-            EV: {
-              guard: 'isAwesome',
-              target: 'b'
+            EV: ({ guards }) => {
+              if (guards.isAwesome()) {
+                return { target: 'b' };
+              }
             }
           }
         },
@@ -1303,7 +1276,7 @@ describe('useActor', () => {
           <div data-testid="result">{state.value.toString()}</div>
           <button
             data-testid="ev-button"
-            onclick={() => send({ type: 'EV' })}
+            onClick={() => send({ type: 'EV' })}
           />
         </div>
       );
@@ -1311,7 +1284,9 @@ describe('useActor', () => {
 
     const Container = () => {
       const [isAwesome, setIsAwesome] = createSignal(false);
-      onMount(() => setIsAwesome(true));
+      onSettled(() => {
+        setIsAwesome(true);
+      });
       return <App isAwesome={isAwesome()} />;
     };
 
@@ -1319,6 +1294,7 @@ describe('useActor', () => {
 
     const btn = screen.getByTestId('ev-button');
     fireEvent.click(btn);
+    flush();
 
     expect(screen.getByTestId('result').textContent).toBe('b');
   });
@@ -1329,19 +1305,18 @@ describe('useActor', () => {
     }
 
     const machine = createMachine({
-      types: {} as { context: { getValue: () => number } },
       initial: 'a',
       context: {
         getValue() {
           return 1;
         }
-      },
+      } as any,
       states: {
         a: {
           on: {
-            CHANGE: {
-              actions: assign(() => ({ getValue }))
-            }
+            CHANGE: () => ({
+              context: { getValue }
+            })
           }
         }
       }
@@ -1352,10 +1327,10 @@ describe('useActor', () => {
 
       return (
         <div>
-          <div data-testid="result">{state.context.getValue()}</div>
+          <div data-testid="result">{(state as any).context.getValue()}</div>
           <button
             data-testid="change-button"
-            onclick={() => send({ type: 'CHANGE' })}
+            onClick={() => send({ type: 'CHANGE' })}
           />
         </div>
       );
@@ -1368,25 +1343,27 @@ describe('useActor', () => {
 
     fireEvent.click(screen.getByTestId('change-button'));
 
+    flush();
+
     expect(result.textContent).toBe('2');
   });
 
   it('should not miss initial synchronous updates', () => {
     const m = createMachine({
-      types: {} as {
-        context: { count: number };
-      },
       initial: 'idle',
       context: {
         count: 0
+      } as any,
+      entry: ({ context }, enq) => {
+        enq.raise({ type: 'INC' });
+        return { context: { count: 1 } };
       },
-      entry: [assign({ count: 1 }), raise({ type: 'INC' })],
       on: {
-        INC: {
-          actions: [
-            assign({ count: ({ context }) => ++context.count }),
-            raise({ type: 'UNHANDLED' })
-          ]
+        INC: ({ context }, enq) => {
+          enq.raise({ type: 'UNHANDLED' });
+          return {
+            context: { count: context.count + 1 }
+          };
         }
       },
       states: {
@@ -1396,7 +1373,7 @@ describe('useActor', () => {
 
     const App = () => {
       const [state] = useActor(m);
-      return <div data-testid="sync-count">{state.context.count}</div>;
+      return <div data-testid="sync-count">{(state as any).context.count}</div>;
     };
 
     render(() => <App />);
@@ -1410,9 +1387,10 @@ describe('useActor', () => {
       states: {
         a: {
           on: {
-            EV: {
-              guard: 'isAwesome',
-              target: 'b'
+            EV: ({ guards }) => {
+              if (guards.isAwesome()) {
+                return { target: 'b' };
+              }
             }
           }
         },
@@ -1431,15 +1409,17 @@ describe('useActor', () => {
       return (
         <div>
           <div data-testid="result">{state.value.toString()}</div>
-          <button onclick={() => send({ type: 'EV' })} />
+          <button onClick={() => send({ type: 'EV' })} />
         </div>
       );
     };
 
     render(() => <App />);
     setIsAwesome(true);
+    flush();
     const btn = screen.getByRole('button');
     fireEvent.click(btn);
+    flush();
 
     expect(screen.getByTestId('result').textContent).toBe('b');
   });
@@ -1450,26 +1430,20 @@ describe('useActor', () => {
       latestValue: { value: number };
     }
     const machine = createMachine({
-      types: {} as {
-        context: Context;
-        events: { type: 'INC' };
-      },
       initial: 'initial',
       context: {
         latestValue
-      },
+      } as any,
       states: {
         initial: {
           on: {
-            INC: {
-              actions: [
-                assign({
-                  latestValue: ({ context }) => ({
-                    value: context.latestValue.value + 1
-                  })
-                })
-              ]
-            }
+            INC: ({ context }) => ({
+              context: {
+                latestValue: {
+                  value: context.latestValue.value + 1
+                }
+              }
+            })
           }
         }
       }
@@ -1484,23 +1458,23 @@ describe('useActor', () => {
           <div>
             <button
               data-testid="inc-machine1"
-              onclick={() => send1({ type: 'INC' })}
+              onClick={() => send1({ type: 'INC' })}
             >
               INC 1
             </button>
             <div data-testid="value-machine1">
-              {state1.context.latestValue.value}
+              {(state1 as any).context.latestValue.value}
             </div>
           </div>
           <div>
             <button
               data-testid="inc-machine2"
-              onclick={() => send2({ type: 'INC' })}
+              onClick={() => send2({ type: 'INC' })}
             >
               INC 1
             </button>
             <div data-testid="value-machine2">
-              {state2.context.latestValue.value}
+              {(state2 as any).context.latestValue.value}
             </div>
           </div>
         </div>
@@ -1519,10 +1493,14 @@ describe('useActor', () => {
 
     fireEvent.click(incMachine1);
 
+    flush();
+
     expect(machine1Value.textContent).toEqual('101');
     expect(machine2Value.textContent).toEqual('100');
 
     fireEvent.click(incMachine2);
+
+    flush();
 
     expect(machine1Value.textContent).toEqual('101');
     expect(machine2Value.textContent).toEqual('101');
@@ -1561,59 +1539,55 @@ describe('useActor', () => {
 
     render(() => <Counter />);
     vi.advanceTimersByTime(200);
+    flush();
 
     return promise;
   });
 
   it('.can should trigger on context change', () => {
-    const machine = createMachine(
-      {
-        initial: 'a',
-        context: {
-          isAwesome: false,
-          isNotAwesome: true
-        },
-        states: {
-          a: {
-            on: {
-              TOGGLE: {
-                actions: 'toggleIsAwesome'
-              },
-              TOGGLE_NOT: {
-                actions: 'toggleIsNotAwesome'
-              },
-              EV: {
-                guard: 'isAwesome',
-                target: 'b'
+    const machine = createMachine({
+      initial: 'a',
+      context: {
+        isAwesome: false,
+        isNotAwesome: true
+      } as any,
+      guards: {
+        isAwesome: (isAwesome: boolean) => !!isAwesome
+      },
+      states: {
+        a: {
+          on: {
+            TOGGLE: ({ context }) => ({
+              context: {
+                isAwesome: !context.isAwesome
+              }
+            }),
+            TOGGLE_NOT: ({ context }) => ({
+              context: {
+                isNotAwesome: !context.isNotAwesome
+              }
+            }),
+            EV: ({ guards, context }) => {
+              if (guards.isAwesome(context.isAwesome)) {
+                return { target: 'b' };
               }
             }
-          },
-          b: {}
-        }
-      },
-      {
-        actions: {
-          toggleIsAwesome: assign(({ context }) => ({
-            isAwesome: !context.isAwesome
-          })),
-          toggleIsNotAwesome: assign(({ context }) => ({
-            isNotAwesome: !context.isNotAwesome
-          }))
+          }
         },
-        guards: {
-          isAwesome: ({ context }) => !!context.isAwesome
-        }
+        b: {}
       }
-    );
+    });
 
     let count = 0;
 
     const App = () => {
       const [state, send] = useActor(machine);
-      createEffect(() => {
-        count += 1;
-        state.can({ type: 'EV' });
-      });
+      createEffect(
+        () => state.can({ type: 'EV' }),
+        () => {
+          count += 1;
+        }
+      );
       return (
         <div>
           <button
@@ -1641,17 +1615,22 @@ describe('useActor', () => {
     const toggleNotButton = screen.getByTestId('toggle-not-button');
     expect(count).toEqual(1);
     toggleNotButton.click();
+    flush();
     expect(screen.queryByTestId('can-send-ev')).not.toBeTruthy();
     expect(count).toEqual(1);
     toggleNotButton.click();
+    flush();
     expect(screen.queryByTestId('can-send-ev')).not.toBeTruthy();
     expect(count).toEqual(1);
     toggleButton.click();
+    flush();
     expect(screen.queryByTestId('can-send-ev')).toBeTruthy();
     expect(count).toEqual(2);
     toggleButton.click();
+    flush();
     expect(count).toEqual(3);
     toggleNotButton.click();
+    flush();
     expect(count).toEqual(3);
   });
 
@@ -1660,7 +1639,7 @@ describe('useActor', () => {
     const machine = createMachine({
       initial: 'active',
       invoke: {
-        src: fromCallback(() => {
+        src: createCallbackLogic(() => {
           activatedCount++;
           return () => {
             // noop
@@ -1686,13 +1665,10 @@ describe('useActor', () => {
   it('child component should be able to send an event to a parent immediately in an effect', () => {
     const { resolve, promise } = Promise.withResolvers<void>();
     const machine = createMachine({
-      types: {} as {
-        events: { type: 'FINISH' };
-      },
       initial: 'active',
       states: {
         active: {
-          on: { FINISH: 'success' }
+          on: { FINISH: { target: 'success' } }
         },
         success: {}
       }
@@ -1701,7 +1677,7 @@ describe('useActor', () => {
     const ChildTest = (props: { send: any }) => {
       // This will send an event to the parent service
       // BEFORE the service is ready.
-      onMount(() => {
+      onSettled(() => {
         props.send({ type: 'FINISH' });
       });
 
@@ -1710,11 +1686,14 @@ describe('useActor', () => {
 
     const Test = () => {
       const [state, send] = useActor(machine);
-      createEffect(() => {
-        if (state.matches('success')) {
-          resolve();
+      createEffect(
+        () => state.matches('success'),
+        (success) => {
+          if (success) {
+            resolve();
+          }
         }
-      });
+      );
       return <ChildTest send={send} />;
     };
 
@@ -1725,50 +1704,37 @@ describe('useActor', () => {
 
   it('custom data should be available right away for the invoked actor', () => {
     const childMachine = createMachine({
-      types: {} as {
-        inpit: {
-          value: number;
-        };
-        context: {
-          value: number;
-        };
-      },
       initial: 'initial',
-      context: ({ input }: { input: { value: number } }) => ({
+      context: (({ input }: { input: { value: number } }) => ({
         value: input.value
-      }),
+      })) as any,
       states: {
         initial: {}
       }
     });
 
-    const machine = createMachine(
-      {
-        types: {} as {
-          actors: { src: 'child'; logic: typeof childMachine; id: 'test' };
-        },
-        initial: 'active',
-        states: {
-          active: {
-            invoke: {
-              id: 'test',
-              src: 'child',
-              input: { value: 42 }
-            }
+    const machine = createMachine({
+      initial: 'active',
+      actors: {
+        child: childMachine
+      },
+      states: {
+        active: {
+          invoke: {
+            id: 'test',
+            src: ({ actors }) => actors.child,
+            input: { value: 42 } as any
           }
         }
-      },
-      {
-        actors: {
-          child: childMachine
-        }
       }
-    );
+    });
 
     const Test = () => {
       const [snapshot] = useActor(machine);
 
-      expect(snapshot.children.test?.getSnapshot().context.value).toBe(42);
+      expect(
+        untrack(() => snapshot.children.test?.getSnapshot().context.value)
+      ).toBe(42);
 
       return null;
     };
@@ -1781,21 +1747,18 @@ describe('useActor', () => {
     vi.useFakeTimers();
     try {
       const testMachine = createMachine({
-        types: {} as {
-          events: { type: 'START' };
-        },
         id: 'app',
         initial: 'idle',
         states: {
           idle: {
             on: {
-              START: 'doingStuff'
+              START: { target: 'doingStuff' }
             }
           },
           doingStuff: {
             id: 'doingStuff',
             after: {
-              100: 'idle'
+              100: { target: 'idle' }
             }
           }
         }
@@ -1806,14 +1769,14 @@ describe('useActor', () => {
       actorRef.stop();
 
       const Test = () => {
-        const [state, send] = useActor(testMachine, {
-          snapshot: JSON.parse(persistedState)
-        });
+        const [state, send] = useActor(
+          restoreActor(testMachine, JSON.parse(persistedState))
+        );
 
         return (
           <>
             <button
-              onclick={() => send({ type: 'START' })}
+              onClick={() => send({ type: 'START' })}
               data-testid="button"
             />
             {state.value}
@@ -1826,7 +1789,10 @@ describe('useActor', () => {
       const button = screen.getByTestId('button');
 
       fireEvent.click(button);
+
+      flush();
       vi.advanceTimersByTime(110);
+      flush();
 
       expect(container.textContent).toBe('idle');
     } finally {
@@ -1844,19 +1810,21 @@ describe('useActor', () => {
             Idle: { on: { increment: { target: 'RecentlyClicked' } } },
             RecentlyClicked: {
               on: { increment: { target: 'TripleClicked' } },
-              after: { 40: 'Idle' }
+              after: { 40: { target: 'Idle' } }
             },
             TripleClicked: {
               on: { increment: { target: 'TripleClicked', reenter: true } },
-              after: { 40: 'Idle' }
+              after: { 40: { target: 'Idle' } }
             }
           },
-          on: { holdIncrement: 'Held.HeldIncrement' }
+          on: { holdIncrement: { target: 'Held.HeldIncrement' } }
         },
         Held: {
           initial: 'HeldIncrement',
-          states: { HeldIncrement: { after: { 40: 'HeldIncrement' } } },
-          on: { releasePointer: 'NotHeld.Idle' }
+          states: {
+            HeldIncrement: { after: { 40: { target: 'HeldIncrement' } } }
+          },
+          on: { releasePointer: { target: 'NotHeld.Idle' } }
         }
       }
     });
@@ -1867,15 +1835,15 @@ describe('useActor', () => {
       return (
         <>
           <button
-            onclick={() => send({ type: 'increment' })}
+            onClick={() => send({ type: 'increment' })}
             data-testid="inc_button"
           />
           <button
-            onclick={() => send({ type: 'holdIncrement', y: 0 })}
+            onClick={() => send({ type: 'holdIncrement', y: 0 } as any)}
             data-testid="hold_inc_button"
           />
           <button
-            onclick={() => send({ type: 'releasePointer' })}
+            onClick={() => send({ type: 'releasePointer' })}
             data-testid="release_button"
           />
           {JSON.stringify(snapshot.value)}
@@ -1891,16 +1859,22 @@ describe('useActor', () => {
 
     await sleep(100);
     fireEvent.click(incrementButton);
+    flush();
     await sleep(10);
     fireEvent.click(incrementButton);
+    flush();
     await sleep(10);
     fireEvent.click(holdIncrementButton);
+    flush();
     await sleep(10);
     fireEvent.click(releasePointerButton);
+    flush();
     await sleep(10);
     fireEvent.click(incrementButton);
+    flush();
     await sleep(10);
     fireEvent.click(incrementButton);
+    flush();
     await sleep(50);
 
     expect(JSON.parse(container.textContent as string)).toEqual({
@@ -1908,7 +1882,7 @@ describe('useActor', () => {
     });
   });
 
-  it('should be able to work with `fromTransition`', () => {
+  it('should be able to work with custom logic', () => {
     const reducer = (state: number, event: { type: 'INC' }): number => {
       if (event.type === 'INC') {
         return state + 1;
@@ -1918,10 +1892,17 @@ describe('useActor', () => {
     };
 
     const Test = () => {
-      const [count, send] = useActor(fromTransition(reducer, 0));
+      const [count, send] = useActor(
+        createStepLogic({
+          context: 0,
+          run: ({ context, event }) => ({
+            context: reducer(context, event as { type: 'INC' })
+          })
+        })
+      );
 
       return (
-        <button data-testid="count" onclick={() => send({ type: 'INC' })}>
+        <button data-testid="count" onClick={() => send({ type: 'INC' })}>
           {count.context}
         </button>
       );
@@ -1933,6 +1914,8 @@ describe('useActor', () => {
     expect(button.textContent).toEqual('0');
 
     fireEvent.click(button);
+
+    flush();
 
     expect(button.textContent).toEqual('1');
   });

@@ -21,6 +21,16 @@ import {
 	AlertDialogTitle,
 } from "./ui/confirm-dialog";
 
+// Board-owned header controls: quiet at rest, full contrast when the column is
+// hovered or holds focus, and always on touch, where there is no hover.
+const columnButton = cn(
+	"grid size-7 place-items-center rounded-md text-muted-foreground opacity-45 max-sm:size-8",
+	"transition-[opacity,background-color,color,transform] duration-150",
+	"hover:bg-foreground/[0.06] hover:text-foreground active:scale-95",
+	"group-hover/column:opacity-100 group-focus-within/column:opacity-100 pointer-coarse:opacity-100",
+	"focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+);
+
 export interface TodoColumnProps {
 	column: BoardColumn;
 	onRemove?: (column: BoardColumn) => void;
@@ -79,38 +89,38 @@ export function TodoColumn({
 		onToggleCollapse?.(column);
 	};
 
-	// Collapsed state: narrow column with just drag handle and expand button
+	// Collapsed state: a full-height rail. The expand button's ::after covers
+	// the whole rail, so a click anywhere expands it; the grip sits above it.
 	if (column.collapsed) {
 		return (
 			<div
 				ref={setNodeRef}
 				style={style}
 				className={cn(
-					"flex h-full w-10 flex-shrink-0 flex-col border-r border-border bg-background",
-					isDragging && "opacity-50"
+					"group/column relative flex h-full w-10 shrink-0 flex-col items-center gap-1 border-r border-hairline bg-background py-1.5",
+					"transition-colors hover:bg-foreground/[0.025]",
+					isDragging && "z-10 shadow-pop outline-1 outline-brand/40"
 				)}
 			>
-				<div className="flex flex-col w-10 items-center gap-1 border-b border-border bg-muted/30 py-2">
-					{/* Drag handle */}
-					<button
-						aria-label="Reorder column"
-						className="cursor-grab rounded p-1 hover:bg-muted active:cursor-grabbing"
-						{...attributes}
-						{...listeners}
-					>
-						<GripVerticalIcon className="h-4 w-4 text-muted-foreground" />
-					</button>
-					{/* Expand button */}
-					<button
-						onClick={handleToggleCollapse}
-						type="button"
-						aria-label="Expand column"
-						className="rounded p-1 hover:bg-muted"
-						title="Expand column"
-					>
-						<ChevronRightIcon className="h-4 w-4 text-muted-foreground" />
-					</button>
-				</div>
+				{/* Drag handle */}
+				<button
+					aria-label="Reorder column"
+					className={cn(columnButton, "relative z-10 cursor-grab active:cursor-grabbing")}
+					{...attributes}
+					{...listeners}
+				>
+					<GripVerticalIcon className="size-4" />
+				</button>
+				{/* Expand button */}
+				<button
+					onClick={handleToggleCollapse}
+					type="button"
+					aria-label="Expand column"
+					className={cn(columnButton, "after:absolute after:inset-0 after:content-['']")}
+					title="Expand column"
+				>
+					<ChevronRightIcon className="size-4" />
+				</button>
 			</div>
 		);
 	}
@@ -120,41 +130,42 @@ export function TodoColumn({
 			ref={setNodeRef}
 			style={style}
 			className={cn(
-				"flex h-full w-80 flex-shrink-0 flex-col border-r border-border bg-background",
-				isDragging && "opacity-50"
+				"group/column flex h-full w-80 shrink-0 flex-col border-r border-hairline bg-background max-sm:w-[calc(100vw-2.5rem)]",
+				isDragging && "relative z-10 shadow-pop outline-1 outline-brand/40"
 			)}
 		>
 			{/* Column header with drag handle, collapse, share, presence, and delete */}
-			<div className="flex h-10 flex-shrink-0 items-start justify-between border-b border-border bg-muted/30 px-2 py-2">
-				<div className="flex items-center gap-1">
+			<div className="flex h-10 shrink-0 items-center justify-between border-b border-hairline bg-transparent px-1.5">
+				<div className="flex items-center gap-0.5">
 					{/* Drag handle */}
 					<button
 						aria-label="Reorder column"
-						className="cursor-grab rounded p-1 hover:bg-muted active:cursor-grabbing"
+						className={cn(columnButton, "cursor-grab active:cursor-grabbing")}
 						{...attributes}
 						{...listeners}
 					>
-						<GripVerticalIcon className="h-4 w-4 text-muted-foreground" />
+						<GripVerticalIcon className="size-4" />
 					</button>
 					{/* Collapse button */}
 					<button
 						onClick={handleToggleCollapse}
 						type="button"
 						aria-label="Collapse column"
-						className="rounded p-1 hover:bg-muted"
+						className={columnButton}
 						title="Collapse column"
 					>
-						<ChevronLeftIcon className="h-4 w-4 text-muted-foreground" />
+						<ChevronLeftIcon className="size-4" />
 					</button>
 					{column.label && (
-						<span className="text-xs text-muted-foreground px-1">
+						<span className="px-1 text-xs text-muted-foreground">
 							{column.label}
 						</span>
 					)}
 				</div>
 
 				<div className="flex items-center gap-1">
-					{renderActions?.(column)}
+					{/* Host actions stay at full contrast: status, presence, agents. */}
+					<div className="flex items-center gap-1">{renderActions?.(column)}</div>
 
 					{/* Delete/Hide button */}
 					{removal !== "none" && (
@@ -166,9 +177,9 @@ export function TodoColumn({
 								aria-haspopup={removal === "delete" ? "dialog" : undefined}
 								aria-expanded={removal === "delete" ? confirmOpen : undefined}
 								onClick={handleRemoveClick}
-								className="rounded p-1 hover:bg-muted"
+								className={columnButton}
 							>
-								<XIcon className="h-4 w-4 text-muted-foreground" />
+								<XIcon className="size-4" />
 							</button>
 							{removal === "delete" && (
 								<AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
@@ -213,7 +224,7 @@ function GripVerticalIcon({ className }: { className?: string }) {
 			viewBox="0 0 24 24"
 			fill="none"
 			stroke="currentColor"
-			strokeWidth="2"
+			strokeWidth="1.75"
 			strokeLinecap="round"
 			strokeLinejoin="round"
 			className={className}
@@ -235,7 +246,7 @@ function XIcon({ className }: { className?: string }) {
 			viewBox="0 0 24 24"
 			fill="none"
 			stroke="currentColor"
-			strokeWidth="2"
+			strokeWidth="1.75"
 			strokeLinecap="round"
 			strokeLinejoin="round"
 			className={className}
@@ -253,7 +264,7 @@ function ChevronLeftIcon({ className }: { className?: string }) {
 			viewBox="0 0 24 24"
 			fill="none"
 			stroke="currentColor"
-			strokeWidth="2"
+			strokeWidth="1.75"
 			strokeLinecap="round"
 			strokeLinejoin="round"
 			className={className}
@@ -270,7 +281,7 @@ function ChevronRightIcon({ className }: { className?: string }) {
 			viewBox="0 0 24 24"
 			fill="none"
 			stroke="currentColor"
-			strokeWidth="2"
+			strokeWidth="1.75"
 			strokeLinecap="round"
 			strokeLinejoin="round"
 			className={className}

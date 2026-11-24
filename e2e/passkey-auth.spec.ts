@@ -108,6 +108,7 @@ test("reconnects with a real passkey after expiry and preserves queued metadata 
 
 	await context.setOffline(true);
 	await page.evaluate(() => window.dispatchEvent(new Event("offline")));
+	await expect.poll(async () => (await getSyncStateSnapshot(page, accountId))?.mode).toBe("account_offline");
 	await editor.click();
 	await page.keyboard.press("ControlOrMeta+End");
 	await page.keyboard.type(" - queued while offline");

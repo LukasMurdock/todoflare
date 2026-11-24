@@ -34,7 +34,7 @@ function List(props: SlateRenderElementProps) {
 
   return (
     <List
-      className="relative m-0 p-0"
+      className="relative m-0 p-0 tabular-nums marker:text-muted-foreground/70"
       style={{ listStyleType }}
       start={listStart}
     >
@@ -50,7 +50,7 @@ function TodoMarkerStatic(props: SlateRenderElementProps) {
   return (
     <div contentEditable={false}>
       <Checkbox
-        className="-left-5 absolute top-[3px] pointer-events-none"
+        className="-left-4 absolute top-[calc(0.5lh-0.5rem)] pointer-events-none"
         checked={Boolean(props.element.checked)}
         tabIndex={-1}
         aria-hidden
@@ -63,9 +63,10 @@ function TodoLiStatic(props: SlateRenderElementProps) {
   return (
     <li
       className={cn(
-        'list-none',
-        (props.element.checked as boolean) &&
-          'text-muted-foreground line-through'
+        'list-none pl-2 line-through decoration-[1.5px] transition-[color,text-decoration-color] duration-200 ease-out',
+        (props.element.checked as boolean)
+          ? 'text-muted-foreground decoration-muted-foreground/60'
+          : 'decoration-transparent'
       )}
     >
       {props.children}

@@ -21,12 +21,19 @@
 // split the shared class-name helpers into their own chunk, saving 0.3 KiB on
 // first load and adding 1.1 KiB in total. Measured total 423.5 KiB; budget
 // 423 → 426.
+//
+// The dependency refresh measured 436.4 KiB gzip with Plate 53.5 and Vite
+// 8.3.8. Budget 426 → 439.
+// The XState 6 beta migration measured 452.6 KiB gzip. Budget 439 → 456.
+// The UI design hill-climb (structured account/agent/OAuth/public surfaces,
+// welcome callout ResizeObserver, and styled native selects) measured 462.1 KiB
+// gzip. Budget 456 → 468.
 
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 
-const BUDGET_GZIP_KIB = 426;
+const BUDGET_GZIP_KIB = 468;
 const dir = process.argv[2] ?? "dist/client/assets";
 const files = readdirSync(dir).filter((file) => file.endsWith(".js"));
 if (files.length === 0) throw new Error(`No JavaScript in ${dir}; build first.`);

@@ -9,6 +9,7 @@ const noop = () => {
   /* ... */
 };
 
+/** @public */
 export function useSelector<
   TActor extends Pick<AnyActorRef, 'getSnapshot' | 'subscribe'> | undefined,
   T
@@ -41,7 +42,9 @@ export function useSelector<
         next: (emitted) => {
           updateSelectedIfChanged(selector(emitted));
         },
-        error: noop,
+        error: () => {
+          updateSelectedIfChanged(selector(newActor.getSnapshot()));
+        },
         complete: noop
       });
       onCleanup(() => sub.unsubscribe());

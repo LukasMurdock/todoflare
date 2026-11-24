@@ -1,6 +1,6 @@
 import { AGENT_GRANT_LEVELS, type AgentGrantLevel } from "@/lib/api/agent-contract";
 import { AGENT_LEVEL_DESCRIPTIONS, AGENT_LEVEL_LABELS } from "@/lib/agents/agents-api";
-import { cn } from "@/lib/utils";
+import { NativeSelect } from "@/components/ui/native-select";
 
 interface AgentLevelSelectProps {
 	value: AgentGrantLevel | null;
@@ -12,15 +12,19 @@ interface AgentLevelSelectProps {
 	className?: string;
 }
 
+/** A dot marks the levels that let an agent write. */
+export function levelDot(level: AgentGrantLevel | "none" | null | undefined): string | false {
+	return level === "append" || level === "edit" ? "bg-brand" : false;
+}
+
 export function AgentLevelSelect({ value, onChange, disabled, allowNone = true, label, className }: AgentLevelSelectProps) {
 	return (
-		<select
+		<NativeSelect
 			aria-label={label}
 			title={value ? AGENT_LEVEL_DESCRIPTIONS[value] : "No access"}
-			className={cn(
-				"h-8 rounded-md border border-input bg-background px-2 text-sm shadow-xs focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none disabled:opacity-50",
-				className,
-			)}
+			wrapperClassName={className ?? "w-[7.25rem]"}
+			dot={levelDot(value)}
+			className={value ? "w-full" : "w-full text-muted-foreground"}
 			value={value ?? ""}
 			disabled={disabled}
 			onChange={(event) => onChange(event.target.value === "" ? null : (event.target.value as AgentGrantLevel))}
@@ -31,6 +35,6 @@ export function AgentLevelSelect({ value, onChange, disabled, allowNone = true, 
 					{AGENT_LEVEL_LABELS[level]}
 				</option>
 			))}
-		</select>
+		</NativeSelect>
 	);
 }

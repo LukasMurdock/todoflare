@@ -1,32 +1,34 @@
 import { createMachine, createActor } from '../src/index';
-import { assign } from '../src/actions/assign';
-import { fromCallback } from '../src/actors/callback';
-
-type Events =
-  | { type: 'BAR_EVENT' }
-  | { type: 'DEEP_EVENT' }
-  | { type: 'EXTERNAL' }
-  | { type: 'FOO_EVENT' }
-  | { type: 'FORBIDDEN_EVENT' }
-  | { type: 'INERT' }
-  | { type: 'INTERNAL' }
-  | { type: 'MACHINE_EVENT' }
-  | { type: 'P31' }
-  | { type: 'P32' }
-  | { type: 'THREE_EVENT' }
-  | { type: 'TO_THREE' }
-  | { type: 'TO_TWO'; foo: string }
-  | { type: 'TO_TWO_MAYBE' }
-  | { type: 'TO_FINAL' };
+import { createCallbackLogic } from '../src/actors/callback';
+import { z } from 'zod';
+import { restoreActor } from '../src/persist/index.ts';
 
 const exampleMachine = createMachine({
-  types: {} as {
-    events: Events;
+  // types: {} as {
+  //   events: Events;
+  // },
+  schemas: {
+    events: {
+      BAR_EVENT: z.object({}),
+      DEEP_EVENT: z.object({}),
+      EXTERNAL: z.object({}),
+      FOO_EVENT: z.object({}),
+      FORBIDDEN_EVENT: z.object({}),
+      INERT: z.object({}),
+      INTERNAL: z.object({}),
+      MACHINE_EVENT: z.object({}),
+      P31: z.object({}),
+      P32: z.object({}),
+      THREE_EVENT: z.object({}),
+      TO_THREE: z.object({}),
+      TO_TWO: z.object({ foo: z.string() }),
+      TO_TWO_MAYBE: z.object({}),
+      TO_FINAL: z.object({})
+    }
   },
   initial: 'one',
   states: {
     one: {
-      entry: ['enter'],
       on: {
         EXTERNAL: {
           target: 'one',
@@ -34,18 +36,17 @@ const exampleMachine = createMachine({
         },
         INERT: {},
         INTERNAL: {
-          actions: ['doSomething']
+          // actions: ['doSomething']
         },
-        TO_TWO: 'two',
-        TO_TWO_MAYBE: {
-          target: 'two',
-          guard: function maybe() {
-            return true;
+        TO_TWO: { target: 'two' },
+        TO_TWO_MAYBE: () => {
+          if (true) {
+            return { target: 'two' };
           }
         },
-        TO_THREE: 'three',
+        TO_THREE: { target: 'three' },
         FORBIDDEN_EVENT: undefined,
-        TO_FINAL: 'success'
+        TO_FINAL: { target: 'success' }
       }
     },
     two: {
@@ -56,20 +57,20 @@ const exampleMachine = createMachine({
           states: {
             foo: {
               on: {
-                FOO_EVENT: 'bar',
+                FOO_EVENT: { target: 'bar' },
                 FORBIDDEN_EVENT: undefined
               }
             },
             bar: {
               on: {
-                BAR_EVENT: 'foo'
+                BAR_EVENT: { target: 'foo' }
               }
             }
           }
         }
       },
       on: {
-        DEEP_EVENT: '.'
+        DEEP_EVENT: { target: '.' }
       }
     },
     three: {
@@ -79,7 +80,7 @@ const exampleMachine = createMachine({
           initial: 'p31',
           states: {
             p31: {
-              on: { P31: '.' }
+              on: { P31: { target: '.' } }
             }
           }
         },
@@ -87,13 +88,13 @@ const exampleMachine = createMachine({
           initial: 'p32',
           states: {
             p32: {
-              on: { P32: '.' }
+              on: { P32: { target: '.' } }
             }
           }
         }
       },
       on: {
-        THREE_EVENT: '.'
+        THREE_EVENT: { target: '.' }
       }
     },
     success: {
@@ -101,11 +102,18 @@ const exampleMachine = createMachine({
     }
   },
   on: {
-    MACHINE_EVENT: '.two'
+    MACHINE_EVENT: { target: '.two' }
   }
 });
 
 describe('State', () => {
+  it('should expose active state nodes as nodes', () => {
+    const snapshot = createActor(exampleMachine).getSnapshot();
+
+    expect(snapshot.nodes.map((node) => node.id)).toEqual(['', 'one']);
+    expect('_nodes' in snapshot).toBe(false);
+  });
+
   describe('status', () => {
     it('should show that a machine has not reached its final state', () => {
       expect(createActor(exampleMachine).getSnapshot().status).not.toBe('done');
@@ -125,7 +133,7 @@ describe('State', () => {
         states: {
           a: {
             on: {
-              NEXT: 'b'
+              NEXT: { target: 'b' }
             }
           },
           b: {}
@@ -143,7 +151,7 @@ describe('State', () => {
         states: {
           a: {
             on: {
-              NEXT: 'b'
+              NEXT: { target: 'b' }
             }
           },
           b: {}
@@ -156,13 +164,14 @@ describe('State', () => {
     });
 
     it('should return true for an event object that results in a new action', () => {
+      const newAction = () => {};
       const machine = createMachine({
         initial: 'a',
         states: {
           a: {
             on: {
-              NEXT: {
-                actions: 'newAction'
+              NEXT: (_, enq) => {
+                enq(newAction);
               }
             }
           }
@@ -176,13 +185,22 @@ describe('State', () => {
 
     it('should return true for an event object that results in a context change', () => {
       const machine = createMachine({
+        schemas: {
+          context: z.object({
+            count: z.number()
+          })
+        },
         initial: 'a',
         context: { count: 0 },
         states: {
           a: {
             on: {
-              NEXT: {
-                actions: assign({ count: 1 })
+              NEXT: () => {
+                return {
+                  context: {
+                    count: 1
+                  }
+                };
               }
             }
           }
@@ -200,7 +218,7 @@ describe('State', () => {
         states: {
           a: {
             on: {
-              EV: 'a'
+              EV: { target: 'a' }
             }
           }
         }
@@ -216,7 +234,7 @@ describe('State', () => {
           a: {
             entry: () => {},
             on: {
-              EV: 'a'
+              EV: { target: 'a' }
             }
           }
         }
@@ -231,9 +249,9 @@ describe('State', () => {
         states: {
           a: {
             on: {
-              EV: {
-                target: 'a',
-                actions: () => {}
+              EV: (_, enq) => {
+                enq(() => {});
+                return { target: 'a' };
               }
             }
           }
@@ -249,8 +267,8 @@ describe('State', () => {
         states: {
           a: {
             on: {
-              EV: {
-                actions: () => {}
+              EV: (_, enq) => {
+                enq(() => {});
               }
             }
           }
@@ -283,7 +301,7 @@ describe('State', () => {
         states: {
           a: {
             on: {
-              NEXT: 'b'
+              NEXT: { target: 'b' }
             }
           },
           b: {}
@@ -301,9 +319,10 @@ describe('State', () => {
         states: {
           a: {
             on: {
-              CHECK: {
-                target: 'b',
-                guard: () => true
+              CHECK: () => {
+                if (true) {
+                  return { target: 'b' };
+                }
               }
             }
           },
@@ -324,9 +343,10 @@ describe('State', () => {
         states: {
           a: {
             on: {
-              CHECK: {
-                target: 'b',
-                guard: () => false
+              CHECK: () => {
+                if (1 + 1 !== 2) {
+                  return { target: 'b' };
+                }
               }
             }
           },
@@ -344,19 +364,26 @@ describe('State', () => {
     it('should not spawn actors when determining if an event is accepted', () => {
       let spawned = false;
       const machine = createMachine({
+        schemas: {
+          context: z.object({
+            ref: z.any()
+          })
+        },
         context: {},
         initial: 'a',
         states: {
           a: {
             on: {
-              SPAWN: {
-                actions: assign(({ spawn }) => ({
-                  ref: spawn(
-                    fromCallback(() => {
-                      spawned = true;
-                    })
-                  )
-                }))
+              SPAWN: (_, enq) => {
+                return {
+                  context: {
+                    ref: enq.spawn(
+                      createCallbackLogic(() => {
+                        spawned = true;
+                      })
+                    )
+                  }
+                };
               }
             }
           },
@@ -369,17 +396,12 @@ describe('State', () => {
       expect(spawned).toBe(false);
     });
 
-    it('should not execute assignments when used with non-started actor', () => {
+    it('should not execute actions when used with non-started actor', () => {
       let executed = false;
       const machine = createMachine({
-        context: {},
         on: {
-          EVENT: {
-            actions: assign((ctx) => {
-              // Side-effect just for testing
-              executed = true;
-              return ctx;
-            })
+          EVENT: (_, enq) => {
+            enq(() => (executed = true));
           }
         }
       });
@@ -391,17 +413,12 @@ describe('State', () => {
       expect(executed).toBeFalsy();
     });
 
-    it('should not execute assignments when used with started actor', () => {
+    it('should not execute actions when used with started actor', () => {
       let executed = false;
       const machine = createMachine({
-        context: {},
         on: {
-          EVENT: {
-            actions: assign((ctx) => {
-              // Side-effect just for testing
-              executed = true;
-              return ctx;
-            })
+          EVENT: (_, enq) => {
+            enq(() => (executed = true));
           }
         }
       });
@@ -456,12 +473,12 @@ describe('State', () => {
             states: {
               a1: {
                 on: {
-                  NEXT: 'a2'
+                  NEXT: { target: 'a2' }
                 }
               },
               a2: {
                 on: {
-                  NEXT: '#foo'
+                  NEXT: { target: '#foo' }
                 }
               }
             }
@@ -482,7 +499,7 @@ describe('State', () => {
         initial: 'a',
         states: {
           a: {
-            tags: 'foo'
+            tags: ['foo']
           }
         }
       });
@@ -490,9 +507,10 @@ describe('State', () => {
       const actorRef = createActor(machine).start();
       const persistedState = actorRef.getPersistedSnapshot();
       actorRef.stop();
-      const restoredSnapshot = createActor(machine, {
-        snapshot: persistedState
-      }).getSnapshot();
+      const restoredSnapshot = restoreActor(
+        machine,
+        persistedState
+      ).getSnapshot();
 
       expect(restoredSnapshot.hasTag('foo')).toBe(true);
     });
@@ -507,4 +525,69 @@ describe('State', () => {
       expect(snapshot.status).toBe('stopped');
     });
   });
+});
+
+it.each(['__proto__', 'constructor', 'toString'])(
+  'transitions from a state named %s in a JSON config',
+  (key) => {
+    const machine = createMachine(
+      JSON.parse(
+        JSON.stringify({
+          initial: key,
+          states: {
+            [key]: { on: { GO: { target: 'done' } } },
+            done: { type: 'final' }
+          }
+        })
+      )
+    );
+    const actor = createActor(machine);
+    const error = vi.fn();
+    actor.subscribe({ error });
+    actor.start();
+    expect(Object.hasOwn(machine.root.states, key)).toBe(true);
+    actor.send({ type: 'GO' });
+    expect(actor.getSnapshot().status).toBe('done');
+    expect(error).not.toHaveBeenCalled();
+  }
+);
+
+it.each(['done', 'error', 'stopped'] as const)(
+  'can() rejects events on %s snapshots without evaluating transitions',
+  (status) => {
+    const evaluate = vi.fn(() => {
+      throw new Error('must not run');
+    });
+    const machine = createMachine({ on: { GO: evaluate } });
+    const snapshot = createActor(machine).getSnapshot();
+    const terminal = { ...snapshot, status };
+    expect(terminal.can({ type: 'GO' })).toBe(false);
+    expect(evaluate).not.toHaveBeenCalled();
+  }
+);
+
+it('can() propagates evaluation errors without invoking state error recovery', () => {
+  const error = new Error('guard failed');
+  const recover = vi.fn(() => ({ target: 'recovered' }));
+  const machine = createMachine({
+    initial: 'idle',
+    states: {
+      idle: {
+        on: {
+          GO: () => {
+            throw error;
+          }
+        },
+        onError: recover
+      },
+      recovered: {}
+    }
+  });
+  const actor = createActor(machine).start();
+  expect(() => actor.getSnapshot().can({ type: 'GO' })).toThrow(error);
+  expect(actor.getSnapshot().value).toBe('idle');
+  expect(recover).not.toHaveBeenCalled();
+  actor.send({ type: 'GO' });
+  expect(actor.getSnapshot().value).toBe('recovered');
+  actor.stop();
 });

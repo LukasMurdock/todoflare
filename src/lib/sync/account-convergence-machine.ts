@@ -1,4 +1,4 @@
-import { assign, fromPromise, setup } from "xstate";
+import { createAsyncLogic, setup, types } from "xstate";
 import { normalizeAccountId } from "../account";
 import {
 	applyAccountCommand,
@@ -11,7 +11,10 @@ import { summarizeReplayReport } from "./account-command-reconciliation";
 import type { QueuedMutation, ReplayReport } from "./contracts";
 
 export type AccountConvergenceError =
-	| { scope: "auth"; kind: "invalid" | "not_found" | "reauth_required" | "server" }
+	| {
+			scope: "auth";
+			kind: "invalid" | "not_found" | "reauth_required" | "server";
+	  }
 	| { scope: "hydrate"; kind: "rate_limited" | "server" }
 	| { scope: "replay"; kind: "retryable" | "terminal" }
 	| { scope: "access"; kind: "revoked"; columnId: string };
@@ -23,7 +26,7 @@ export class AccountConvergenceFailure extends Error {
 	constructor(
 		error: AccountConvergenceError,
 		message: string,
-		retryAfterMs: number | null = null,
+		retryAfterMs: number | null = null
 	) {
 		super(message);
 		this.name = "AccountConvergenceFailure";
@@ -75,11 +78,11 @@ export type AccountConvergenceEvent =
 export interface AccountConvergenceDependencies {
 	loadLocal(
 		accountId: string,
-		signal: AbortSignal,
+		signal: AbortSignal
 	): Promise<AccountProjection | null>;
 	fetchServer(
 		accountId: string,
-		signal: AbortSignal,
+		signal: AbortSignal
 	): Promise<AccountProjection>;
 	login(accountId: string, signal: AbortSignal): Promise<AccountProjection>;
 	createAccount(signal: AbortSignal): Promise<AccountProjection>;
@@ -87,16 +90,13 @@ export interface AccountConvergenceDependencies {
 	getPending(accountId: string): QueuedMutation[];
 	getNextRetryAt(accountId: string): number | null;
 	persistCredential(accountId: string | null): void;
-	reconcileAccessLoss(
-		accountId: string,
-		columnIds: string[],
-	): Promise<void>;
+	reconcileAccessLoss(accountId: string, columnIds: string[]): Promise<void>;
 	now?: () => number;
 }
 
 function failureFromUnknown(
 	error: unknown,
-	fallback: AccountConvergenceError,
+	fallback: AccountConvergenceError
 ): AccountConvergenceError {
 	return error instanceof AccountConvergenceFailure
 		? error.convergenceError
@@ -109,7 +109,7 @@ function accountIdOrThrow(context: AccountConvergenceContext): string {
 }
 
 export function createAccountConvergenceMachine(
-	dependencies: AccountConvergenceDependencies,
+	dependencies: AccountConvergenceDependencies
 ) {
 	const now = dependencies.now ?? Date.now;
 
@@ -123,327 +123,386 @@ export function createAccountConvergenceMachine(
 
 	const projectPending = (
 		base: AccountProjection | null,
-		accountId: string | null,
+		accountId: string | null
 	) => {
 		if (!base || !accountId) return base;
 		return applyPendingCommands(base, dependencies.getPending(accountId));
 	};
 
-	return setup({
-		types: {} as {
+	const actions = {
+		beginRestoredSession: ({
+			event,
+		}: {
+			event: AccountConvergenceEvent;
+		}) => {
+			if (event.type !== "RESTORE_SESSION") return {};
+			return {
+				accountId: event.accountId,
+				authenticationStatus: "unknown" as const,
+				serverBase: null,
+				projection: null,
+				error: null,
+				lastReplayReport: null,
+				replayStartedAt: null,
+				lastReplayDurationMs: null,
+				accessLostColumnIds: [],
+				hydrationRetryAt: null,
+				hydrationFailureCount: 0,
+				replayFailureCount: 0,
+				...queueState(event.accountId),
+			};
+		},
+		setAuthCandidate: ({ event }: { event: AccountConvergenceEvent }) => ({
+			authCandidate: event.type === "LOGIN" ? event.accountId : null,
+			error: null,
+		}),
+		installAuthenticatedProjection: (projection: AccountProjection) => {
+			const accountId = projection.account.id;
+			return {
+				accountId,
+				authenticationStatus: "authenticated" as const,
+				serverBase: projection,
+				projection: projectPending(projection, accountId),
+				authCandidate: null,
+				error: null,
+				accessLostColumnIds: [],
+				replayStartedAt: null,
+				lastReplayDurationMs: null,
+				hydrationRetryAt: null,
+				hydrationFailureCount: 0,
+				replayFailureCount: 0,
+				...queueState(accountId),
+			};
+		},
+		installLocalProjection: (
+			{ context }: { context: AccountConvergenceContext },
+			local: AccountProjection | null
+		) => {
+			const base = context.serverBase ?? local;
+			return {
+				serverBase: base,
+				projection: projectPending(base, context.accountId),
+				...queueState(context.accountId),
+			};
+		},
+		installServerProjection: (
+			{ context }: { context: AccountConvergenceContext },
+			fetched: AccountProjection
+		) => {
+			const fetchedSharedIds = new Set(
+				fetched.sharedColumns.map((column) => column.id)
+			);
+			const accessLostColumnIds = (
+				context.serverBase?.sharedColumns ?? []
+			)
+				.map((column) => column.id)
+				.filter((columnId) => !fetchedSharedIds.has(columnId));
+			const base = fetched;
+			const retainedError =
+				context.error?.scope === "replay" &&
+				context.error.kind === "terminal"
+					? context.error
+					: null;
+			return {
+				serverBase: base,
+				authenticationStatus: "authenticated" as const,
+				projection: projectPending(base, context.accountId),
+				accessLostColumnIds,
+				error: retainedError,
+				hydrationRetryAt: null,
+				hydrationFailureCount: 0,
+				...queueState(context.accountId),
+			};
+		},
+		markReplayStarted: () => ({ replayStartedAt: now() }),
+		recordReplay: (
+			{ context }: { context: AccountConvergenceContext },
+			report: ReplayReport
+		) => {
+			const finishedAt = now();
+			return {
+				lastReplayReport: report,
+				lastReplayAt: finishedAt,
+				lastReplayDurationMs:
+					context.replayStartedAt === null
+						? null
+						: Math.max(0, finishedAt - context.replayStartedAt),
+				replayStartedAt: null,
+				replayFailureCount: 0,
+				...queueState(context.accountId),
+			};
+		},
+		recordReplayFailure: ({
+			context,
+		}: {
 			context: AccountConvergenceContext;
-			input: AccountConvergenceInput;
-			events: AccountConvergenceEvent;
-			actions:
-				| { type: "installAuthenticatedProjection"; params: AccountProjection }
-				| {
-						type: "installLocalProjection";
-						params: AccountProjection | null;
-				  }
-				| { type: "installServerProjection"; params: AccountProjection }
-				| { type: "recordReplay"; params: ReplayReport }
-				| { type: "markReplayStarted" }
-				| { type: "recordReplayFailure" }
-				| { type: "recordHydrationFailure"; params: unknown }
-				| { type: "recordAuthFailure"; params: unknown };
+		}) => {
+			const failureCount = context.replayFailureCount + 1;
+			const queue = queueState(context.accountId);
+			const fallbackRetryAt =
+				now() +
+				Math.min(30_000, 5_000 * 2 ** Math.max(0, failureCount - 1));
+			return {
+				error: { scope: "replay", kind: "retryable" } as const,
+				...queue,
+				replayFailureCount: failureCount,
+				replayStartedAt: null,
+				replayRetryAt:
+					queue.replayRetryAt !== null && queue.replayRetryAt > now()
+						? queue.replayRetryAt
+						: fallbackRetryAt,
+			};
+		},
+		applyReplayReport: ({
+			context,
+		}: {
+			context: AccountConvergenceContext;
+		}) => {
+			const report = context.lastReplayReport;
+			if (!report || !context.serverBase) return {};
+			let base = report.ackedCommands.reduce(
+				applyAccountCommand,
+				context.serverBase
+			);
+			base = applyCommandEffects(base, report.effects);
+			const reconciliation = summarizeReplayReport(report);
+			const accessLostColumnIds = [
+				...new Set([
+					...context.accessLostColumnIds,
+					...reconciliation.accessLostColumnIds,
+				]),
+			];
+			for (const columnId of accessLostColumnIds) {
+				base = removeColumnFromProjection(base, columnId);
+			}
+			const error: AccountConvergenceError | null =
+				accessLostColumnIds.length > 0
+					? {
+							scope: "access",
+							kind: "revoked",
+							columnId: accessLostColumnIds[0]!,
+						}
+					: reconciliation.nonAccessLossFailureCount > 0
+						? { scope: "replay", kind: "terminal" }
+						: report.retried > 0
+							? { scope: "replay", kind: "retryable" }
+							: null;
+			return {
+				serverBase: base,
+				projection: projectPending(base, context.accountId),
+				accessLostColumnIds,
+				error,
+				...queueState(context.accountId),
+			};
+		},
+		refreshProjection: ({
+			context,
+		}: {
+			context: AccountConvergenceContext;
+		}) => ({
+			projection: projectPending(context.serverBase, context.accountId),
+			...queueState(context.accountId),
+		}),
+		removeRevokedColumn: ({
+			context,
+			event,
+		}: {
+			context: AccountConvergenceContext;
+			event: AccountConvergenceEvent;
+		}) => {
+			if (event.type !== "ACCESS_REVOKED" || !context.serverBase)
+				return {};
+			const base = removeColumnFromProjection(
+				context.serverBase,
+				event.columnId
+			);
+			return {
+				serverBase: base,
+				projection: projectPending(base, context.accountId),
+				error: {
+					scope: "access",
+					kind: "revoked",
+					columnId: event.columnId,
+				} as const,
+			};
+		},
+		removeDeletedColumn: ({
+			context,
+			event,
+		}: {
+			context: AccountConvergenceContext;
+			event: AccountConvergenceEvent;
+		}) => {
+			if (event.type !== "COLUMN_DELETED" || !context.serverBase)
+				return {};
+			const base = removeColumnFromProjection(
+				context.serverBase,
+				event.columnId
+			);
+			return {
+				serverBase: base,
+				projection: projectPending(base, context.accountId),
+			};
+		},
+		setOnline: () => ({ networkOnline: true }),
+		setOffline: () => ({ networkOnline: false }),
+		clearError: () => ({ error: null }),
+		markConverged: ({
+			context,
+		}: {
+			context: AccountConvergenceContext;
+		}) => ({
+			lastConvergedAt: now(),
+			accessLostColumnIds: [],
+			error:
+				context.error?.scope === "replay" &&
+				context.error.kind === "terminal"
+					? context.error
+					: null,
+		}),
+		recordHydrationFailure: (
+			{ context }: { context: AccountConvergenceContext },
+			error: unknown
+		) => {
+			const failureCount = context.hydrationFailureCount + 1;
+			const retryAfterMs =
+				error instanceof AccountConvergenceFailure
+					? error.retryAfterMs
+					: null;
+			const fallbackDelay = Math.min(
+				30_000,
+				5_000 * 2 ** Math.max(0, failureCount - 1)
+			);
+			return {
+				error: failureFromUnknown(error, {
+					scope: "hydrate",
+					kind: "server",
+				}),
+				hydrationFailureCount: failureCount,
+				hydrationRetryAt: now() + (retryAfterMs ?? fallbackDelay),
+			};
+		},
+		recordAuthFailure: (error: unknown) => ({
+			error: failureFromUnknown(error, {
+				scope: "auth",
+				kind: "server",
+			}),
+		}),
+		clearSession: () => ({
+			accountId: null,
+			authenticationStatus: "unknown" as const,
+			serverBase: null,
+			projection: null,
+			queueDepth: 0,
+			hydrationRetryAt: null,
+			replayRetryAt: null,
+			hydrationFailureCount: 0,
+			replayFailureCount: 0,
+			lastConvergedAt: null,
+			lastReplayAt: null,
+			replayStartedAt: null,
+			lastReplayDurationMs: null,
+			lastReplayReport: null,
+			accessLostColumnIds: [],
+			authCandidate: null,
+		}),
+	};
+
+	return setup({
+		schemas: {
+			context: types<AccountConvergenceContext>(),
+			input: types<AccountConvergenceInput>(),
+			events: {
+				RESTORE_SESSION: types<{ accountId: string }>(),
+				LOGIN: types<{ accountId: string }>(),
+				CREATE_ACCOUNT: types<void>(),
+				LOGOUT: types<void>(),
+				AUTHENTICATION_REQUIRED: types<void>(),
+				NETWORK_ONLINE: types<void>(),
+				NETWORK_OFFLINE: types<void>(),
+				COMMAND_PERSISTED: types<void>(),
+				ACCESS_REVOKED: types<{ columnId: string }>(),
+				COLUMN_DELETED: types<{ columnId: string }>(),
+				REPLAY_WAKE: types<void>(),
+				REFRESH_REQUESTED: types<void>(),
+			},
 		},
 		actors: {
-			loadLocal: fromPromise<
-				AccountProjection | null,
-				{ accountId: string }
-			>(({ input, signal }) => dependencies.loadLocal(input.accountId, signal)),
-			fetchServer: fromPromise<AccountProjection, { accountId: string }>(
-				({ input, signal }) => dependencies.fetchServer(input.accountId, signal),
-			),
-			login: fromPromise<AccountProjection, { accountId: string }>(
-				({ input, signal }) => dependencies.login(input.accountId, signal),
-			),
-			createAccount: fromPromise<AccountProjection, Record<string, never>>(
-				({ signal }) => dependencies.createAccount(signal),
-			),
-			replay: fromPromise<ReplayReport, { accountId: string }>(
-				({ input, signal }) => dependencies.replay(input.accountId, signal),
-			),
-			reconcileAccessLoss: fromPromise<
-				void,
-				{ accountId: string; columnIds: string[] }
-			>(({ input }) =>
-				dependencies.reconcileAccessLoss(input.accountId, input.columnIds),
-			),
+			loadLocal: createAsyncLogic({
+				run: ({
+					input,
+					signal,
+				}: {
+					input: { accountId: string };
+					signal: AbortSignal;
+				}) => dependencies.loadLocal(input.accountId, signal),
+			}),
+			fetchServer: createAsyncLogic({
+				run: ({
+					input,
+					signal,
+				}: {
+					input: { accountId: string };
+					signal: AbortSignal;
+				}) => dependencies.fetchServer(input.accountId, signal),
+			}),
+			login: createAsyncLogic({
+				run: ({
+					input,
+					signal,
+				}: {
+					input: { accountId: string };
+					signal: AbortSignal;
+				}) => dependencies.login(input.accountId, signal),
+			}),
+			createAccount: createAsyncLogic<
+				AccountProjection,
+				Record<string, never>
+			>({ run: ({ signal }) => dependencies.createAccount(signal) }),
+			replay: createAsyncLogic({
+				run: ({
+					input,
+					signal,
+				}: {
+					input: { accountId: string };
+					signal: AbortSignal;
+				}) => dependencies.replay(input.accountId, signal),
+			}),
+			reconcileAccessLoss: createAsyncLogic({
+				run: ({
+					input,
+				}: {
+					input: { accountId: string; columnIds: string[] };
+				}) =>
+					dependencies.reconcileAccessLoss(
+						input.accountId,
+						input.columnIds
+					),
+			}),
 		},
 		delays: {
 			hydrationRetryDelay: ({ context }) =>
-				Math.max(0, (context.hydrationRetryAt ?? now() + 5_000) - now()),
+				Math.max(
+					0,
+					(context.hydrationRetryAt ?? now() + 5_000) - now()
+				),
 			replayRetryDelay: ({ context }) =>
 				Math.max(0, (context.replayRetryAt ?? now() + 5_000) - now()),
 		},
 		guards: {
 			isOnline: ({ context }) => context.networkOnline,
-			canAttemptReplay: ({ context }) => context.authenticationStatus !== "required",
+			canAttemptReplay: ({ context }) =>
+				context.authenticationStatus !== "required",
 			isOffline: ({ context }) => !context.networkOnline,
 			hasAccountSession: ({ context }) => context.accountId !== null,
 			hasPending: ({ context }) => context.queueDepth > 0,
 			replayHadAttempts: ({ context }) =>
 				(context.lastReplayReport?.attempted ?? 0) > 0,
-			isAuthenticationFailure: ({ event }) =>
-				event.type.startsWith("xstate.error.actor") &&
-				failureFromUnknown((event as { error?: unknown }).error, {
-					scope: "hydrate", kind: "server",
-				}).kind === "reauth_required",
-			replayRequiresAuthentication: ({ event }) =>
-				event.type.startsWith("xstate.done.actor") &&
-				!!(event as unknown as { output: ReplayReport }).output.authenticationRequired,
 			isSameAccountLogin: ({ context, event }) =>
-				event.type === "LOGIN" && !!context.accountId &&
-				normalizeAccountId(event.accountId) === normalizeAccountId(context.accountId),
-			isNotFoundFailure: ({ event }) =>
-				event.type.startsWith("xstate.error.actor") &&
-				failureFromUnknown((event as { error?: unknown }).error, {
-					scope: "hydrate",
-					kind: "server",
-				}).kind === "not_found",
-		},
-		actions: {
-			beginRestoredSession: assign(({ event }) => {
-				if (event.type !== "RESTORE_SESSION") return {};
-				return {
-					accountId: event.accountId,
-					authenticationStatus: "unknown" as const,
-					serverBase: null,
-					projection: null,
-					error: null,
-					lastReplayReport: null,
-					replayStartedAt: null,
-					lastReplayDurationMs: null,
-					accessLostColumnIds: [],
-					hydrationRetryAt: null,
-					hydrationFailureCount: 0,
-					replayFailureCount: 0,
-					...queueState(event.accountId),
-				};
-			}),
-			setAuthCandidate: assign(({ event }) => ({
-				authCandidate: event.type === "LOGIN" ? event.accountId : null,
-				error: null,
-			})),
-			installAuthenticatedProjection: assign(
-				(_, projection: AccountProjection) => {
-				const accountId = projection.account.id;
-				dependencies.persistCredential(accountId);
-				return {
-					accountId,
-					authenticationStatus: "authenticated" as const,
-					serverBase: projection,
-					projection: projectPending(projection, accountId),
-					authCandidate: null,
-					error: null,
-					accessLostColumnIds: [],
-					replayStartedAt: null,
-					lastReplayDurationMs: null,
-					hydrationRetryAt: null,
-					hydrationFailureCount: 0,
-					replayFailureCount: 0,
-					...queueState(accountId),
-				};
-				},
-			),
-			installLocalProjection: assign(
-				({ context }, local: AccountProjection | null) => {
-				const base = context.serverBase ?? local;
-				return {
-					serverBase: base,
-					projection: projectPending(base, context.accountId),
-					...queueState(context.accountId),
-				};
-				},
-			),
-			installServerProjection: assign(
-				({ context }, fetched: AccountProjection) => {
-				const fetchedSharedIds = new Set(
-					fetched.sharedColumns.map((column) => column.id),
-				);
-				const accessLostColumnIds = (
-					context.serverBase?.sharedColumns ?? []
-				)
-					.map((column) => column.id)
-					.filter((columnId) => !fetchedSharedIds.has(columnId));
-				const base = fetched;
-				const retainedError =
-					context.error?.scope === "replay" &&
-					context.error.kind === "terminal"
-						? context.error
-						: null;
-				return {
-					serverBase: base,
-					authenticationStatus: "authenticated" as const,
-					projection: projectPending(base, context.accountId),
-					accessLostColumnIds,
-					error: retainedError,
-					hydrationRetryAt: null,
-					hydrationFailureCount: 0,
-					...queueState(context.accountId),
-				};
-				},
-			),
-			markReplayStarted: assign({ replayStartedAt: () => now() }),
-			recordReplay: assign(({ context }, report: ReplayReport) => {
-				const finishedAt = now();
-				return {
-					lastReplayReport: report,
-					lastReplayAt: finishedAt,
-					lastReplayDurationMs:
-						context.replayStartedAt === null
-							? null
-							: Math.max(0, finishedAt - context.replayStartedAt),
-					replayStartedAt: null,
-					replayFailureCount: 0,
-					...queueState(context.accountId),
-				};
-			}),
-			recordReplayFailure: assign(({ context }) => {
-				const failureCount = context.replayFailureCount + 1;
-				const queue = queueState(context.accountId);
-				const fallbackRetryAt =
-					now() +
-					Math.min(30_000, 5_000 * 2 ** Math.max(0, failureCount - 1));
-				return {
-					error: { scope: "replay", kind: "retryable" } as const,
-					...queue,
-					replayFailureCount: failureCount,
-					replayStartedAt: null,
-					replayRetryAt:
-						queue.replayRetryAt !== null && queue.replayRetryAt > now()
-							? queue.replayRetryAt
-							: fallbackRetryAt,
-				};
-			}),
-			applyReplayReport: assign(({ context }) => {
-				const report = context.lastReplayReport;
-				if (!report || !context.serverBase) return {};
-				let base = report.ackedCommands.reduce(
-					applyAccountCommand,
-					context.serverBase,
-				);
-				base = applyCommandEffects(base, report.effects);
-				const reconciliation = summarizeReplayReport(report);
-				const accessLostColumnIds = [
-					...new Set([
-						...context.accessLostColumnIds,
-						...reconciliation.accessLostColumnIds,
-					]),
-				];
-				for (const columnId of accessLostColumnIds) {
-					base = removeColumnFromProjection(base, columnId);
-				}
-				const error: AccountConvergenceError | null =
-					accessLostColumnIds.length > 0
-						? {
-								scope: "access",
-								kind: "revoked",
-								columnId: accessLostColumnIds[0]!,
-							}
-						: reconciliation.nonAccessLossFailureCount > 0
-							? { scope: "replay", kind: "terminal" }
-							: report.retried > 0
-								? { scope: "replay", kind: "retryable" }
-								: null;
-				return {
-					serverBase: base,
-					projection: projectPending(base, context.accountId),
-					accessLostColumnIds,
-					error,
-					...queueState(context.accountId),
-				};
-			}),
-			refreshProjection: assign(({ context }) => ({
-				projection: projectPending(context.serverBase, context.accountId),
-				...queueState(context.accountId),
-			})),
-			removeRevokedColumn: assign(({ context, event }) => {
-				if (event.type !== "ACCESS_REVOKED" || !context.serverBase) return {};
-				const base = removeColumnFromProjection(
-					context.serverBase,
-					event.columnId,
-				);
-				return {
-					serverBase: base,
-					projection: projectPending(base, context.accountId),
-					error: {
-						scope: "access",
-						kind: "revoked",
-						columnId: event.columnId,
-					} as const,
-				};
-			}),
-			removeDeletedColumn: assign(({ context, event }) => {
-				if (event.type !== "COLUMN_DELETED" || !context.serverBase) return {};
-				const base = removeColumnFromProjection(
-					context.serverBase,
-					event.columnId,
-				);
-				return {
-					serverBase: base,
-					projection: projectPending(base, context.accountId),
-				};
-			}),
-			setOnline: assign({ networkOnline: true }),
-			setOffline: assign({ networkOnline: false }),
-			clearError: assign({ error: null }),
-			markConverged: assign({
-				lastConvergedAt: () => now(),
-				accessLostColumnIds: [],
-				error: ({ context }) =>
-					context.error?.scope === "replay" &&
-					context.error.kind === "terminal"
-						? context.error
-						: null,
-			}),
-			recordHydrationFailure: assign(({ context }, error) => {
-				const failureCount = context.hydrationFailureCount + 1;
-				const retryAfterMs =
-					error instanceof AccountConvergenceFailure
-						? error.retryAfterMs
-						: null;
-				const fallbackDelay = Math.min(
-					30_000,
-					5_000 * 2 ** Math.max(0, failureCount - 1),
-				);
-				return {
-					error: failureFromUnknown(error, {
-					scope: "hydrate",
-					kind: "server",
-					}),
-					hydrationFailureCount: failureCount,
-					hydrationRetryAt: now() + (retryAfterMs ?? fallbackDelay),
-				};
-			}),
-			recordAuthFailure: assign((_, error) => ({
-				error: failureFromUnknown(error, {
-					scope: "auth",
-					kind: "server",
-				}),
-			})),
-			clearSession: assign(() => {
-				dependencies.persistCredential(null);
-				return {
-					accountId: null,
-					authenticationStatus: "unknown" as const,
-					serverBase: null,
-					projection: null,
-					queueDepth: 0,
-					hydrationRetryAt: null,
-					replayRetryAt: null,
-					hydrationFailureCount: 0,
-					replayFailureCount: 0,
-					lastConvergedAt: null,
-					lastReplayAt: null,
-					replayStartedAt: null,
-					lastReplayDurationMs: null,
-					lastReplayReport: null,
-					accessLostColumnIds: [],
-					authCandidate: null,
-				};
-			}),
+				event.type === "LOGIN" &&
+				!!context.accountId &&
+				normalizeAccountId(event.accountId) ===
+					normalizeAccountId(context.accountId),
 		},
 	}).createMachine({
 		id: "accountConvergence",
@@ -469,33 +528,42 @@ export function createAccountConvergenceMachine(
 		}),
 		initial: "signedOut",
 		on: {
-			LOGOUT: { target: ".signingOut", actions: "clearError" },
-			AUTHENTICATION_REQUIRED: {
-				guard: "hasAccountSession", target: ".authenticationRequired",
+			LOGOUT: () => ({
+				target: ".signingOut",
+				context: actions.clearError(),
+			}),
+			AUTHENTICATION_REQUIRED: (args) => {
+				if (!args.guards.hasAccountSession(args)) return;
+				return { target: ".authenticationRequired" };
 			},
-			NETWORK_ONLINE: { actions: "setOnline" },
-			NETWORK_OFFLINE: { actions: "setOffline" },
-			ACCESS_REVOKED: { actions: "removeRevokedColumn" },
-			COLUMN_DELETED: { actions: "removeDeletedColumn" },
+			NETWORK_ONLINE: () => ({ context: actions.setOnline() }),
+			NETWORK_OFFLINE: () => ({ context: actions.setOffline() }),
+			ACCESS_REVOKED: (args) => ({
+				context: actions.removeRevokedColumn(args),
+			}),
+			COLUMN_DELETED: (args) => ({
+				context: actions.removeDeletedColumn(args),
+			}),
 		},
 		states: {
 			signedOut: {
-				always: {
-					guard: "hasAccountSession",
-					target: "loadingLocal",
+				id: "accountConvergence.signedOut",
+				always: (args) => {
+					if (!args.guards.hasAccountSession(args)) return;
+					return { target: "loadingLocal" };
 				},
 				on: {
-					RESTORE_SESSION: {
+					RESTORE_SESSION: (args) => ({
 						target: "loadingLocal",
-						actions: "beginRestoredSession",
-					},
-					LOGIN: {
+						context: actions.beginRestoredSession(args),
+					}),
+					LOGIN: (args) => ({
 						target: "authenticating.login",
-						actions: "setAuthCandidate",
-					},
+						context: actions.setAuthCandidate(args),
+					}),
 					CREATE_ACCOUNT: { target: "authenticating.create" },
-					NETWORK_ONLINE: { actions: "setOnline" },
-					NETWORK_OFFLINE: { actions: "setOffline" },
+					NETWORK_ONLINE: () => ({ context: actions.setOnline() }),
+					NETWORK_OFFLINE: () => ({ context: actions.setOffline() }),
 				},
 			},
 			authenticating: {
@@ -507,282 +575,436 @@ export function createAccountConvergenceMachine(
 							input: ({ context }) => ({
 								accountId: context.authCandidate ?? "",
 							}),
-							onDone: {
-								target: "#accountConvergence.loadingLocal",
-								actions: {
-									type: "installAuthenticatedProjection",
-									params: ({ event }) => event.output,
-								},
+							onDone: ({ output }, enq) => {
+								enq(
+									dependencies.persistCredential,
+									output.account.id
+								);
+								return {
+									target: "#accountConvergence.loadingLocal",
+									context:
+										actions.installAuthenticatedProjection(
+											output
+										),
+								};
 							},
-							onError: {
+							onError: (args) => ({
 								target: "#accountConvergence.signedOut",
-								actions: {
-									type: "recordAuthFailure",
-									params: ({ event }) => event.error,
-								},
-							},
+								context: actions.recordAuthFailure(
+									args.event.error
+								),
+							}),
 						},
 					},
 					create: {
 						invoke: {
 							src: "createAccount",
 							input: {},
-							onDone: {
-								target: "#accountConvergence.loadingLocal",
-								actions: {
-									type: "installAuthenticatedProjection",
-									params: ({ event }) => event.output,
-								},
+							onDone: ({ output }, enq) => {
+								enq(
+									dependencies.persistCredential,
+									output.account.id
+								);
+								return {
+									target: "#accountConvergence.loadingLocal",
+									context:
+										actions.installAuthenticatedProjection(
+											output
+										),
+								};
 							},
-							onError: {
+							onError: (args) => ({
 								target: "#accountConvergence.signedOut",
-								actions: {
-									type: "recordAuthFailure",
-									params: ({ event }) => event.error,
-								},
-							},
+								context: actions.recordAuthFailure(
+									args.event.error
+								),
+							}),
 						},
 					},
 				},
 			},
 			loadingLocal: {
+				id: "accountConvergence.loadingLocal",
 				invoke: {
 					src: "loadLocal",
-					input: ({ context }) => ({ accountId: accountIdOrThrow(context) }),
-					onDone: [
-						{
-							guard: "isOnline",
-							target: "hydratingServer",
-							actions: {
-								type: "installLocalProjection",
-								params: ({ event }) => event.output,
-							},
-						},
-						{
+					input: ({ context }) => ({
+						accountId: accountIdOrThrow(context),
+					}),
+					onDone: (args) => {
+						const { event } = args;
+						if (args.guards.isOnline(args)) {
+							return {
+								target: "hydratingServer",
+								context: actions.installLocalProjection(
+									args,
+									event.output
+								),
+							};
+						}
+						return {
 							target: "readyOffline",
-							actions: {
-								type: "installLocalProjection",
-								params: ({ event }) => event.output,
-							},
-						},
-					],
-					onError: [
-						{ guard: "isOnline", target: "hydratingServer" },
-						{ target: "readyOffline" },
-					],
+							context: actions.installLocalProjection(
+								args,
+								event.output
+							),
+						};
+					},
+					onError: (args) => {
+						if (args.guards.isOnline(args)) {
+							return { target: "hydratingServer" };
+						}
+						return { target: "readyOffline" };
+					},
 				},
 				on: {
-					NETWORK_OFFLINE: { actions: "setOffline" },
-					NETWORK_ONLINE: { actions: "setOnline" },
-					COMMAND_PERSISTED: { actions: "refreshProjection" },
+					NETWORK_OFFLINE: () => ({ context: actions.setOffline() }),
+					NETWORK_ONLINE: () => ({ context: actions.setOnline() }),
+					COMMAND_PERSISTED: (args) => ({
+						context: actions.refreshProjection(args),
+					}),
 				},
 			},
 			hydratingServer: {
+				id: "accountConvergence.hydratingServer",
 				invoke: {
 					src: "fetchServer",
-					input: ({ context }) => ({ accountId: accountIdOrThrow(context) }),
-					onDone: {
+					input: ({ context }) => ({
+						accountId: accountIdOrThrow(context),
+					}),
+					onDone: (args) => ({
 						target: "replaying",
-						actions: {
-							type: "installServerProjection",
-							params: ({ event }) => event.output,
-						},
-					},
-					onError: [
-						{ guard: "isAuthenticationFailure", target: "authenticationRequired" },
-						{
-							guard: "isNotFoundFailure",
-							target: "notFound",
-						},
-						{
+						context: actions.installServerProjection(
+							args,
+							args.event.output
+						),
+					}),
+					onError: (args) => {
+						if (
+							failureFromUnknown(args.event.error, {
+								scope: "hydrate",
+								kind: "server",
+							}).kind === "reauth_required"
+						) {
+							return { target: "authenticationRequired" };
+						}
+						if (
+							failureFromUnknown(args.event.error, {
+								scope: "hydrate",
+								kind: "server",
+							}).kind === "not_found"
+						) {
+							return { target: "notFound" };
+						}
+						return {
 							target: "retryScheduled.hydration",
-							actions: {
-								type: "recordHydrationFailure",
-								params: ({ event }) => event.error,
-							},
-						},
-					],
+							context: actions.recordHydrationFailure(
+								args,
+								args.event.error
+							),
+						};
+					},
 				},
 				on: {
-					NETWORK_OFFLINE: { target: "readyOffline", actions: "setOffline" },
+					NETWORK_OFFLINE: () => ({
+						target: "readyOffline",
+						context: actions.setOffline(),
+					}),
 					// A new command can cancel stale hydration unless authentication is
 					// known to require reconnection. HTTP binds replay to the expected account.
-					COMMAND_PERSISTED: [
-						{ guard: "canAttemptReplay", target: "replaying", actions: "refreshProjection" },
-						{ actions: "refreshProjection" },
-					],
+					COMMAND_PERSISTED: (args) => {
+						if (args.guards.canAttemptReplay(args)) {
+							return {
+								target: "replaying",
+								context: actions.refreshProjection(args),
+							};
+						}
+						return { context: actions.refreshProjection(args) };
+					},
 				},
 			},
 			replaying: {
-				entry: "markReplayStarted",
+				id: "accountConvergence.replaying",
+				entry: () => ({ context: actions.markReplayStarted() }),
 				invoke: {
 					src: "replay",
-					input: ({ context }) => ({ accountId: accountIdOrThrow(context) }),
-					onDone: [
-						{
-							guard: "replayRequiresAuthentication",
-							target: "authenticationRequired",
-							actions: [
-								{ type: "recordReplay", params: ({ event }) => event.output },
-								"applyReplayReport",
-							],
-						},
-						{
+					input: ({ context }) => ({
+						accountId: accountIdOrThrow(context),
+					}),
+					onDone: (args) => {
+						const { event } = args;
+						if (event.output.authenticationRequired) {
+							const replay = actions.recordReplay(
+								args,
+								event.output
+							);
+							return {
+								target: "authenticationRequired",
+								context: {
+									...replay,
+									...actions.applyReplayReport({
+										context: { ...args.context, ...replay },
+									}),
+								},
+							};
+						}
+						return {
 							target: "reconciling",
-							actions: {
-								type: "recordReplay",
-								params: ({ event }) => event.output,
-							},
-						},
-					],
-					onError: {
-						target: "retryScheduled.replay",
-						actions: "recordReplayFailure",
+							context: actions.recordReplay(args, event.output),
+						};
 					},
+					onError: (args) => ({
+						target: "retryScheduled.replay",
+						context: actions.recordReplayFailure(args),
+					}),
 				},
 				on: {
-					NETWORK_OFFLINE: { target: "readyOffline", actions: "setOffline" },
-					COMMAND_PERSISTED: { actions: "refreshProjection" },
+					NETWORK_OFFLINE: () => ({
+						target: "readyOffline",
+						context: actions.setOffline(),
+					}),
+					COMMAND_PERSISTED: (args) => ({
+						context: actions.refreshProjection(args),
+					}),
 				},
 			},
 			reconciling: {
-				entry: "applyReplayReport",
+				entry: (args) => ({ context: actions.applyReplayReport(args) }),
 				invoke: {
 					src: "reconcileAccessLoss",
 					input: ({ context }) => ({
 						accountId: accountIdOrThrow(context),
 						columnIds: context.accessLostColumnIds,
 					}),
-					onDone: [
-						{ guard: "isOffline", target: "readyOffline" },
-						{ guard: "replayHadAttempts", target: "confirmingServer" },
-						{ guard: "hasPending", target: "retryScheduled.replay" },
-						{ target: "ready", actions: "markConverged" },
-					],
-					onError: [
-						{ guard: "isOffline", target: "readyOffline" },
-						{ target: "confirmingServer" },
-					],
+					onDone: (args) => {
+						if (args.guards.isOffline(args)) {
+							return { target: "readyOffline" };
+						}
+						if (args.guards.replayHadAttempts(args)) {
+							return { target: "confirmingServer" };
+						}
+						if (args.guards.hasPending(args)) {
+							return { target: "retryScheduled.replay" };
+						}
+						return {
+							target: "ready",
+							context: actions.markConverged(args),
+						};
+					},
+					onError: (args) => {
+						if (args.guards.isOffline(args)) {
+							return { target: "readyOffline" };
+						}
+						return { target: "confirmingServer" };
+					},
 				},
 			},
 			confirmingServer: {
 				invoke: {
 					src: "fetchServer",
-					input: ({ context }) => ({ accountId: accountIdOrThrow(context) }),
-					onDone: {
+					input: ({ context }) => ({
+						accountId: accountIdOrThrow(context),
+					}),
+					onDone: (args) => ({
 						target: "postConvergence",
-						actions: {
-							type: "installServerProjection",
-							params: ({ event }) => event.output,
-						},
-					},
-					onError: [
-						{ guard: "isAuthenticationFailure", target: "authenticationRequired" },
-						{
-							guard: "isNotFoundFailure",
-							target: "notFound",
-						},
-						{
+						context: actions.installServerProjection(
+							args,
+							args.event.output
+						),
+					}),
+					onError: (args) => {
+						if (
+							failureFromUnknown(args.event.error, {
+								scope: "hydrate",
+								kind: "server",
+							}).kind === "reauth_required"
+						) {
+							return { target: "authenticationRequired" };
+						}
+						if (
+							failureFromUnknown(args.event.error, {
+								scope: "hydrate",
+								kind: "server",
+							}).kind === "not_found"
+						) {
+							return { target: "notFound" };
+						}
+						return {
 							target: "retryScheduled.hydration",
-							actions: {
-								type: "recordHydrationFailure",
-								params: ({ event }) => event.error,
-							},
-						},
-					],
+							context: actions.recordHydrationFailure(
+								args,
+								args.event.error
+							),
+						};
+					},
 				},
 				on: {
-					NETWORK_OFFLINE: { target: "readyOffline", actions: "setOffline" },
-					COMMAND_PERSISTED: { actions: "refreshProjection" },
+					NETWORK_OFFLINE: () => ({
+						target: "readyOffline",
+						context: actions.setOffline(),
+					}),
+					COMMAND_PERSISTED: (args) => ({
+						context: actions.refreshProjection(args),
+					}),
 				},
 			},
 			postConvergence: {
-				always: [
-					{ guard: "hasPending", target: "retryScheduled.replay" },
-					{ target: "ready", actions: "markConverged" },
-				],
+				always: (args) => {
+					if (args.guards.hasPending(args)) {
+						return { target: "retryScheduled.replay" };
+					}
+					return {
+						target: "ready",
+						context: actions.markConverged(args),
+					};
+				},
 			},
 			retryScheduled: {
 				initial: "hydration",
 				states: {
 					hydration: {
 						after: {
-							hydrationRetryDelay: "#accountConvergence.hydratingServer",
+							hydrationRetryDelay: {
+								target: "#accountConvergence.hydratingServer",
+							},
 						},
 					},
 					replay: {
 						after: {
-							replayRetryDelay: "#accountConvergence.replaying",
+							replayRetryDelay: {
+								target: "#accountConvergence.replaying",
+							},
 						},
 					},
 				},
 				on: {
-					NETWORK_OFFLINE: { target: "readyOffline", actions: "setOffline" },
-					COMMAND_PERSISTED: [
-						{ guard: "canAttemptReplay", target: "replaying", actions: "refreshProjection" },
-						{ actions: "refreshProjection" },
-					],
-					REFRESH_REQUESTED: "hydratingServer",
-					REPLAY_WAKE: { guard: "canAttemptReplay", target: "replaying" },
+					NETWORK_OFFLINE: () => ({
+						target: "readyOffline",
+						context: actions.setOffline(),
+					}),
+					COMMAND_PERSISTED: (args) => {
+						if (args.guards.canAttemptReplay(args)) {
+							return {
+								target: "replaying",
+								context: actions.refreshProjection(args),
+							};
+						}
+						return { context: actions.refreshProjection(args) };
+					},
+					REFRESH_REQUESTED: { target: "hydratingServer" },
+					REPLAY_WAKE: (args) => {
+						if (!args.guards.canAttemptReplay(args)) return;
+						return { target: "replaying" };
+					},
 				},
 			},
 			ready: {
 				on: {
-					COMMAND_PERSISTED: [
-						{
-							guard: "isOnline",
-							target: "replaying",
-							actions: "refreshProjection",
-						},
-						{ target: "readyOffline", actions: "refreshProjection" },
-					],
-					NETWORK_OFFLINE: { target: "readyOffline", actions: "setOffline" },
-					REFRESH_REQUESTED: "hydratingServer",
-					REPLAY_WAKE: { guard: "canAttemptReplay", target: "replaying" },
+					COMMAND_PERSISTED: (args) => {
+						if (args.guards.isOnline(args)) {
+							return {
+								target: "replaying",
+								context: actions.refreshProjection(args),
+							};
+						}
+						return {
+							target: "readyOffline",
+							context: actions.refreshProjection(args),
+						};
+					},
+					NETWORK_OFFLINE: () => ({
+						target: "readyOffline",
+						context: actions.setOffline(),
+					}),
+					REFRESH_REQUESTED: { target: "hydratingServer" },
+					REPLAY_WAKE: (args) => {
+						if (!args.guards.canAttemptReplay(args)) return;
+						return { target: "replaying" };
+					},
 				},
 			},
 			readyOffline: {
 				on: {
-					COMMAND_PERSISTED: { actions: "refreshProjection" },
-					NETWORK_ONLINE: { target: "hydratingServer", actions: "setOnline" },
+					COMMAND_PERSISTED: (args) => ({
+						context: actions.refreshProjection(args),
+					}),
+					NETWORK_ONLINE: () => ({
+						target: "hydratingServer",
+						context: actions.setOnline(),
+					}),
 				},
 			},
 			authenticationRequired: {
-				entry: assign({
-					authenticationStatus: "required" as const,
-					error: { scope: "auth", kind: "reauth_required" } as const,
+				entry: () => ({
+					context: {
+						authenticationStatus: "required" as const,
+						error: {
+							scope: "auth",
+							kind: "reauth_required",
+						} as const,
+					},
 				}),
 				on: {
-					COMMAND_PERSISTED: { actions: "refreshProjection" },
-					LOGIN: { guard: "isSameAccountLogin", target: "reconnecting" },
-					REFRESH_REQUESTED: { guard: "isOnline", target: "hydratingServer" },
-					NETWORK_ONLINE: { actions: "setOnline" },
+					COMMAND_PERSISTED: (args) => ({
+						context: actions.refreshProjection(args),
+					}),
+					LOGIN: (args) => {
+						if (!args.guards.isSameAccountLogin(args)) return;
+						return { target: "reconnecting" };
+					},
+					REFRESH_REQUESTED: (args) => {
+						if (!args.guards.isOnline(args)) return;
+						return { target: "hydratingServer" };
+					},
+					NETWORK_ONLINE: () => ({ context: actions.setOnline() }),
 				},
 			},
 			reconnecting: {
 				invoke: {
 					src: "login",
-					input: ({ context }) => ({ accountId: accountIdOrThrow(context) }),
-					onDone: {
-						target: "replaying",
-						actions: { type: "installAuthenticatedProjection", params: ({ event }) => event.output },
+					input: ({ context }) => ({
+						accountId: accountIdOrThrow(context),
+					}),
+					onDone: (args, enq) => {
+						enq(
+							dependencies.persistCredential,
+							args.event.output.account.id
+						);
+						return {
+							target: "replaying",
+							context: actions.installAuthenticatedProjection(
+								args.event.output
+							),
+						};
 					},
 					onError: { target: "authenticationRequired" },
 				},
 				on: {
-					COMMAND_PERSISTED: { actions: "refreshProjection" },
-					NETWORK_OFFLINE: { target: "authenticationRequired", actions: "setOffline" },
+					COMMAND_PERSISTED: (args) => ({
+						context: actions.refreshProjection(args),
+					}),
+					NETWORK_OFFLINE: () => ({
+						target: "authenticationRequired",
+						context: actions.setOffline(),
+					}),
 				},
 			},
 			notFound: {
-				entry: assign({
-					error: { scope: "auth", kind: "not_found" } as const,
+				entry: () => ({
+					context: {
+						error: {
+							scope: "auth",
+							kind: "not_found",
+						} as const,
+					},
 				}),
-				always: "signingOut",
+				always: { target: "signingOut" },
 			},
 			signingOut: {
-				entry: "clearSession",
-				always: "signedOut",
+				entry: (_, enq) => {
+					enq(dependencies.persistCredential, null);
+					return { context: actions.clearSession() };
+				},
+				always: { target: "signedOut" },
 			},
 		},
 	});

@@ -10,7 +10,7 @@ This package contains utilities for using [XState](https://github.com/statelyai/
 1. Install `xstate` and `@xstate/svelte`:
 
 ```bash
-npm i xstate @xstate/svelte
+npm i xstate@beta @xstate/svelte@beta
 ```
 
 **Via CDN**
@@ -33,10 +33,10 @@ By using the global variable `XStateSvelte`
     initial: 'inactive',
     states: {
       inactive: {
-        on: { TOGGLE: 'active' }
+        on: { TOGGLE: { target: 'active' } }
       },
       active: {
-        on: { TOGGLE: 'inactive' }
+        on: { TOGGLE: { target: 'inactive' } }
       }
     }
   });

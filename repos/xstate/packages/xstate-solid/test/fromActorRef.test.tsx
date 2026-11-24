@@ -1,4 +1,4 @@
-/* @jsxImportSource solid-js */
+/* @jsxImportSource @solidjs/web */
 import {
   Accessor,
   Component,
@@ -6,24 +6,31 @@ import {
   Switch,
   createEffect,
   createSignal,
-  on,
-  onMount
+  createStore,
+  flush,
+  untrack,
+  onSettled,
+  reconcile,
+  snapshot as storeSnapshot
 } from 'solid-js';
-import { createStore, reconcile } from 'solid-js/store';
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library';
 import {
   ActorRef,
   ActorRefFrom,
-  assign,
   createActor,
-  createMachine,
-  fromTransition,
-  sendParent
+  createStepLogic,
+  createMachine
 } from 'xstate';
 import { fromActorRef, useActor } from '../src/index.ts';
+import { z } from 'zod';
 
 const createSimpleActor = <T extends unknown>(value: T) =>
-  createActor(fromTransition((s) => s, value));
+  createActor(
+    createStepLogic({
+      context: value,
+      run: () => undefined
+    })
+  );
 
 describe('fromActorRef', () => {
   it('initial invoked actor should be immediately available', () => {
@@ -49,9 +56,9 @@ describe('fromActorRef', () => {
     const ChildTest: Component<{ actor: ActorRefFrom<typeof childMachine> }> = (
       props
     ) => {
-      const state = fromActorRef(props.actor);
+      const state = fromActorRef(() => props.actor);
 
-      expect(state().value).toEqual('active');
+      expect(untrack(() => state().value)).toEqual('active');
       resolve();
 
       return null;
@@ -78,7 +85,9 @@ describe('fromActorRef', () => {
       states: {
         active: {
           on: {
-            FINISH: { actions: sendParent({ type: 'FINISH' }) }
+            FINISH: ({ parent }, enq) => {
+              enq.sendTo(parent, { type: 'FINISH' });
+            }
           }
         }
       }
@@ -91,7 +100,7 @@ describe('fromActorRef', () => {
       },
       states: {
         active: {
-          on: { FINISH: 'success' }
+          on: { FINISH: { target: 'success' } }
         },
         success: {}
       }
@@ -100,9 +109,9 @@ describe('fromActorRef', () => {
     const ChildTest: Component<{ actor: ActorRefFrom<typeof childMachine> }> = (
       props
     ) => {
-      const state = fromActorRef(props.actor);
+      const state = fromActorRef(() => props.actor);
 
-      onMount(() => {
+      onSettled(() => {
         expect(state().value).toEqual('active');
         props.actor.send({ type: 'FINISH' });
       });
@@ -112,11 +121,14 @@ describe('fromActorRef', () => {
 
     const Test = () => {
       const [state] = useActor(machine);
-      createEffect(() => {
-        if (state.matches('success')) {
-          resolve();
+      createEffect(
+        () => state.matches('success'),
+        (success) => {
+          if (success) {
+            resolve();
+          }
         }
-      });
+      );
 
       return (
         <ChildTest
@@ -137,7 +149,7 @@ describe('fromActorRef', () => {
       states: {
         start: {
           on: {
-            done: 'success'
+            done: { target: 'success' }
           }
         },
         success: {
@@ -150,10 +162,13 @@ describe('fromActorRef', () => {
       const [actorRef] = createSignal(createActor(machine).start());
       const snapshot = fromActorRef(actorRef);
 
-      onMount(() => {
+      onSettled(() => {
         expect(snapshot().value).toBe('start');
         actorRef().send({ type: 'done' });
-        expect(snapshot().value).toBe('success');
+        queueMicrotask(() => {
+          flush();
+          expect(snapshot().value).toBe('success');
+        });
       });
 
       return (
@@ -176,10 +191,18 @@ describe('fromActorRef', () => {
 
   it('should only trigger effects once for nested context values', () => {
     const childMachine = createMachine({
-      types: {} as {
-        context: {
-          item: { count: number; total: number };
-        };
+      // types: {} as {
+      //   context: {
+      //     item: { count: number; total: number };
+      //   };
+      // },
+      schemas: {
+        context: z.object({
+          item: z.object({
+            count: z.number(),
+            total: z.number()
+          })
+        })
       },
       id: 'childMachine',
       initial: 'active',
@@ -192,48 +215,66 @@ describe('fromActorRef', () => {
       states: {
         active: {
           on: {
-            FINISH: {
-              actions: [
-                assign({
-                  item: ({ context }) => ({
+            // FINISH: {
+            //   actions: [
+            //     assign({
+            //       item: ({ context }) => ({
+            //         ...context.item,
+            //         total: context.item.total + 1
+            //       })
+            //     }),
+
+            //     sendParent({ type: 'FINISH' })
+            //   ]
+            // },
+            FINISH: ({ parent, context }, enq) => {
+              enq.sendTo(parent, { type: 'FINISH' });
+              return {
+                context: {
+                  item: {
                     ...context.item,
                     total: context.item.total + 1
-                  })
-                }),
-
-                sendParent({ type: 'FINISH' })
-              ]
+                  }
+                }
+              };
             },
-            COUNT: {
-              actions: [
-                assign({
-                  item: ({ context }) => ({
+            // COUNT: {
+            //   actions: [
+            //     assign({
+            //       item: ({ context }) => ({
+            //         ...context.item,
+            //         count: context.item.count + 1
+            //       })
+            //     })
+            //   ]
+            // }
+            COUNT: ({ context }) => {
+              return {
+                context: {
+                  item: {
                     ...context.item,
                     count: context.item.count + 1
-                  })
-                })
-              ]
+                  }
+                }
+              };
             }
           }
         }
       }
     });
     const machine = createMachine({
-      types: {} as {
-        context: {
-          actorRef?: ActorRefFrom<typeof childMachine>;
-        };
-      },
       initial: 'active',
       context: {
-        actorRef: undefined
-      },
+        actorRef: undefined as ActorRefFrom<typeof childMachine> | undefined
+      } as any,
       states: {
         active: {
-          entry: assign({
-            actorRef: ({ spawn }) => spawn(childMachine)
+          entry: (_, enq) => ({
+            context: {
+              actorRef: enq.spawn(childMachine)
+            }
           }),
-          on: { FINISH: 'success' }
+          on: { FINISH: { target: 'success' } }
         },
         success: {}
       }
@@ -242,30 +283,26 @@ describe('fromActorRef', () => {
     const ChildTest = (props: {
       actor: Readonly<ActorRefFrom<typeof childMachine>>;
     }) => {
-      const snapshot = fromActorRef(props.actor);
+      const snapshot = fromActorRef(() => props.actor);
       const [count, setCount] = createSignal(0);
       const [total, setTotal] = createSignal(0);
       createEffect(
-        on(
-          () => snapshot().context.item.count,
-          () => {
-            setCount(() => count() + 1);
-          },
-          { defer: true }
-        )
+        () => (snapshot() as any).context.item.count,
+        () => {
+          setCount((c) => c + 1);
+        },
+        { defer: true }
       );
 
       createEffect(
-        on(
-          () => snapshot().context.item.total,
-          () => {
-            setTotal(() => total() + 1);
-          },
-          { defer: true }
-        )
+        () => (snapshot() as any).context.item.total,
+        () => {
+          setTotal((t) => t + 1);
+        },
+        { defer: true }
       );
 
-      onMount(() => {
+      onSettled(() => {
         props.actor.send({ type: 'COUNT' });
         props.actor.send({ type: 'FINISH' });
       });
@@ -281,10 +318,11 @@ describe('fromActorRef', () => {
     const Test = () => {
       const [state] = useActor(machine);
 
-      return <ChildTest actor={state.context.actorRef!} />;
+      return <ChildTest actor={(state as any).context.actorRef!} />;
     };
 
     render(() => <Test />);
+    flush();
     const countEl = screen.getByTestId('count');
     const totalEl = screen.getByTestId('total');
 
@@ -302,20 +340,17 @@ describe('fromActorRef', () => {
       }
     });
 
-    interface Ctx {
-      actorRef?: ActorRefFrom<typeof childMachine>;
-    }
-
     const machine = createMachine({
-      types: {} as { context: Ctx },
       initial: 'active',
       context: {
-        actorRef: undefined
-      },
+        actorRef: undefined as ActorRefFrom<typeof childMachine> | undefined
+      } as any,
       states: {
         active: {
-          entry: assign({
-            actorRef: ({ spawn }) => spawn(childMachine)
+          entry: (_, enq) => ({
+            context: {
+              actorRef: enq.spawn(childMachine)
+            }
           })
         }
       }
@@ -324,16 +359,16 @@ describe('fromActorRef', () => {
     const ChildTest: Component<{ actor: ActorRefFrom<typeof childMachine> }> = (
       props
     ) => {
-      const snapshot = fromActorRef(props.actor);
+      const snapshot = fromActorRef(() => props.actor);
 
-      expect(snapshot().value).toEqual('active');
+      expect(untrack(() => snapshot().value)).toEqual('active');
 
       return null;
     };
 
     const Test = () => {
       const [snapshot] = useActor(machine);
-      const { actorRef } = snapshot.context;
+      const actorRef = untrack(() => (snapshot as any).context.actorRef);
 
       return <ChildTest actor={actorRef!} />;
     };
@@ -347,17 +382,17 @@ describe('fromActorRef', () => {
       states: {
         green: {
           on: {
-            TRANSITION: 'yellow'
+            TRANSITION: { target: 'yellow' }
           }
         },
         yellow: {
           on: {
-            TRANSITION: 'red'
+            TRANSITION: { target: 'red' }
           }
         },
         red: {
           on: {
-            TRANSITION: 'green'
+            TRANSITION: { target: 'green' }
           }
         }
       }
@@ -366,20 +401,20 @@ describe('fromActorRef', () => {
     const App = () => {
       const actorRef = createActor(machine).start();
       const snapshot = fromActorRef(actorRef);
-      const [toJson, setToJson] = createSignal(snapshot().toJSON());
+      const [toJson, setToJson] = createSignal(
+        untrack(() => snapshot().toJSON())
+      );
       createEffect(
-        on(
-          () => snapshot().value,
-          () => {
-            setToJson(snapshot().toJSON());
-          }
-        )
+        () => snapshot().value,
+        () => {
+          setToJson(untrack(() => snapshot().toJSON()));
+        }
       );
       return (
         <div>
           <button
             data-testid="transition-button"
-            onclick={() => actorRef.send({ type: 'TRANSITION' })}
+            onClick={() => actorRef.send({ type: 'TRANSITION' })}
           />
           <div data-testid="to-json">{(toJson() as any).value.toString()}</div>
         </div>
@@ -393,14 +428,17 @@ describe('fromActorRef', () => {
     // Green
     expect(toJsonEl.textContent).toEqual('green');
     transitionBtn.click();
+    flush();
 
     // Yellow
     expect(toJsonEl.textContent).toEqual('yellow');
     transitionBtn.click();
+    flush();
 
     // Red
     expect(toJsonEl.textContent).toEqual('red');
     transitionBtn.click();
+    flush();
 
     // Green
     expect(toJsonEl.textContent).toEqual('green');
@@ -413,36 +451,41 @@ describe('fromActorRef', () => {
         green: {
           tags: 'go',
           on: {
-            TRANSITION: 'yellow'
+            TRANSITION: { target: 'yellow' }
           }
         },
         yellow: {
           tags: 'go',
           on: {
-            TRANSITION: 'red'
+            TRANSITION: { target: 'red' }
           }
         },
         red: {
           tags: ['stop', 'other'],
           on: {
-            TRANSITION: 'green'
+            TRANSITION: { target: 'green' }
           }
         }
-      }
+      } as any
     });
 
     const App = () => {
       const actorRef = createActor(machine).start();
       const snapshot = fromActorRef(actorRef);
-      const [canGo, setCanGo] = createSignal(snapshot().hasTag('go'));
-      createEffect(() => {
-        setCanGo(snapshot().hasTag('go'));
-      });
+      const [canGo, setCanGo] = createSignal(
+        untrack(() => snapshot().hasTag('go'))
+      );
+      createEffect(
+        () => snapshot().hasTag('go'),
+        (go) => {
+          setCanGo(go);
+        }
+      );
       return (
         <div>
           <button
             data-testid="transition-button"
-            onclick={() => actorRef.send({ type: 'TRANSITION' })}
+            onClick={() => actorRef.send({ type: 'TRANSITION' })}
           />
           <div data-testid="can-go">{canGo().toString()}</div>
           <div data-testid="stop">{snapshot().hasTag('stop').toString()}</div>
@@ -459,16 +502,19 @@ describe('fromActorRef', () => {
     expect(canGoEl.textContent).toEqual('true');
     expect(stopEl.textContent).toEqual('false');
     transitionBtn.click();
+    flush();
 
     // Yellow
     expect(canGoEl.textContent).toEqual('true');
     expect(stopEl.textContent).toEqual('false');
     transitionBtn.click();
+    flush();
 
     // Red
     expect(canGoEl.textContent).toEqual('false');
     expect(stopEl.textContent).toEqual('true');
     transitionBtn.click();
+    flush();
 
     // Green
     expect(canGoEl.textContent).toEqual('true');
@@ -481,12 +527,14 @@ describe('fromActorRef', () => {
       states: {
         inactive: {
           on: {
-            TOGGLE: 'active'
+            TOGGLE: { target: 'active' }
           }
         },
         active: {
           on: {
-            DO_SOMETHING: { actions: ['something'] }
+            DO_SOMETHING: (_, enq) => {
+              enq(() => {});
+            }
           }
         }
       }
@@ -496,16 +544,19 @@ describe('fromActorRef', () => {
       const actorRef = createActor(machine).start();
       const snapshot = fromActorRef(actorRef);
       const [canToggle, setCanToggle] = createSignal(
-        snapshot().can({ type: 'TOGGLE' })
+        untrack(() => snapshot().can({ type: 'TOGGLE' }))
       );
-      createEffect(() => {
-        setCanToggle(snapshot().can({ type: 'TOGGLE' }));
-      });
+      createEffect(
+        () => snapshot().can({ type: 'TOGGLE' }),
+        (can) => {
+          setCanToggle(can);
+        }
+      );
       return (
         <div>
           <button
             data-testid="toggle-button"
-            onclick={() => actorRef.send({ type: 'TOGGLE' })}
+            onClick={() => actorRef.send({ type: 'TOGGLE' })}
           />
           <div data-testid="can-toggle">{canToggle().toString()}</div>
           <div data-testid="can-do-something">
@@ -523,6 +574,7 @@ describe('fromActorRef', () => {
     expect(canToggleEl.textContent).toEqual('true');
     expect(canDoSomethingEl.textContent).toEqual('false');
     toggleBtn.click();
+    flush();
     expect(canToggleEl.textContent).toEqual('false');
     expect(canDoSomethingEl.textContent).toEqual('true');
   });
@@ -535,39 +587,51 @@ describe('fromActorRef', () => {
       states: {
         active: {
           on: {
-            FINISH: { actions: sendParent({ type: 'FINISH' }) }
+            // FINISH: { actions: sendParent({ type: 'FINISH' }) }
+            FINISH: ({ parent }, enq) => {
+              enq.sendTo(parent, { type: 'FINISH' });
+            }
           }
         }
       }
     });
     const machine = createMachine({
-      types: {} as {
-        context: {
-          actorRef?: ActorRefFrom<typeof childMachine>;
-        };
+      // types: {} as {
+      //   context: {
+      //     actorRef?: ActorRefFrom<typeof childMachine>;
+      //   };
+      // },
+      schemas: {
+        context: z.object({
+          actorRef: z.custom<ActorRefFrom<typeof childMachine>>()
+        })
       },
       initial: 'active',
       context: {
-        actorRef: undefined
+        actorRef: undefined as any
       },
       states: {
         active: {
-          entry: assign({
-            actorRef: ({ spawn }) => spawn(childMachine)
-          }),
-          on: { FINISH: 'success' }
+          entry: ({ context }, enq) => {
+            const actorRef = enq.spawn(childMachine);
+            return { context: { actorRef } };
+          },
+          on: { FINISH: { target: 'success' } }
         },
         success: {}
       }
     });
 
     const ChildTest = (props: { actor: ActorRefFrom<typeof childMachine> }) => {
-      const snapshot = fromActorRef(props.actor);
-      createEffect(() => {
-        expect(snapshot().value).toEqual('active');
-      });
+      const snapshot = fromActorRef(() => props.actor);
+      createEffect(
+        () => snapshot().value,
+        (value) => {
+          expect(value).toEqual('active');
+        }
+      );
 
-      onMount(() => {
+      onSettled(() => {
         props.actor.send({ type: 'FINISH' });
       });
 
@@ -576,11 +640,14 @@ describe('fromActorRef', () => {
 
     const Test = () => {
       const [state] = useActor(machine);
-      createEffect(() => {
-        if (state.matches('success')) {
-          resolve();
+      createEffect(
+        () => state.matches('success'),
+        (success) => {
+          if (success) {
+            resolve();
+          }
         }
-      });
+      );
 
       return <ChildTest actor={state.context.actorRef!} />;
     };
@@ -591,7 +658,12 @@ describe('fromActorRef', () => {
   });
 
   it('should provide value from `actor.getSnapshot()` immediately', () => {
-    const simpleActor = createActor(fromTransition((s) => s, 42));
+    const simpleActor = createActor(
+      createStepLogic({
+        context: 42,
+        run: () => undefined
+      })
+    );
 
     const Test = () => {
       const snapshot = fromActorRef(simpleActor);
@@ -616,7 +688,7 @@ describe('fromActorRef', () => {
           <div data-testid="state">{snapshot().context}</div>
           <button
             data-testid="button"
-            onclick={() => setActor(createSimpleActor(100))}
+            onClick={() => setActor(createSimpleActor(100))}
           />
         </div>
       );
@@ -629,6 +701,7 @@ describe('fromActorRef', () => {
 
     expect(div.textContent).toEqual('42');
     fireEvent.click(button);
+    flush();
     expect(div.textContent).toEqual('100');
   });
 
@@ -644,7 +717,7 @@ describe('fromActorRef', () => {
           <div data-testid="state">{snapshot().context.getFullYear()}</div>
           <button
             data-testid="button"
-            onclick={() => setActor(createSimpleActor(new Date('2022-08-21')))}
+            onClick={() => setActor(createSimpleActor(new Date('2022-08-21')))}
           />
         </div>
       );
@@ -657,6 +730,7 @@ describe('fromActorRef', () => {
 
     expect(div.textContent).toEqual('2020');
     fireEvent.click(button);
+    flush();
     expect(div.textContent).toEqual('2022');
   });
 
@@ -666,11 +740,14 @@ describe('fromActorRef', () => {
       const snapshot = fromActorRef(actor);
       const [change, setChange] = createSignal(0);
 
-      createEffect(() => {
-        if (snapshot().context[0]) {
-          setChange((val) => val + 1);
+      createEffect(
+        () => snapshot().context[0],
+        (first) => {
+          if (first) {
+            setChange((val) => val + 1);
+          }
         }
-      });
+      );
 
       return (
         <div>
@@ -679,7 +756,7 @@ describe('fromActorRef', () => {
           <div data-testid="state-2">{snapshot().context[3]}</div>
           <button
             data-testid="button"
-            onclick={() => setActor(createSimpleActor(['1', '3', '5', '8']))}
+            onClick={() => setActor(createSimpleActor(['1', '3', '5', '8']))}
           />
         </div>
       );
@@ -695,6 +772,7 @@ describe('fromActorRef', () => {
     expect(changeVal.textContent).toEqual('1');
     expect(div.textContent).toEqual('2');
     fireEvent.click(button);
+    flush();
     expect(div.textContent).toEqual('3');
     expect(changeVal.textContent).toEqual('1');
     expect(div2.textContent).toEqual('8');
@@ -708,11 +786,14 @@ describe('fromActorRef', () => {
       const snapshot = fromActorRef(actor);
       const [change, setChange] = createSignal(0);
 
-      createEffect(() => {
-        if (snapshot().context[0]) {
-          setChange((val) => val + 1);
+      createEffect(
+        () => snapshot().context[0],
+        (first) => {
+          if (first) {
+            setChange((val) => val + 1);
+          }
         }
-      });
+      );
 
       return (
         <div>
@@ -721,7 +802,7 @@ describe('fromActorRef', () => {
           <div data-testid="state-2">{snapshot().context[3]}</div>
           <button
             data-testid="button"
-            onclick={() => setActor(createSimpleActor(['1', '2']))}
+            onClick={() => setActor(createSimpleActor(['1', '2']))}
           />
         </div>
       );
@@ -738,6 +819,7 @@ describe('fromActorRef', () => {
     expect(div.textContent).toEqual('3');
     expect(div2.textContent).toEqual('8');
     fireEvent.click(button);
+    flush();
     expect(div.textContent).toEqual('2');
     expect(changeVal.textContent).toEqual('1');
     expect(div2.textContent).toEqual('');
@@ -745,40 +827,33 @@ describe('fromActorRef', () => {
 
   it('should properly handle array updates', () => {
     const numberListMachine = createMachine({
-      types: {} as { context: { numbers: number[] } },
       context: {
         numbers: [1, 2, 3, 4, 5, 6]
-      },
+      } as any,
       initial: 'idle',
       states: {
         idle: {
           on: {
-            REMOVE_START: {
-              actions: assign({
-                numbers: ({ context }) => {
-                  return context.numbers.filter((_, i) => i !== 0);
-                }
-              })
-            },
-            REMOVE_END: {
-              actions: assign({
-                numbers: ({ context }) => {
-                  return context.numbers.filter(
-                    (_, i) => i !== context.numbers.length - 1
-                  );
-                }
-              })
-            },
-            ADD: {
-              actions: assign({
-                numbers: ({ context }) => {
-                  return [
-                    ...context.numbers,
-                    context.numbers[context.numbers.length - 1] + 1
-                  ];
-                }
-              })
-            }
+            REMOVE_START: ({ context }: any) => ({
+              context: {
+                numbers: context.numbers.filter((_: any, i: any) => i !== 0)
+              }
+            }),
+            REMOVE_END: ({ context }: any) => ({
+              context: {
+                numbers: context.numbers.filter(
+                  (_: any, i: any) => i !== context.numbers.length - 1
+                )
+              }
+            }),
+            ADD: ({ context }) => ({
+              context: {
+                numbers: [
+                  ...context.numbers,
+                  context.numbers[context.numbers.length - 1] + 1
+                ]
+              }
+            })
           }
         }
       }
@@ -788,16 +863,18 @@ describe('fromActorRef', () => {
       const [state, send] = useActor(numberListMachine);
       return (
         <div>
-          <div data-testid="state">{state.context.numbers.join(',')}</div>
+          <div data-testid="state">
+            {(state as any).context.numbers.join(',')}
+          </div>
           <button
             data-testid="remove-start"
-            onclick={() => send({ type: 'REMOVE_START' })}
+            onClick={() => send({ type: 'REMOVE_START' })}
           />
           <button
             data-testid="remove-end"
-            onclick={() => send({ type: 'REMOVE_END' })}
+            onClick={() => send({ type: 'REMOVE_END' })}
           />
-          <button data-testid="add" onclick={() => send({ type: 'ADD' })} />
+          <button data-testid="add" onClick={() => send({ type: 'ADD' })} />
         </div>
       );
     };
@@ -811,10 +888,13 @@ describe('fromActorRef', () => {
 
     expect(state.textContent).toEqual('1,2,3,4,5,6');
     fireEvent.click(removeStart);
+    flush();
     expect(state.textContent).toEqual('2,3,4,5,6');
     fireEvent.click(removeEnd);
+    flush();
     expect(state.textContent).toEqual('2,3,4,5');
     fireEvent.click(add);
+    flush();
     expect(state.textContent).toEqual('2,3,4,5,6');
   });
 
@@ -824,29 +904,24 @@ describe('fromActorRef', () => {
       { id: '2', value: 20 }
     ];
     const actorMachine = createMachine({
-      types: {} as {
-        context: { arr: Array<{ id: string; value: number }> };
-        events: { type: 'CHANGE'; index: number; value: number };
-      },
       context: {
         arr
-      },
+      } as any,
       initial: 'idle',
       states: {
         idle: {
           on: {
-            CHANGE: {
-              actions: [
-                assign(({ context, event }) => {
-                  const newCtx = { ...context };
-                  newCtx.arr = [...newCtx.arr];
-                  newCtx.arr[event.index] = {
-                    ...newCtx.arr[event.index],
-                    value: event.value
-                  };
-                  return newCtx;
-                })
-              ]
+            CHANGE: ({ context, event }: any) => {
+              const newArr = [...context.arr];
+              newArr[event.index] = {
+                ...newArr[event.index],
+                value: event.value
+              };
+              return {
+                context: {
+                  arr: newArr
+                }
+              };
             }
           }
         }
@@ -860,40 +935,53 @@ describe('fromActorRef', () => {
       const [changeIndex1, setChangeIndex1] = createSignal(0);
       const [changeRoot, setChangeRoot] = createSignal(0);
 
-      createEffect(() => {
-        if (snapshot().context.arr) {
-          setChangeRoot((val) => val + 1);
+      createEffect(
+        () => !!(snapshot() as any).context.arr,
+        (hasArr) => {
+          if (hasArr) {
+            setChangeRoot((val) => val + 1);
+          }
         }
-      });
-      createEffect(() => {
-        if (snapshot().context.arr[0].value) {
-          setChangeIndex0((val) => val + 1);
+      );
+      createEffect(
+        () => (snapshot() as any).context.arr[0].value,
+        (value) => {
+          if (value) {
+            setChangeIndex0((val) => val + 1);
+          }
         }
-      });
+      );
 
-      createEffect(() => {
-        if (snapshot().context.arr[1].value) {
-          setChangeIndex1((val) => val + 1);
+      createEffect(
+        () => (snapshot() as any).context.arr[1].value,
+        (value) => {
+          if (value) {
+            setChangeIndex1((val) => val + 1);
+          }
         }
-      });
+      );
 
       return (
         <div>
           <div data-testid="change-root">{changeRoot()}</div>
           <div data-testid="change-index-0">{changeIndex0()}</div>
           <div data-testid="change-index-1">{changeIndex1()}</div>
-          <div data-testid="state-0">{snapshot().context.arr[0].value}</div>
-          <div data-testid="state-1">{snapshot().context.arr[1].value}</div>
+          <div data-testid="state-0">
+            {(snapshot() as any).context.arr[0].value}
+          </div>
+          <div data-testid="state-1">
+            {(snapshot() as any).context.arr[1].value}
+          </div>
           <button
             data-testid="index-0-btn"
-            onclick={() =>
-              actorRef.send({ type: 'CHANGE', index: 0, value: -10 })
+            onClick={() =>
+              actorRef.send({ type: 'CHANGE', index: 0, value: -10 } as any)
             }
           />
           <button
             data-testid="index-1-btn"
-            onclick={() =>
-              actorRef.send({ type: 'CHANGE', index: 1, value: 22 })
+            onClick={() =>
+              actorRef.send({ type: 'CHANGE', index: 1, value: 22 } as any)
             }
           />
         </div>
@@ -919,6 +1007,7 @@ describe('fromActorRef', () => {
 
     // Change index 0
     fireEvent.click(changeIndex0Btn);
+    flush();
 
     expect(stateIndex0.textContent).toEqual('-10');
     expect(stateIndex1.textContent).toEqual('20');
@@ -928,6 +1017,7 @@ describe('fromActorRef', () => {
 
     // Change index 1
     fireEvent.click(changeIndex1Btn);
+    flush();
 
     expect(stateIndex0.textContent).toEqual('-10');
     expect(stateIndex1.textContent).toEqual('22');
@@ -952,17 +1042,23 @@ describe('fromActorRef', () => {
       const [actorChange, setActorChange] = createSignal(0);
       const [signalChange, setSignalChange] = createSignal(0);
 
-      createEffect(() => {
-        if (snapshot().context.get('prop1')) {
-          setActorChange((val) => val + 1);
+      createEffect(
+        () => snapshot().context,
+        (map) => {
+          if (map.get('prop1')) {
+            setActorChange((val) => val + 1);
+          }
         }
-      });
+      );
 
-      createEffect(() => {
-        if (signal().get('prop1')) {
-          setSignalChange((val) => val + 1);
+      createEffect(
+        () => signal(),
+        (map) => {
+          if (map.get('prop1')) {
+            setSignalChange((val) => val + 1);
+          }
         }
-      });
+      );
 
       return (
         <div>
@@ -974,7 +1070,7 @@ describe('fromActorRef', () => {
           </div>
           <button
             data-testid="button"
-            onclick={() => {
+            onClick={() => {
               const newMap = new Map([
                 ['prop1', 'value'],
                 ['prop2', '10']
@@ -1000,6 +1096,7 @@ describe('fromActorRef', () => {
     expect(actorState.textContent).toEqual('5');
     expect(signalState.textContent).toEqual('5');
     fireEvent.click(button);
+    flush();
     expect(actorState.textContent).toEqual('10');
     expect(signalState.textContent).toEqual('10');
     expect(signalChangeVal.textContent).toEqual('2');
@@ -1020,17 +1117,23 @@ describe('fromActorRef', () => {
       const [actorChange, setActorChange] = createSignal(0);
       const [signalChange, setSignalChange] = createSignal(0);
 
-      createEffect(() => {
-        if (snapshot().context.value.get('prop1')) {
-          setActorChange((val) => val + 1);
+      createEffect(
+        () => snapshot().context.value,
+        (map) => {
+          if (map.get('prop1')) {
+            setActorChange((val) => val + 1);
+          }
         }
-      });
+      );
 
-      createEffect(() => {
-        if (signal.value.get('prop1')) {
-          setSignalChange((val) => val + 1);
+      createEffect(
+        () => signal.value,
+        (map) => {
+          if (map.get('prop1')) {
+            setSignalChange((val) => val + 1);
+          }
         }
-      });
+      );
 
       return (
         <div>
@@ -1042,23 +1145,23 @@ describe('fromActorRef', () => {
           </div>
           <button
             data-testid="change-button"
-            onclick={() => {
+            onClick={() => {
               const newMap = new Map([
                 ['prop1', 'value'],
                 ['prop2', '10']
               ]);
-              setSignal(reconcile({ value: newMap }));
+              setSignal(reconcile({ value: newMap }, null));
               setActor(createSimpleActor({ value: newMap }));
             }}
           />
           <button
             data-testid="button"
-            onclick={() => {
+            onClick={() => {
               const newMap = new Map([
                 ['prop1', 'value'],
                 ['prop2', '10']
               ]);
-              setSignal(reconcile({ value: newMap }));
+              setSignal(reconcile({ value: newMap }, null));
               setActor(createSimpleActor({ value: newMap }));
             }}
           />
@@ -1079,6 +1182,7 @@ describe('fromActorRef', () => {
     expect(actorState.textContent).toEqual('5');
     expect(signalState.textContent).toEqual('5');
     fireEvent.click(button);
+    flush();
     expect(actorState.textContent).toEqual('10');
     expect(signalState.textContent).toEqual('10');
     expect(signalChangeVal.textContent).toEqual('2');
@@ -1086,34 +1190,25 @@ describe('fromActorRef', () => {
   });
 
   it('should also work with services', () => {
-    const counterMachine = createMachine(
-      {
-        types: {} as {
-          context: { count: number };
-          events: { type: 'INC' } | { type: 'SOMETHING' };
-        },
-        id: 'counter',
-        initial: 'active',
-        context: { count: 0 },
-        states: {
-          active: {
-            on: {
-              INC: {
-                actions: assign({ count: ({ context }) => context.count + 1 })
-              },
-              SOMETHING: { actions: 'doSomething' }
+    const counterMachine = createMachine({
+      id: 'counter',
+      initial: 'active',
+      context: { count: 0 } as any,
+      states: {
+        active: {
+          on: {
+            INC: ({ context }) => ({
+              context: { count: context.count + 1 }
+            }),
+            SOMETHING: ({ context, event, guards, actions }, enq) => {
+              enq(() => {
+                /* do nothing */
+              });
             }
           }
         }
-      },
-      {
-        actions: {
-          doSomething: () => {
-            /* do nothing */
-          }
-        }
       }
-    );
+    });
     const counterService = createActor(counterMachine).start();
 
     const Counter = () => {
@@ -1122,13 +1217,12 @@ describe('fromActorRef', () => {
       return (
         <div
           data-testid="count"
-          onclick={() => {
+          onClick={() => {
             counterService.send({ type: 'INC' });
-            // @ts-expect-error
             counterService.send({ type: 'FAKE' });
           }}
         >
-          {snapshot().context.count}
+          {(snapshot() as any).context.count}
         </div>
       );
     };
@@ -1149,6 +1243,7 @@ describe('fromActorRef', () => {
     });
 
     counterService.send({ type: 'INC' });
+    flush();
 
     countEls.forEach((countEl) => {
       expect(countEl.textContent).toBe('1');
@@ -1159,26 +1254,17 @@ describe('fromActorRef', () => {
     const { resolve, promise } = Promise.withResolvers<void>();
     vi.useFakeTimers();
 
-    interface MachineContext {
-      counter: number;
-    }
-
     const machine = createMachine({
-      types: {} as {
-        context: MachineContext;
-      },
       context: {
         counter: 0
-      },
+      } as any,
       initial: 'idle',
       states: {
         idle: {
           on: {
-            INC: {
-              actions: assign({
-                counter: ({ context }) => context.counter + 1
-              })
-            }
+            INC: ({ context }) => ({
+              context: { counter: context.counter + 1 }
+            })
           }
         }
       }
@@ -1190,12 +1276,14 @@ describe('fromActorRef', () => {
       let calls = 0;
       const snapshot = fromActorRef(counterService);
 
-      createEffect(() => {
-        calls++;
-        snapshot().matches('foo');
-      });
+      createEffect(
+        () => snapshot().matches('idle'),
+        () => {
+          calls++;
+        }
+      );
 
-      onMount(() => {
+      onSettled(() => {
         counterService.send({ type: 'INC' });
         counterService.send({ type: 'INC' });
         counterService.send({ type: 'INC' });
@@ -1222,17 +1310,18 @@ describe('fromActorRef', () => {
 
   it('actor should be updated when it changes shallow', () => {
     const counterMachine = createMachine({
-      types: {} as { context: { count: number } },
       id: 'counter',
       initial: 'active',
-      context: { count: 0 },
+      context: { count: 0 } as any,
       states: {
         active: {
           on: {
-            INC: {
-              actions: assign({ count: ({ context }) => context.count + 1 })
-            },
-            SOMETHING: { actions: 'doSomething' }
+            INC: ({ context }) => ({
+              context: { count: context.count + 1 }
+            }),
+            SOMETHING: ({ context, event, guards, actions }, enq) => {
+              enq(() => actions['doSomething']({ context, event } as any));
+            }
           }
         }
       }
@@ -1250,9 +1339,9 @@ describe('fromActorRef', () => {
         <div>
           <button
             data-testid="inc"
-            onclick={(_) => props.counterRef().send({ type: 'INC' })}
+            onClick={(_) => props.counterRef().send({ type: 'INC' })}
           />
-          <div data-testid="count">{snapshot().context.count}</div>
+          <div data-testid="count">{(snapshot() as any).context.count}</div>
         </div>
       );
     };
@@ -1263,7 +1352,7 @@ describe('fromActorRef', () => {
         <div>
           <button
             data-testid="change-service"
-            onclick={() => setService(counterService2)}
+            onClick={() => setService(counterService2)}
           />
           <Counter counterRef={service} />
         </div>
@@ -1278,27 +1367,24 @@ describe('fromActorRef', () => {
 
     expect(countEl.textContent).toBe('0');
     fireEvent.click(incButton);
+    flush();
     expect(countEl.textContent).toBe('1');
     fireEvent.click(changeServiceButton);
+    flush();
     expect(countEl.textContent).toBe('0');
   });
 
   it('actor should be updated when it changes deep', () => {
     const counterMachine2 = createMachine({
-      types: {} as {
-        context: {
-          subCount: { subCount1: { subCount2: { count: number } } };
-        };
-      },
       id: 'counter',
       initial: 'active',
-      context: { subCount: { subCount1: { subCount2: { count: 0 } } } },
+      context: { subCount: { subCount1: { subCount2: { count: 0 } } } } as any,
       states: {
         active: {
           on: {
-            INC: {
-              actions: assign({
-                subCount: ({ context }) => ({
+            INC: ({ context }) => ({
+              context: {
+                subCount: {
                   ...context.subCount,
                   subCount1: {
                     ...context.subCount.subCount1,
@@ -1307,10 +1393,12 @@ describe('fromActorRef', () => {
                       count: context.subCount.subCount1.subCount2.count + 1
                     }
                   }
-                })
-              })
-            },
-            SOMETHING: { actions: 'doSomething' }
+                }
+              }
+            }),
+            SOMETHING: ({ context, event, guards, actions }, enq) => {
+              enq(() => actions['doSomething']({ context, event } as any));
+            }
           }
         }
       }
@@ -1327,10 +1415,10 @@ describe('fromActorRef', () => {
         <div>
           <button
             data-testid="inc"
-            onclick={(_) => props.counterRef().send({ type: 'INC' })}
+            onClick={(_) => props.counterRef().send({ type: 'INC' })}
           />
           <div data-testid="count">
-            {snapshot().context.subCount.subCount1.subCount2.count}
+            {(snapshot() as any).context.subCount.subCount1.subCount2.count}
           </div>
         </div>
       );
@@ -1342,7 +1430,7 @@ describe('fromActorRef', () => {
         <div>
           <button
             data-testid="change-service"
-            onclick={() => setService(counterService2)}
+            onClick={() => setService(counterService2)}
           />
           <Counter counterRef={service} />
         </div>
@@ -1357,29 +1445,27 @@ describe('fromActorRef', () => {
 
     expect(countEl.textContent).toBe('0');
     fireEvent.click(incButton);
+    flush();
     expect(countEl.textContent).toBe('1');
     fireEvent.click(changeServiceButton);
+    flush();
     expect(countEl.textContent).toBe('0');
     fireEvent.click(incButton);
+    flush();
     expect(countEl.textContent).toBe('1');
   });
 
   it('actor should only trigger effect of directly tracked value', () => {
     const counterMachine2 = createMachine({
-      types: {} as {
-        context: {
-          subCount: { subCount1: { subCount2: { count: number } } };
-        };
-      },
       id: 'counter',
       initial: 'active',
-      context: { subCount: { subCount1: { subCount2: { count: 0 } } } },
+      context: { subCount: { subCount1: { subCount2: { count: 0 } } } } as any,
       states: {
         active: {
           on: {
-            INC: {
-              actions: assign({
-                subCount: ({ context }) => ({
+            INC: ({ context }) => ({
+              context: {
+                subCount: {
                   ...context.subCount,
                   subCount1: {
                     ...context.subCount.subCount1,
@@ -1388,10 +1474,12 @@ describe('fromActorRef', () => {
                       count: context.subCount.subCount1.subCount2.count + 1
                     }
                   }
-                })
-              })
-            },
-            SOMETHING: { actions: 'doSomething' }
+                }
+              }
+            }),
+            SOMETHING: ({ context, event, guards, actions }, enq) => {
+              enq(() => actions['doSomething']({ context, event } as any));
+            }
           }
         }
       }
@@ -1402,25 +1490,23 @@ describe('fromActorRef', () => {
       const snapshot = fromActorRef(counterService);
       const [effectCount, setEffectCount] = createSignal(0);
       createEffect(
-        on(
-          () => snapshot().context.subCount.subCount1,
-          () => {
-            setEffectCount((prev) => prev + 1);
-          },
-          {
-            defer: true
-          }
-        )
+        () => (snapshot() as any).context.subCount.subCount1,
+        () => {
+          setEffectCount((prev) => prev + 1);
+        },
+        {
+          defer: true
+        }
       );
       return (
         <div>
           <button
             data-testid="inc"
-            onclick={(_) => counterService.send({ type: 'INC' })}
+            onClick={(_) => counterService.send({ type: 'INC' })}
           />
           <div data-testid="effect-count">{effectCount()}</div>
           <div data-testid="count">
-            {snapshot().context.subCount.subCount1.subCount2.count}
+            {(snapshot() as any).context.subCount.subCount1.subCount2.count}
           </div>
         </div>
       );
@@ -1434,39 +1520,32 @@ describe('fromActorRef', () => {
 
     expect(countEl.textContent).toBe('0');
     fireEvent.click(incButton);
+    flush();
     expect(countEl.textContent).toBe('1');
     expect(effectCountEl.textContent).toBe('0');
     fireEvent.click(incButton);
+    flush();
     expect(countEl.textContent).toBe('2');
     expect(effectCountEl.textContent).toBe('0');
   });
 
   it('referenced object in context should not update both services', () => {
     const latestValue = { value: 100 };
-    interface Context {
-      latestValue: { value: number };
-    }
     const machine = createMachine({
-      types: {} as {
-        context: Context;
-        events: { type: 'INC' };
-      },
       initial: 'initial',
       context: {
         latestValue
-      },
+      } as any,
       states: {
         initial: {
           on: {
-            INC: {
-              actions: [
-                assign({
-                  latestValue: ({ context }) => ({
-                    value: context.latestValue.value + 1
-                  })
-                })
-              ]
-            }
+            INC: ({ context }) => ({
+              context: {
+                latestValue: {
+                  value: context.latestValue.value + 1
+                }
+              }
+            })
           }
         }
       }
@@ -1483,23 +1562,23 @@ describe('fromActorRef', () => {
           <div>
             <button
               data-testid="inc-machine1"
-              onclick={() => actorRef1.send({ type: 'INC' })}
+              onClick={() => actorRef1.send({ type: 'INC' })}
             >
               INC 1
             </button>
             <div data-testid="value-machine1">
-              {snapshot1().context.latestValue.value}
+              {(snapshot1() as any).context.latestValue.value}
             </div>
           </div>
           <div>
             <button
               data-testid="inc-machine2"
-              onclick={() => actorRef2.send({ type: 'INC' })}
+              onClick={() => actorRef2.send({ type: 'INC' })}
             >
               INC 1
             </button>
             <div data-testid="value-machine2">
-              {snapshot2().context.latestValue.value}
+              {(snapshot2() as any).context.latestValue.value}
             </div>
           </div>
         </div>
@@ -1518,10 +1597,14 @@ describe('fromActorRef', () => {
 
     fireEvent.click(incMachine1);
 
+    flush();
+
     expect(machine1Value.textContent).toEqual('101');
     expect(machine2Value.textContent).toEqual('100');
 
     fireEvent.click(incMachine2);
+
+    flush();
 
     expect(machine1Value.textContent).toEqual('101');
     expect(machine2Value.textContent).toEqual('101');
@@ -1532,21 +1615,20 @@ describe('fromActorRef', () => {
       initial: 'one',
       states: {
         one: {
-          on: { NEXT: 'two' }
+          on: { NEXT: { target: 'two' } }
         },
         two: {}
       }
     });
 
     const machine = createMachine({
-      types: {} as { context: { ref: ActorRef<any, any> } },
-      context: ({ spawn }) => ({
+      context: ({ spawn }): { ref: ActorRef<any, any> } => ({
         ref: spawn(childMachine)
       }),
       initial: 'waiting',
       states: {
         waiting: {
-          on: { TEST: 'success' }
+          on: { TEST: { target: 'success' } }
         },
         success: {
           type: 'final'
@@ -1556,7 +1638,7 @@ describe('fromActorRef', () => {
 
     const App = () => {
       const [snapshot] = useActor(machine);
-      const childRef = snapshot.context.ref;
+      const childRef = untrack(() => (snapshot as any).context.ref);
       const childSnapshot = fromActorRef(childRef);
 
       return (
@@ -1564,7 +1646,7 @@ describe('fromActorRef', () => {
           <div data-testid="child-state">{childSnapshot().value}</div>
           <button
             data-testid="child-send"
-            onclick={() => childRef.send({ type: 'NEXT' })}
+            onClick={() => childRef.send({ type: 'NEXT' })}
           />
         </div>
       );
@@ -1576,7 +1658,155 @@ describe('fromActorRef', () => {
     const elSend = screen.getByTestId('child-send');
     expect(elState.textContent).toEqual('one');
     fireEvent.click(elSend);
+    flush();
 
     expect(elState.textContent).toEqual('two');
   });
+});
+
+it('observes actor updates between setup and effect subscription', () => {
+  const actor = createActor(
+    createMachine({
+      context: { count: 0 },
+      on: { INC: ({ context }) => ({ context: { count: context.count + 1 } }) }
+    })
+  ).start();
+  render(() => {
+    const snapshot = fromActorRef(actor);
+    actor.send({ type: 'INC' });
+    return <div data-testid="setup-count">{snapshot().context.count}</div>;
+  });
+  expect(screen.getByTestId('setup-count').textContent).toBe('1');
+  actor.stop();
+});
+
+it.each([false, true])(
+  'exposes terminal actor errors, initially errored: %s',
+  (initiallyErrored) => {
+    const actor = createActor(
+      createMachine({
+        on: {
+          FAIL: () => {
+            throw new Error('failed');
+          }
+        }
+      })
+    );
+    actor.subscribe({ error: () => {} });
+    actor.start();
+    if (initiallyErrored) actor.send({ type: 'FAIL' });
+    render(() => {
+      const snapshot = fromActorRef(actor);
+      return <div data-testid="terminal-status">{snapshot().status}</div>;
+    });
+    if (!initiallyErrored) actor.send({ type: 'FAIL' });
+    flush();
+    expect(screen.getByTestId('terminal-status').textContent).toBe('error');
+  }
+);
+
+it('replaces array and object context values without changing source data', () => {
+  const actor = createActor(
+    createMachine({
+      schemas: { events: { SET: z.object({ value: z.any() }) } },
+      context: { value: [1, 2] as any },
+      on: { SET: ({ event }) => ({ context: { value: event.value } }) }
+    })
+  ).start();
+  let selected!: ReturnType<typeof fromActorRef<typeof actor>>;
+  render(() => {
+    selected = fromActorRef(actor);
+    return <div />;
+  });
+  const shared = { nested: 6 };
+  const object: any = { item: 3, left: shared, right: shared };
+  object.self = object;
+  actor.send({ type: 'SET', value: object });
+  flush();
+  expect(Array.isArray(selected().context.value)).toBe(false);
+  expect(selected().context.value.item).toBe(3);
+  expect(selected().context.value.left).toBe(selected().context.value.right);
+  expect(selected().context.value.self).toBe(selected().context.value);
+  const array: any[] = [{ item: 4 }];
+  array.push(array);
+  actor.send({ type: 'SET', value: array });
+  flush();
+  expect(Array.isArray(selected().context.value)).toBe(true);
+  expect(selected().context.value[1]).toBe(selected().context.value);
+  actor.send({ type: 'SET', value: [{ item: 5 }] });
+  flush();
+  expect(array[0].item).toBe(4);
+  expect(object.item).toBe(3);
+  actor.stop();
+});
+
+const deepFreeze = <T,>(value: T): T => {
+  if (value && typeof value === 'object') {
+    Object.values(value).forEach(deepFreeze);
+    Object.freeze(value);
+  }
+  return value;
+};
+
+it.each([
+  ['unfrozen (production)', false],
+  ['frozen (development)', true]
+])('passes %s snapshots to the store without copying them', (_, frozen) => {
+  const prepare = (snapshot: any) => (frozen ? deepFreeze(snapshot) : snapshot);
+  let current: any = prepare({
+    status: 'active',
+    context: { other: { value: 1 }, list: [{ id: 1, done: false }] }
+  });
+  const observers = new Set<(snapshot: any) => void>();
+  const actor: any = {
+    getSnapshot: () => current,
+    subscribe: (observer: any) => {
+      const next = typeof observer === 'function' ? observer : observer.next;
+      observers.add(next);
+      return { unsubscribe: () => observers.delete(next) };
+    }
+  };
+  const emit = (next: any) => {
+    current = prepare(next);
+    observers.forEach((observer) => observer(next));
+  };
+
+  let otherRuns = 0;
+  let doneRuns = 0;
+  let selected!: Accessor<any>;
+  render(() => {
+    selected = fromActorRef(actor);
+    createEffect(
+      () => selected().context.other.value,
+      () => {
+        otherRuns++;
+      }
+    );
+    createEffect(
+      () => selected().context.list[0].done,
+      () => {
+        doneRuns++;
+      }
+    );
+    return <div />;
+  });
+  flush();
+
+  const first = current;
+  expect(storeSnapshot(selected().context)).toBe(first.context);
+  expect(Object.isFrozen(first.context.list[0])).toBe(frozen);
+
+  emit({
+    ...first,
+    context: {
+      ...first.context,
+      list: [{ ...first.context.list[0], done: true }]
+    }
+  });
+  flush();
+
+  expect(selected().context.list[0].done).toBe(true);
+  expect(storeSnapshot(selected().context.other)).toBe(first.context.other);
+  expect(otherRuns).toBe(1);
+  expect(doneRuns).toBe(2);
 });

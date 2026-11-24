@@ -1,4 +1,4 @@
-import { lazy, Suspense, useRef, useState, type ChangeEvent } from "react";
+import { lazy, Suspense, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import {
 	Copy,
 	LogOut,
@@ -9,6 +9,8 @@ import {
 	Trash2,
 	RotateCcw,
 	Bot,
+	KeyRound,
+	Eraser,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -20,7 +22,9 @@ import {
 	DropdownMenu,
 	DropdownMenuCheckboxItem,
 	DropdownMenuContent,
+	DropdownMenuGroup,
 	DropdownMenuItem,
+	DropdownMenuLabel,
 	DropdownMenuSeparator,
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -97,11 +101,11 @@ export function AccountBadge() {
 			<Button
 				variant="outline"
 				size="sm"
-				className="h-8 gap-2 text-xs text-destructive"
+				className="h-7 gap-1.5 rounded-full border-red-500/30 bg-background/85 px-2.5 text-xs text-red-600 shadow-raised backdrop-blur-md hover:bg-red-500/10 hover:text-red-600 dark:text-red-400 dark:hover:text-red-400"
 				onClick={handleDownloadStorageRecovery}
 				title={syncStateSummary.storageLastError ?? "Browser storage needs attention"}
 			>
-				<FileDown className="h-4 w-4" />
+				<FileDown className="size-3.5" />
 				Storage recovery
 			</Button>
 		);
@@ -117,11 +121,14 @@ export function AccountBadge() {
 		}
 	};
 
-	const statusColor = {
-		connected: "bg-green-500",
-		connecting: "bg-yellow-500",
-		offline: "bg-red-500",
-	}[connectionStatus];
+	const authRequired = authenticationStatus === "required";
+	const statusDot = authRequired
+		? "bg-red-500"
+		: {
+				connected: "bg-emerald-500 shadow-[0_0_0_3px_rgb(16_185_129/0.18)]",
+				connecting: "bg-amber-500 animate-pulse",
+				offline: "border border-muted-foreground/70 bg-transparent",
+			}[connectionStatus];
 
 	const statusText = {
 		connected: "Connected",
@@ -166,6 +173,17 @@ export function AccountBadge() {
 	const formatSyncTimestamp = (value: number | null) => {
 		if (!value) return "Never";
 		return new Date(value).toLocaleString();
+	};
+
+	const formatRelativeTime = (value: number | null) => {
+		if (!value) return "Never";
+		const seconds = Math.round((Date.now() - value) / 1000);
+		if (seconds < 45) return "Just now";
+		const minutes = Math.round(seconds / 60);
+		if (minutes < 60) return `${minutes}m ago`;
+		const hours = Math.round(minutes / 60);
+		if (hours < 24) return `${hours}h ago`;
+		return new Date(value).toLocaleDateString();
 	};
 
 	const formatLatencyMs = (value: number | null) => {
@@ -311,6 +329,13 @@ export function AccountBadge() {
 	};
 
 	const now = Date.now();
+	const DAY_MS = 24 * 60 * 60 * 1000;
+	const menuIcon = "size-4 stroke-[1.75]";
+	const sectionLabel = "px-2 pt-2 pb-1 text-[10.5px] font-medium tracking-[0.08em] text-muted-foreground uppercase";
+	const quarantineText =
+		syncStateSummary.quarantinedDurableMutations > 0
+			? `${syncStateSummary.quarantinedRecords} (${syncStateSummary.quarantinedDurableMutations} unsent)`
+			: `${syncStateSummary.quarantinedRecords}`;
 
 	return (
 		<>
@@ -329,41 +354,48 @@ export function AccountBadge() {
 						</DialogDescription>
 					</DialogHeader>
 					{deletedColumns.length === 0 ? (
-						<p className="text-sm text-muted-foreground">No recently deleted columns.</p>
-					) : (
-						<div className="min-h-0 space-y-2 overflow-y-auto">
-							{deletedColumns.map((item) => {
-								const expiresAt = item.deletedAt + 30 * 24 * 60 * 60 * 1000;
-								const remainingDays = Math.max(
-									0,
-									Math.ceil((expiresAt - now) / (24 * 60 * 60 * 1000)),
-								);
-
-							const handleRestore = async () => {
-								await restoreColumn(item.columnId);
-							};
-
-							return (
-								<div
-									key={`${item.columnId}-${item.deletedAt}`}
-									className="rounded border p-2"
-								>
-									<p className="font-mono text-xs">{item.columnId}</p>
-									<p className="text-xs text-muted-foreground">
-										Expires in {remainingDays} day{remainingDays === 1 ? "" : "s"}
-									</p>
-									<Button
-										variant="outline"
-										size="sm"
-										onClick={handleRestore}
-										className="mt-2 h-7 px-2"
-									>
-										Restore
-									</Button>
-								</div>
-							);
-							})}
+						<div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-border/80 px-6 py-8 text-center">
+							<div className="flex size-10 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+								<Trash2 className="size-5 stroke-[1.75]" />
+							</div>
+							<p className="text-sm font-medium">No recently deleted columns.</p>
+							<p className="text-xs text-muted-foreground">Deleted columns stay here for 30 days before they're removed for good.</p>
 						</div>
+					) : (
+						<ul className="min-h-0 divide-y divide-border/60 overflow-y-auto rounded-lg border border-border/70">
+							{deletedColumns.map((item) => {
+								const expiresAt = item.deletedAt + 30 * DAY_MS;
+								const remainingDays = Math.max(0, Math.ceil((expiresAt - now) / DAY_MS));
+								const handleRestore = async () => {
+									await restoreColumn(item.columnId);
+								};
+								return (
+									<li
+										key={`${item.columnId}-${item.deletedAt}`}
+										className="flex items-center gap-3 px-3 py-2.5"
+									>
+										<div className="min-w-0 flex-1 space-y-1.5">
+											<p className="truncate font-mono text-xs" title={item.columnId}>{item.columnId}</p>
+											<div className="flex items-center gap-2">
+												<div className="h-1 w-20 overflow-hidden rounded-full bg-muted" aria-hidden>
+													<div
+														className={cn("h-full rounded-full", remainingDays <= 3 ? "bg-amber-500" : "bg-muted-foreground/40")}
+														style={{ width: `${Math.min(100, (remainingDays / 30) * 100)}%` }}
+													/>
+												</div>
+												<p className="text-xs text-muted-foreground tabular-nums">
+													Expires in {remainingDays} day{remainingDays === 1 ? "" : "s"}
+												</p>
+											</div>
+										</div>
+										<Button variant="ghost" size="sm" onClick={handleRestore} className="h-7 gap-1.5 px-2">
+											<RotateCcw className="size-3.5" />
+											Restore
+										</Button>
+									</li>
+								);
+							})}
+						</ul>
 					)}
 				</DialogContent>
 			</Dialog>
@@ -377,191 +409,206 @@ export function AccountBadge() {
 					className="hidden"
 				/>
 				<Tooltip>
-				<TooltipTrigger asChild>
-					<DropdownMenuTrigger asChild>
-						<Button
-							variant="ghost"
-							size="sm"
-							className="h-8 gap-2 px-2 font-mono text-xs"
-						>
-							<span
-								className={cn(
-									"size-2 rounded-full",
-									statusColor,
-									connectionStatus === "connecting" && "animate-pulse",
-								)}
-							/>
-							<span className="hidden sm:inline">
-								{truncateAccountId(accountId)}
+					<TooltipTrigger asChild>
+						<DropdownMenuTrigger asChild>
+							<Button
+								variant="ghost"
+								size="sm"
+								className="h-7 gap-2 rounded-full border border-border/70 bg-background/85 px-2.5 font-mono text-[11px] tracking-tight tabular-nums shadow-raised backdrop-blur-md hover:bg-muted data-[state=open]:bg-muted max-sm:size-9 max-sm:justify-center max-sm:px-0"
+							>
+								<span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", statusDot)} />
+								<span className="max-sm:sr-only">{truncateAccountId(accountId)}</span>
+							</Button>
+						</DropdownMenuTrigger>
+					</TooltipTrigger>
+					<TooltipContent side="bottom" align="end" className="w-72 max-w-[calc(100vw-1.5rem)] p-0 text-left text-wrap">
+						<div className="flex items-center gap-2 border-b border-border/60 px-3 py-2">
+							<span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", statusDot)} />
+							<span className="text-xs font-medium">{effectiveStatusText}</span>
+							<span className="ml-auto rounded-full border border-border/70 bg-muted/60 px-1.5 py-px text-[10px] text-muted-foreground">
+								{syncModeText}
 							</span>
-						</Button>
-					</DropdownMenuTrigger>
-				</TooltipTrigger>
-				<TooltipContent>
-					<p className="font-mono">{displayAccountId(accountId)}</p>
-					<p className="text-muted-foreground">{effectiveStatusText}</p>
-					<p className="text-muted-foreground">Mode: {syncModeText}</p>
-					<p className="text-muted-foreground">
-						Mutation queue: {syncStateSummary.queueDepth}
-					</p>
-					<p className="text-muted-foreground">
-						Yjs queue: {syncStateSummary.yjsQueueDepth}
-					</p>
-					{yjsOutboxSummary.heldForTrashedColumns > 0 ? (
-						<p className="text-muted-foreground">
-							Held for trashed columns: {yjsOutboxSummary.heldForTrashedColumns}
+						</div>
+						<p className="border-b border-border/60 px-3 py-1.5 font-mono text-[11px] tracking-[0.06em] text-muted-foreground tabular-nums">
+							{displayAccountId(accountId)}
 						</p>
-					) : null}
-					<p className="text-muted-foreground">
-						Last server hydration: {formatSyncTimestamp(syncStateSummary.lastServerHydrationAt)}
-					</p>
-					<p className="text-muted-foreground">
-						Last replay: {formatSyncTimestamp(syncStateSummary.lastReplayAt)}
-					</p>
-					<p className="text-muted-foreground">
-						Replay latency: {formatLatencyMs(syncStateSummary.lastReplayLatencyMs)}
-					</p>
-					<p className="text-muted-foreground">
-						Revoked discards: {syncStateSummary.revokeDiscardCount}
-					</p>
-					<p className="text-muted-foreground">
-						Convergence failures: {syncStateSummary.convergenceFailureCount}
-					</p>
-					<p className="text-muted-foreground">
-						Browser storage: {syncStateSummary.storageState}
-					</p>
-					{syncStateSummary.quarantinedRecords > 0 ? (
-						<p className="text-destructive">
-							Recoverable storage records: {syncStateSummary.quarantinedRecords}
-							{syncStateSummary.quarantinedDurableMutations > 0
-								? ` (${syncStateSummary.quarantinedDurableMutations} unsent)`
-								: ""}
-						</p>
-					) : null}
-					{hasPendingYjsOutbox ? (
-						<>
-							<p className="text-muted-foreground">
-								Pending Yjs outbox: {yjsOutboxSummary.totalPending} message
-								{yjsOutboxSummary.totalPending === 1 ? "" : "s"} across {" "}
-								{yjsOutboxSummary.activeColumns} column
-								{yjsOutboxSummary.activeColumns === 1 ? "" : "s"}
-							</p>
-							{topYjsOutboxColumns.length > 0 ? (
-								<p className="text-muted-foreground">
-									Top backlog: {" "}
-									{topYjsOutboxColumns
-										.map(
-											([columnId, count]) =>
-												`${formatColumnId(columnId)} (${count})`,
-										)
-										.join(", ")}
-									{remainingYjsOutboxColumns > 0
-										? `, +${remainingYjsOutboxColumns} more`
-										: ""}
+						<TooltipSection title="Queue">
+							<TooltipRow label="Mutation queue" value={syncStateSummary.queueDepth} warn={syncStateSummary.queueDepth > 0 ? "amber" : undefined} />
+							<TooltipRow label="Yjs queue" value={syncStateSummary.yjsQueueDepth} warn={syncStateSummary.yjsQueueDepth > 0 ? "amber" : undefined} />
+							{yjsOutboxSummary.heldForTrashedColumns > 0 ? (
+								<TooltipRow label="Held for trashed columns" value={yjsOutboxSummary.heldForTrashedColumns} warn="amber" />
+							) : null}
+							{hasPendingYjsOutbox ? (
+								<TooltipRow
+									label="Pending Yjs outbox"
+									value={`${yjsOutboxSummary.totalPending} msg${yjsOutboxSummary.totalPending === 1 ? "" : "s"} · ${yjsOutboxSummary.activeColumns} col${yjsOutboxSummary.activeColumns === 1 ? "" : "s"}`}
+									warn="amber"
+								/>
+							) : null}
+							{hasPendingYjsOutbox && topYjsOutboxColumns.length > 0 ? (
+								<p className="pt-0.5 font-mono text-[10.5px] break-all text-muted-foreground">
+									Top backlog:{" "}
+									{topYjsOutboxColumns.map(([columnId, count]) => `${formatColumnId(columnId)} (${count})`).join(", ")}
+									{remainingYjsOutboxColumns > 0 ? `, +${remainingYjsOutboxColumns} more` : ""}
 								</p>
 							) : null}
-						</>
-					) : null}
-				</TooltipContent>
+						</TooltipSection>
+						<TooltipSection title="Last sync">
+							<TooltipRow label="Server hydration" value={formatRelativeTime(syncStateSummary.lastServerHydrationAt)} title={formatSyncTimestamp(syncStateSummary.lastServerHydrationAt)} />
+							<TooltipRow label="Replay" value={formatRelativeTime(syncStateSummary.lastReplayAt)} title={formatSyncTimestamp(syncStateSummary.lastReplayAt)} />
+							<TooltipRow label="Replay latency" value={formatLatencyMs(syncStateSummary.lastReplayLatencyMs)} />
+						</TooltipSection>
+						<TooltipSection title="Health" last>
+							<TooltipRow label="Revoked discards" value={syncStateSummary.revokeDiscardCount} warn={syncStateSummary.revokeDiscardCount > 0 ? "amber" : undefined} />
+							<TooltipRow label="Convergence failures" value={syncStateSummary.convergenceFailureCount} warn={syncStateSummary.convergenceFailureCount > 0 ? "red" : undefined} />
+							<TooltipRow label="Browser storage" value={syncStateSummary.storageState} warn={syncStateSummary.storageState === "durable" ? undefined : "amber"} />
+							{syncStateSummary.quarantinedRecords > 0 ? (
+								<TooltipRow label="Recoverable storage records" value={quarantineText} warn="red" />
+							) : null}
+						</TooltipSection>
+					</TooltipContent>
 				</Tooltip>
 
-				<DropdownMenuContent align="end" className="w-56">
-				<div className="px-2 py-1.5">
-					<p className="text-xs text-muted-foreground">Account ID — safe to share</p>
-					<p className="font-mono text-sm">{displayAccountId(accountId)}</p>
-				</div>
+				<DropdownMenuContent align="end" collisionPadding={12} className="w-72 max-w-[calc(100vw-1.5rem)] rounded-xl border-border/70 shadow-pop dark:ring-1 dark:ring-white/[0.06] [&_[data-slot=dropdown-menu-item]]:max-sm:py-2.5 [&_[data-slot=dropdown-menu-checkbox-item]]:max-sm:py-2.5">
+					<div className="-mx-1 -mt-1 mb-1 border-b border-border/60 bg-muted/40 px-3 py-2.5">
+						<p className="text-[11px] text-muted-foreground">Account ID — safe to share</p>
+						<p className="font-mono text-[13px] tracking-[0.06em] tabular-nums">{displayAccountId(accountId)}</p>
+					</div>
 
-				<DropdownMenuSeparator />
+					<DropdownMenuGroup>
+						<DropdownMenuLabel className={sectionLabel}>Account</DropdownMenuLabel>
+						<DropdownMenuItem onClick={handleCopy}>
+							{copied ? (
+								<Check className={cn(menuIcon, "text-emerald-500")} />
+							) : (
+								<Copy className={menuIcon} />
+							)}
+							{copied ? "Copied!" : "Copy Account ID"}
+						</DropdownMenuItem>
+						<DropdownMenuItem onClick={() => setShowCredentials(true)}>
+							<KeyRound className={menuIcon} />
+							Passkeys and recovery
+						</DropdownMenuItem>
+						{authenticationStatus === "authenticated" && (
+							<DropdownMenuItem onClick={() => setShowAgents(true)}>
+								<Bot className={menuIcon} />
+								Agents
+							</DropdownMenuItem>
+						)}
+					</DropdownMenuGroup>
 
-				<DropdownMenuItem onClick={handleCopy}>
-					{copied ? (
-						<Check className="mr-2 h-4 w-4 text-green-500" />
-					) : (
-						<Copy className="mr-2 h-4 w-4" />
-					)}
-					{copied ? "Copied!" : "Copy Account ID"}
-				</DropdownMenuItem>
-				<DropdownMenuItem onClick={() => setShowCredentials(true)}>
-					Passkeys and recovery
-				</DropdownMenuItem>
-				{authenticationStatus === "authenticated" && (
-					<DropdownMenuItem onClick={() => setShowAgents(true)}>
-						<Bot className="mr-2 h-4 w-4" />
-						Agents
+					<DropdownMenuSeparator className="bg-border/60" />
+
+					<DropdownMenuGroup>
+						<DropdownMenuLabel className={sectionLabel}>Data</DropdownMenuLabel>
+						<DropdownMenuItem onClick={handleExport}>
+							<Download className={menuIcon} />
+							Export Data
+						</DropdownMenuItem>
+						<DropdownMenuItem onClick={() => fileInputRef.current?.click()}>
+							<Upload className={menuIcon} />
+							Import Data
+						</DropdownMenuItem>
+						<DropdownMenuItem onClick={() => setShowGarbageCan(true)}>
+							<Trash2 className={menuIcon} />
+							Recently Deleted
+							<span className="ml-auto min-w-5 rounded-full bg-muted px-1.5 text-center text-[11px] text-muted-foreground tabular-nums">
+								{deletedColumns.length}
+							</span>
+						</DropdownMenuItem>
+						{syncStateSummary.quarantinedRecords > 0 ? (
+							<DropdownMenuItem onClick={handleDownloadStorageRecovery}>
+								<FileDown className={menuIcon} />
+								Download Unsent Changes Recovery
+							</DropdownMenuItem>
+						) : null}
+					</DropdownMenuGroup>
+
+					<DropdownMenuSeparator className="bg-border/60" />
+
+					<DropdownMenuGroup>
+						<DropdownMenuLabel className={sectionLabel}>Diagnostics</DropdownMenuLabel>
+						<DropdownMenuItem onClick={handleCopySyncDebugSnapshot}>
+							{copiedSyncDebug ? (
+								<Check className={cn(menuIcon, "text-emerald-500")} />
+							) : (
+								<Copy className={menuIcon} />
+							)}
+							{copiedSyncDebug ? "Copied Debug Snapshot!" : "Copy Sync Debug Snapshot"}
+						</DropdownMenuItem>
+						<DropdownMenuItem onClick={handleDownloadSyncDebugSnapshot}>
+							{downloadedSyncDebug ? (
+								<Check className={cn(menuIcon, "text-emerald-500")} />
+							) : (
+								<FileDown className={menuIcon} />
+							)}
+							{downloadedSyncDebug ? "Downloaded Debug Snapshot!" : "Download Sync Debug Snapshot"}
+						</DropdownMenuItem>
+						<DropdownMenuCheckboxItem
+							checked={redactSyncDebugIds}
+							onCheckedChange={(checked) => setRedactSyncDebugIds(checked === true)}
+						>
+							Redact IDs in Debug Snapshot
+						</DropdownMenuCheckboxItem>
+						<DropdownMenuItem onClick={handleResetSyncTelemetry} disabled={!hasSyncTelemetry}>
+							<Eraser className={menuIcon} />
+							Reset Sync Telemetry
+						</DropdownMenuItem>
+					</DropdownMenuGroup>
+
+					<DropdownMenuSeparator className="bg-border/60" />
+
+					<DropdownMenuItem
+						onClick={logout}
+						className="text-red-600 focus:bg-red-500/10 focus:text-red-600 dark:text-red-400 dark:focus:text-red-400"
+					>
+						<LogOut className={cn(menuIcon, "text-current")} />
+						Log Out
 					</DropdownMenuItem>
-				)}
 
-				<DropdownMenuItem onClick={handleCopySyncDebugSnapshot}>
-					{copiedSyncDebug ? (
-						<Check className="mr-2 h-4 w-4 text-green-500" />
-					) : (
-						<Copy className="mr-2 h-4 w-4" />
-					)}
-					{copiedSyncDebug
-						? "Copied Debug Snapshot!"
-						: "Copy Sync Debug Snapshot"}
-				</DropdownMenuItem>
+					<DropdownMenuSeparator className="bg-border/60" />
 
-				<DropdownMenuCheckboxItem
-					checked={redactSyncDebugIds}
-					onCheckedChange={(checked) => setRedactSyncDebugIds(checked === true)}
-				>
-					Redact IDs in Debug Snapshot
-				</DropdownMenuCheckboxItem>
-
-				<DropdownMenuItem onClick={handleDownloadSyncDebugSnapshot}>
-					{downloadedSyncDebug ? (
-						<Check className="mr-2 h-4 w-4 text-green-500" />
-					) : (
-						<FileDown className="mr-2 h-4 w-4" />
-					)}
-					{downloadedSyncDebug
-						? "Downloaded Debug Snapshot!"
-						: "Download Sync Debug Snapshot"}
-				</DropdownMenuItem>
-
-				{syncStateSummary.quarantinedRecords > 0 ? (
-					<DropdownMenuItem onClick={handleDownloadStorageRecovery}>
-						<FileDown className="mr-2 h-4 w-4" />
-						Download Unsent Changes Recovery
-					</DropdownMenuItem>
-				) : null}
-
-				<DropdownMenuItem onClick={handleExport}>
-					<Download className="mr-2 h-4 w-4" />
-					Export Data
-				</DropdownMenuItem>
-
-				<DropdownMenuItem onClick={() => fileInputRef.current?.click()}>
-					<Upload className="mr-2 h-4 w-4" />
-					Import Data
-				</DropdownMenuItem>
-
-				<DropdownMenuItem onClick={() => setShowGarbageCan(true)}>
-					<Trash2 className="mr-2 h-4 w-4" />
-					Recently Deleted ({deletedColumns.length})
-				</DropdownMenuItem>
-
-				<DropdownMenuItem
-					onClick={handleResetSyncTelemetry}
-					disabled={!hasSyncTelemetry}
-				>
-					<RotateCcw className="mr-2 h-4 w-4" />
-					Reset Sync Telemetry
-				</DropdownMenuItem>
-
-				<DropdownMenuSeparator />
-
-				<DropdownMenuItem onClick={logout} className="text-destructive">
-					<LogOut className="mr-2 h-4 w-4" />
-					Log Out
-				</DropdownMenuItem>
-
-				<DropdownMenuSeparator />
-
-				<p className="px-2 py-1 font-mono text-xs text-muted-foreground">Build {formatBuild()}</p>
+					<p className="truncate px-2 pt-1 pb-1.5 font-mono text-[10.5px] text-muted-foreground" title={`Build ${formatBuild()}`}>
+						Build {formatBuild()}
+					</p>
 				</DropdownMenuContent>
 			</DropdownMenu>
 		</>
+	);
+}
+
+function TooltipSection({ title, last, children }: { title: string; last?: boolean; children: ReactNode }) {
+	return (
+		<div className={cn("space-y-1 px-3 py-2", !last && "border-b border-border/60")}>
+			<p className="text-[10px] font-medium tracking-[0.08em] text-muted-foreground uppercase">{title}</p>
+			{children}
+		</div>
+	);
+}
+
+function TooltipRow({
+	label,
+	value,
+	title,
+	warn,
+}: {
+	label: string;
+	value: ReactNode;
+	title?: string;
+	warn?: "amber" | "red";
+}) {
+	return (
+		<div className="flex items-baseline justify-between gap-3 text-[11.5px]" title={title}>
+			<span className="text-muted-foreground">{label}</span>
+			<span
+				className={cn(
+					"text-right font-mono tabular-nums",
+					warn === "amber" && "text-amber-600 dark:text-amber-400",
+					warn === "red" && "text-red-600 dark:text-red-400",
+				)}
+			>
+				{value}
+			</span>
+		</div>
 	);
 }

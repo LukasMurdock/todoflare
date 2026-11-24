@@ -5,15 +5,17 @@ import type { SlateElementProps } from 'platejs/static';
 import { type VariantProps, cva } from 'class-variance-authority';
 import { SlateElement } from 'platejs/static';
 
-const headingVariants = cva('relative mb-1', {
+// Editorial scale for a 320px column: tight tracking on the large sizes,
+// fixed line-heights so rhythm holds. Live and static must stay identical.
+const headingVariants = cva('relative', {
   variants: {
     variant: {
-      h1: 'mt-[1em] pb-1 font-bold font-heading text-4xl',
-      h2: 'mt-[1.4em] pb-px font-heading font-semibold text-2xl tracking-tight',
-      h3: 'mt-[1em] pb-px font-heading font-semibold text-xl tracking-tight',
-      h4: 'mt-[0.75em] font-heading font-semibold text-lg tracking-tight',
-      h5: 'mt-[0.75em] font-semibold text-lg tracking-tight',
-      h6: 'mt-[0.75em] font-semibold text-base tracking-tight',
+      h1: 'mt-6 mb-2 font-bold font-heading text-[26px]/[32px] tracking-[-0.03em] [&:first-child]:mt-2',
+      h2: 'mt-6 mb-1 font-heading font-semibold text-[19px]/[26px] tracking-[-0.02em]',
+      h3: 'mt-5 mb-0.5 font-heading font-semibold text-base/6 tracking-[-0.01em]',
+      h4: 'mt-4 font-semibold text-sm/[22px]',
+      h5: 'mt-4 font-semibold text-[13px]/5 text-muted-foreground',
+      h6: 'mt-4 font-semibold text-[13px]/5 text-muted-foreground',
     },
   },
 });

@@ -20,6 +20,7 @@ interface ShortcutSection {
 	shortcuts: ShortcutItem[];
 }
 
+// A sculpted keycap: a faint top-to-bottom gradient with a pressed-in bottom lip.
 function Kbd({
 	children,
 	className,
@@ -30,7 +31,8 @@ function Kbd({
 	return (
 		<kbd
 			className={cn(
-				"inline-flex h-5 min-w-5 items-center justify-center rounded border border-border bg-muted px-1.5 font-mono text-xs text-muted-foreground",
+				"inline-flex h-5 min-w-5 items-center justify-center rounded-[5px] border border-border bg-gradient-to-b from-background to-muted px-1",
+				"font-sans text-[11px] font-medium tabular-nums text-muted-foreground shadow-[inset_0_-1px_0_var(--border)]",
 				className
 			)}
 		>
@@ -41,18 +43,11 @@ function Kbd({
 
 function ShortcutRow({ keys, description }: ShortcutItem) {
 	return (
-		<div className="flex items-center justify-between py-1.5">
+		<div className="flex h-9 items-center justify-between gap-4 px-5">
 			<span className="text-sm text-foreground">{description}</span>
 			<div className="flex items-center gap-1">
 				{keys.map((key, index) => (
-					<React.Fragment key={index}>
-						{index > 0 && (
-							<span className="text-muted-foreground text-xs">
-								+
-							</span>
-						)}
-						<Kbd>{key}</Kbd>
-					</React.Fragment>
+					<Kbd key={index}>{key}</Kbd>
 				))}
 			</div>
 		</div>
@@ -61,11 +56,11 @@ function ShortcutRow({ keys, description }: ShortcutItem) {
 
 function ShortcutSectionComponent({ title, shortcuts }: ShortcutSection) {
 	return (
-		<div className="space-y-1">
-			<h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+		<div className="py-3">
+			<h3 className="px-5 pb-1 text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground/80">
 				{title}
 			</h3>
-			<div className="divide-y divide-border/50">
+			<div className="divide-y divide-hairline">
 				{shortcuts.map((shortcut, index) => (
 					<ShortcutRow key={index} {...shortcut} />
 				))}
@@ -127,32 +122,37 @@ export function KeyboardShortcuts({
 
 	return (
 		<>
-			{/* Floating button */}
+			{/* Floating button: Mod / on a keyboard, ? on touch. */}
 			{button !== "none" && (
 				<button
 					data-board-part="shortcuts-button"
 					onClick={() => onOpenChange(true)}
 					className={cn(
 						button === "viewport" ? "fixed bottom-4 left-4 z-50" : "absolute bottom-4 left-4 z-50",
-						"flex items-center gap-1.5 rounded-lg border border-border bg-background/80 px-3 py-2 shadow-sm backdrop-blur-sm",
-						"text-muted-foreground transition-all hover:bg-muted hover:text-foreground",
-						"focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+						"flex h-8 items-center gap-1 rounded-full border border-hairline bg-background/80 px-2 shadow-raised backdrop-blur-md",
+						"text-muted-foreground hover:-translate-y-px hover:text-foreground hover:shadow-pop",
+						"transition-[transform,box-shadow,color] duration-200 ease-out-quint",
+						"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
 					)}
 					aria-label="Keyboard shortcuts"
 				>
-					<Kbd>{mod}</Kbd>
-					<span className="text-muted-foreground text-xs">+</span>
-					<Kbd>/</Kbd>
+					<span className="flex items-center gap-1 pointer-coarse:hidden">
+						<Kbd>{mod}</Kbd>
+						<Kbd>/</Kbd>
+					</span>
+					<span className="hidden pointer-coarse:inline-flex">
+						<Kbd>?</Kbd>
+					</span>
 				</button>
 			)}
 
 			{/* Dialog */}
 			<Dialog open={open} onOpenChange={onOpenChange}>
-				<DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-md">
-					<DialogHeader>
-						<DialogTitle>Keyboard Shortcuts</DialogTitle>
+				<DialogContent className="max-h-[85vh] gap-0 overflow-y-auto rounded-xl p-0 shadow-pop sm:max-w-[400px]">
+					<DialogHeader className="border-b border-hairline px-5 py-4">
+						<DialogTitle className="text-[15px] font-semibold tracking-[-0.01em]">Keyboard Shortcuts</DialogTitle>
 					</DialogHeader>
-					<div className="space-y-6 pt-2">
+					<div className="divide-y divide-hairline pb-1">
 						{sections.map((section) => (
 							<ShortcutSectionComponent
 								key={section.title}

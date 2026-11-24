@@ -1,4 +1,4 @@
-import { fromCallback } from "xstate";
+import { createCallbackLogic } from "xstate";
 import {
 	decodeWsMessage,
 	isWsFrameWithinLimits,
@@ -13,7 +13,11 @@ export interface ColumnSocketLike {
 	onopen: (() => void) | null;
 	onmessage: ((event: { data: unknown }) => void) | null;
 	onclose:
-		| ((event: { code?: number; reason?: string; wasClean?: boolean }) => void)
+		| ((event: {
+				code?: number;
+				reason?: string;
+				wasClean?: boolean;
+		  }) => void)
 		| null;
 	onerror: (() => void) | null;
 	send(data: ArrayBuffer): void;
@@ -64,7 +68,7 @@ async function normalizeSocketData(data: unknown): Promise<ArrayBuffer | null> {
 	return null;
 }
 
-export const columnSocketActor = fromCallback<
+export const columnSocketActor = createCallbackLogic<
 	ColumnSocketCommand,
 	ColumnSocketInput
 >(({ input, receive, sendBack }) => {

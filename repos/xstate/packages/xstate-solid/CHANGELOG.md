@@ -1,5 +1,105 @@
 # @xstate/solid
 
+## 3.0.0-beta.1
+
+### Major Changes
+
+- 1e2776f: `@xstate/solid` now requires Solid 2 (`solid-js` `^2.0.3`). Stay on `@xstate/solid` 2.x for Solid 1.
+  
+  - `useActor`, `useActorRef`, `useMachine` and `fromActorRef` keep their signatures. The snapshot is still a deeply reactive store: a read such as `snapshot.context.todos[0].done` only re-runs when that value changes.
+  - Actor refs and the machine in a snapshot are served as the real objects, not store proxies, so `snapshot.children.child.subscribe(...)` and `fromActorRef(snapshot.context.ref)` work as before. Other class instances in `context` are wrapped like any Solid store value; pass a class to `markRaw` from `solid-js` to keep its instances as they are.
+  - The actor starts in `onSettled` instead of `onMount`.
+  - `useActor`, `useActorRef` and `useMachine` also accept a function that returns an actor, so the actor can be derived from props or async data without reading them in the component body. The hook owns each actor the function returns: when it returns a new one, the old actor is stopped and the new one started, and the snapshot follows it. In this form `useActorRef` and the third tuple item are accessors.
+  
+  ```tsx
+  const [snapshot, send] = useActor(() =>
+    createActor(checkoutMachine, { input: { cartId: props.cartId } })
+  );
+  ```
+  - As with every Solid 2 write, a transition reaches the snapshot when Solid flushes, on the next microtask. To read the new snapshot right after `send(...)` outside a reactive scope, such as in a test, call `flush()` from `solid-js` first. Inside `onSettled` or an effect callback `flush()` is a no-op, because a flush is already running; defer the read with `queueMicrotask(...)` there.
+  
+  ```tsx
+  import { flush } from 'solid-js';
+  
+  send({ type: 'toggle' });
+  flush();
+  expect(snapshot.value).toBe('active');
+  ```
+
+## 3.0.0-beta.0
+
+### Minor Changes
+
+- 81dd3dd: `useActorRef`, `useActor` and `useMachine` accept an already-created actor, such as one from `restoreActor`. The `snapshot` option is removed; restore the actor with `restoreActor` from `xstate/persist` and pass it to the hook. The hook starts the actor on mount and stops it on unmount, as it does for actors it creates. Create the actor once per component instance.
+  
+  ```tsx
+  import { useActor } from '@xstate/solid';
+  import { restoreActor } from 'xstate/persist';
+  
+  function App(props) {
+    const [snapshot, send] = useActor(restoreActor(machine, props.persisted));
+    // ...
+  }
+  ```
+
+### Patch Changes
+
+- 6cf6982: XState v6 enters beta. No further breaking changes are planned for APIs tagged `@public`; any that are needed will be called out with a migration path. APIs tagged `@experimental` may still change.
+
+## 3.0.0-alpha.4
+
+### Patch Changes
+
+- ce9fab5: Public exports now carry `@public` or `@experimental` stability tags.
+
+## 3.0.0-alpha.3
+
+### Patch Changes
+
+- 5b6df81: `xstate` is now a required peer dependency of `@xstate/react`, `@xstate/vue`, `@xstate/svelte`, and `@xstate/solid`. Package managers now warn when `xstate` is missing instead of letting the adapter fail at runtime.
+  
+  `useActorRef()`, `useActor()`, and `useMachine()` in `@xstate/react` no longer write implementations provided on a later render onto the machine passed on the first render. A module-level machine shared by several components keeps its own implementations:
+  
+  ```tsx
+  const machine = createMachine({
+    actions: { notify: () => {} },
+    on: { DO: ({ actions }, enq) => enq(actions.notify) }
+  });
+  
+  function Custom({ onNotify }) {
+    // Only this component's actor uses `onNotify`.
+    useActorRef(machine.provide({ actions: { notify: onNotify } }));
+    return null;
+  }
+  
+  function Plain() {
+    // Still uses the original `notify`.
+    useActorRef(machine);
+    return null;
+  }
+  ```
+
+## 3.0.0-alpha.2
+
+### Patch Changes
+
+- 73fa80b: `useActor`, `useActorRef` and `useMachine` now require `input` for machines that declare a required input schema, matching `createActor`. Passing a persisted `snapshot` instead of `input` is allowed.
+
+## 3.0.0-alpha.1
+
+### Patch Changes
+
+- 69b6663: Keep selected values current when subscriptions start or resume. Vue and Solid now expose terminal error snapshots, and Solid preserves array/object context changes without changing the actor's source data. Vue uses one snapshot subscription per `useActor` call.
+  
+  React store selectors now honor custom comparisons when the selector argument is omitted.
+
+## 3.0.0-alpha.0
+
+### Patch Changes
+
+- Updated dependencies [[`54b0f8b`](https://github.com/statelyai/xstate/commit/54b0f8b22679721d567ca7e2b7074e86a41de6ef), [`8b309a1`](https://github.com/statelyai/xstate/commit/8b309a17415b4522a99a374753731471b8784dd5), [`6031736`](https://github.com/statelyai/xstate/commit/6031736fb13fee88439cdbbc329f7b23f7387a63), [`54b0f8b`](https://github.com/statelyai/xstate/commit/54b0f8b22679721d567ca7e2b7074e86a41de6ef), [`8b309a1`](https://github.com/statelyai/xstate/commit/8b309a17415b4522a99a374753731471b8784dd5), [`d11c72d`](https://github.com/statelyai/xstate/commit/d11c72df0d83cfa5fc4445995b85e79a601c1c9e), [`46692e3`](https://github.com/statelyai/xstate/commit/46692e3c51ed6c830a01361ef74653949d5259d6), [`46692e3`](https://github.com/statelyai/xstate/commit/46692e3c51ed6c830a01361ef74653949d5259d6)]:
+  - xstate@6.0.0-alpha.0
+
 ## 2.0.0
 
 ### Patch Changes

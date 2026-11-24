@@ -11,6 +11,8 @@ export default defineConfig({
 		cloudflareTest({
 			wrangler: { configPath: "./wrangler.jsonc" },
 			miniflare: {
+				// Vitest probes node:inspector during test startup.
+				compatibilityFlags: ["nodejs_compat", "enable_nodejs_inspector_module"],
 				bindings: { AUTH_TEST_BYPASS: "true", AGENT_ACCESS_ENABLED: "true", TEST_AUTH_MIGRATIONS: authMigrations },
 			},
 		}),

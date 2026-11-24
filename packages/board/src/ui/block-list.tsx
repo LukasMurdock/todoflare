@@ -44,7 +44,7 @@ function List(props: PlateElementProps) {
 
   return (
     <List
-      className="relative m-0 p-0"
+      className="relative m-0 p-0 tabular-nums marker:text-muted-foreground/70"
       style={{ listStyleType }}
       start={listStart}
     >
@@ -63,7 +63,7 @@ function TodoMarker(props: PlateElementProps) {
     <div contentEditable={false}>
       <Checkbox
         className={cn(
-          '-left-5 absolute top-[3px]',
+          '-left-4 absolute top-[calc(0.5lh-0.5rem)]',
           readOnly && 'pointer-events-none'
         )}
         {...checkboxProps}
@@ -76,9 +76,10 @@ function TodoLi(props: PlateElementProps) {
   return (
     <li
       className={cn(
-        'list-none',
-        (props.element.checked as boolean) &&
-          'text-muted-foreground line-through'
+        'list-none pl-2 line-through decoration-[1.5px] transition-[color,text-decoration-color] duration-200 ease-out',
+        (props.element.checked as boolean)
+          ? 'text-muted-foreground decoration-muted-foreground/60'
+          : 'decoration-transparent'
       )}
     >
       {props.children}

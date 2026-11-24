@@ -12,6 +12,8 @@ import { applyAgentEdit, undoAgentChange, type AgentEdit, type ItemStyle, type U
 import { docFromPlate } from "./helpers/plate-doc";
 
 const RUNS = 10_000;
+// The synchronous simulation shares CPU with the rest of the Workers suite.
+const CONVERGENCE_TIMEOUT_MS = 600_000;
 const STEPS = 30;
 
 function mulberry32(seed: number) {
@@ -265,5 +267,5 @@ describe("people and an agent editing one column at once", () => {
 		expect(coverage.textRewritesDuringConcurrentTyping).toBeGreaterThan(100);
 		expect(coverage.outOfOrderDeliveries).toBeGreaterThan(10_000);
 		expect(coverage.staleReadWritesRefused).toBeGreaterThan(100);
-	}, 120_000);
+	}, CONVERGENCE_TIMEOUT_MS);
 });

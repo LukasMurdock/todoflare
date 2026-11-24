@@ -13,6 +13,41 @@
 		@apply h-full;
 	}
 	body {
-		@apply bg-background text-foreground;
+		@apply bg-background text-foreground antialiased;
+		font-optical-sizing: auto;
+		text-rendering: optimizeLegibility;
+	}
+	:focus-visible {
+		outline-offset: 2px;
+	}
+}
+
+/* The welcome tour draws its arrows in; paths use pathLength={1}. */
+@keyframes tf-arrow-draw {
+	from {
+		stroke-dashoffset: 1;
+	}
+	to {
+		stroke-dashoffset: 0;
+	}
+}
+
+@keyframes tf-fade-in {
+	from {
+		opacity: 0;
+	}
+	to {
+		opacity: 1;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
 	}
 }

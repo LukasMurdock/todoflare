@@ -4,7 +4,6 @@ import {
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { usePresence } from "@/hooks/usePresence";
-import { cn } from "@/lib/utils";
 
 interface PresenceAvatarsProps {
 	columnId: string;
@@ -24,32 +23,28 @@ export function PresenceAvatars({
 	const visible = presence.slice(0, maxVisible);
 	const overflow = presence.length - maxVisible;
 
+	const label = `${presence.length} ${presence.length === 1 ? "person" : "people"} viewing`;
+
 	return (
 		<Tooltip>
 			<TooltipTrigger asChild>
-				<div className="flex items-center -space-x-1">
+				<div className="flex items-center -space-x-1.5" aria-label={label} role="img">
 					{visible.map((user) => (
-						<div
+						<span
 							key={user.accountId}
-							className={cn(
-								"size-3 rounded-full border border-background",
-								"ring-1 ring-background",
-							)}
+							className="size-4 rounded-full ring-2 ring-background"
 							style={{ backgroundColor: user.color }}
 						/>
 					))}
 					{overflow > 0 && (
-						<span className="text-xs text-muted-foreground ml-1">
+						<span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-0.5 text-[9px] font-semibold text-muted-foreground tabular-nums ring-2 ring-background">
 							+{overflow}
 						</span>
 					)}
 				</div>
 			</TooltipTrigger>
 			<TooltipContent>
-				<p>
-					{presence.length} {presence.length === 1 ? "person" : "people"}{" "}
-					viewing
-				</p>
+				<p>{label}</p>
 			</TooltipContent>
 		</Tooltip>
 	);

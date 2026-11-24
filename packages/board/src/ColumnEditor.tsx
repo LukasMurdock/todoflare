@@ -15,7 +15,7 @@ import { useModifierKeyPressed } from "./modifier-key";
 import { useBoardContext } from "./board-context";
 import { useColumnDocument, type OpenColumnDocument } from "./use-column-document";
 
-const PLACEHOLDER = "Start typing...";
+const PLACEHOLDER = "Start typing…";
 const UNBOUND_CONTAINER_CLASS = cn("ignore-click-outside/toolbar", editorContainerVariants());
 
 export interface ColumnEditorProps {

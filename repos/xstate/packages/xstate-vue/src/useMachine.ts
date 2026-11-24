@@ -3,29 +3,40 @@ import {
   Actor,
   ActorOptions,
   AnyStateMachine,
-  EventFromLogic,
   SnapshotFrom,
   type ConditionalRequired,
   type IsNotNever,
-  type RequiredActorOptionsKeys
+  type RequiredActorOptionsKeys,
+  type RequiredActorOptionsFor
 } from 'xstate';
 import { useActor } from './useActor.ts';
 
-/** @alias useActor */
+/**
+ * @alias useActor
+ *
+ * @public
+ */
+export function useMachine<TMachine extends AnyStateMachine>(
+  actor: Actor<TMachine>
+): {
+  snapshot: Ref<SnapshotFrom<TMachine>>;
+  send: Actor<TMachine>['send'];
+  actorRef: Actor<TMachine>;
+};
 export function useMachine<TMachine extends AnyStateMachine>(
   machine: TMachine,
   ...[options]: ConditionalRequired<
-    [
-      options?: ActorOptions<TMachine> & {
-        [K in RequiredActorOptionsKeys<TMachine>]: unknown;
-      }
-    ],
+    [options?: ActorOptions<TMachine> & RequiredActorOptionsFor<TMachine>],
     IsNotNever<RequiredActorOptionsKeys<TMachine>>
   >
 ): {
   snapshot: Ref<SnapshotFrom<TMachine>>;
-  send: (event: EventFromLogic<TMachine>) => void;
+  send: Actor<TMachine>['send'];
   actorRef: Actor<TMachine>;
-} {
-  return useActor(machine, options);
+};
+export function useMachine(
+  machine: AnyStateMachine | Actor<AnyStateMachine>,
+  options?: ActorOptions<AnyStateMachine>
+) {
+  return (useActor as any)(machine, options);
 }

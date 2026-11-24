@@ -1,4 +1,4 @@
-import { createActor, waitFor, type ActorRefFrom } from "xstate";
+import { createActor, waitFor, type Actor } from "xstate";
 import {
 	columnSessionConnectionStatus,
 	createColumnSessionMachine,
@@ -16,7 +16,7 @@ import type { ConnectionStatus, PresenceUser } from "../../types/account";
  * behind this registry.
  */
 
-type ColumnSessionActor = ActorRefFrom<ReturnType<typeof createColumnSessionMachine>>;
+type ColumnSessionActor = Actor<ReturnType<typeof createColumnSessionMachine>>;
 
 interface SessionRecord {
 	actor: ColumnSessionActor;

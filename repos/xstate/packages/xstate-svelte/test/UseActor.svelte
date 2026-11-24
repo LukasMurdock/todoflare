@@ -1,23 +1,22 @@
 <script lang="ts">
-  export let persistedState: AnyMachineSnapshot | undefined = undefined;
+  export let persistedState: Snapshot<unknown> | undefined = undefined;
 
   import { useActor } from '../src/index.ts';
   import { fetchMachine } from './fetchMachine.ts';
-  import type { AnyMachineSnapshot } from 'xstate';
-  import { fromPromise } from 'xstate/actors';
+  import type { Snapshot } from 'xstate';
+  import { createActor, createAsyncLogic } from 'xstate';
+  import { restoreActor } from 'xstate/persist';
 
   const onFetch = () =>
     new Promise<string>((res) => setTimeout(() => res('some data'), 50));
 
-  const { snapshot, send } = useActor(
-    fetchMachine.provide({
-      actors: {
-        fetchData: fromPromise(onFetch)
-      }
-    }),
-    {
-      snapshot: persistedState
+  const logic = fetchMachine.provide({
+    actors: {
+      fetchData: createAsyncLogic({ run: onFetch })
     }
+  });
+  const { snapshot, send } = useActor(
+    persistedState ? restoreActor(logic, persistedState) : createActor(logic)
   );
 </script>
 

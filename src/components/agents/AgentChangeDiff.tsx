@@ -13,12 +13,40 @@ function Marker({ item }: { item: AgentDiffItem }) {
 	return null;
 }
 
-function Line({ item, className, children }: { item: AgentDiffItem; className?: string; children?: React.ReactNode }) {
+type Sign = "added" | "removed" | "changed";
+
+const SIGN_GLYPH: Record<Sign, string> = { added: "+", removed: "−", changed: "~" };
+const SIGN_CLASS: Record<Sign, string> = {
+	added: "text-emerald-600 dark:text-emerald-400",
+	removed: "text-red-600 dark:text-red-400",
+	changed: "text-muted-foreground",
+};
+const STRIP_CLASS: Record<Sign, string> = {
+	added: "bg-emerald-500/[0.08]",
+	removed: "bg-red-500/[0.06]",
+	changed: "",
+};
+
+/** One diff row: a +/−/~ gutter, then the item indented to its depth. */
+function Row({ sign, depth, className, children, ...props }: { sign: Sign; depth: number; className?: string; children: React.ReactNode; "data-diff"?: string }) {
 	return (
-		<div className={cn("flex items-start gap-1.5", item.style.startsWith("heading") && "font-semibold", className)} style={{ paddingLeft: `${item.depth * 0.75}rem` }}>
+		<div className={cn("flex items-start px-1.5 py-0.5", STRIP_CLASS[sign], className)} {...props}>
+			<span aria-hidden className={cn("w-3.5 shrink-0 font-mono font-semibold select-none", SIGN_CLASS[sign])}>
+				{SIGN_GLYPH[sign]}
+			</span>
+			<div className="flex min-w-0 flex-1 items-start gap-1.5" style={{ paddingLeft: `${depth * 0.75}rem` }}>
+				{children}
+			</div>
+		</div>
+	);
+}
+
+function Line({ item, sign, className, children }: { item: AgentDiffItem; sign: Sign; className?: string; children?: React.ReactNode }) {
+	return (
+		<Row sign={sign} depth={item.depth} className={cn(item.style.startsWith("heading") && "font-semibold", className)}>
 			<Marker item={item} />
 			<span className="min-w-0 break-words">{children ?? (item.text || <em className="text-muted-foreground">empty line</em>)}</span>
-		</div>
+		</Row>
 	);
 }
 
@@ -27,7 +55,7 @@ function Changed({ before, after }: { before: AgentDiffItem; after: AgentDiffIte
 	if (before.text === after.text) {
 		// Only the checkbox, style or nesting changed: one line, old marker → new marker.
 		return (
-			<div className="flex items-start gap-1.5" data-diff="changed" style={{ paddingLeft: `${after.depth * 0.75}rem` }}>
+			<Row sign="changed" depth={after.depth} data-diff="changed">
 				{markerChanged && (
 					<>
 						<span className="text-muted-foreground">
@@ -40,21 +68,21 @@ function Changed({ before, after }: { before: AgentDiffItem; after: AgentDiffIte
 				)}
 				<Marker item={after} />
 				<span className={cn("min-w-0 break-words", after.style.startsWith("heading") && "font-semibold")}>{after.text}</span>
-			</div>
+			</Row>
 		);
 	}
 	const text = textChange(before.text, after.text);
 	return (
-		<div className="space-y-0.5" data-diff="changed">
+		<div data-diff="changed">
 			{markerChanged && (
-				<Line item={before} className="text-muted-foreground line-through decoration-red-500/60">
+				<Line item={before} sign="removed" className="text-muted-foreground line-through decoration-red-500/50">
 					{before.text}
 				</Line>
 			)}
-			<Line item={after}>
+			<Line item={after} sign="changed">
 				{text.prefix}
-				{text.removed && <del className="rounded-sm bg-red-500/15 text-red-700 dark:text-red-300">{text.removed}</del>}
-				{text.added && <ins className="rounded-sm bg-green-500/15 text-green-700 no-underline dark:text-green-300">{text.added}</ins>}
+				{text.removed && <del className="rounded-sm bg-red-500/15 text-foreground decoration-red-500/60">{text.removed}</del>}
+				{text.added && <ins className="rounded-sm bg-emerald-500/20 text-foreground no-underline">{text.added}</ins>}
 				{text.suffix}
 			</Line>
 		</div>
@@ -65,23 +93,26 @@ function Changed({ before, after }: { before: AgentDiffItem; after: AgentDiffIte
 export function AgentChangeDiffView({ diff, muted }: { diff: AgentChangeDiff; muted?: boolean }) {
 	if (diff.entries.length === 0) return null;
 	return (
-		<div className={cn("space-y-1 rounded bg-muted/50 p-1.5 text-xs", muted && "opacity-60")} data-testid="agent-change-diff">
+		<div
+			className={cn("overflow-hidden rounded-md border border-border/60 bg-muted/20 py-0.5 text-xs leading-5 text-foreground", muted && "opacity-60")}
+			data-testid="agent-change-diff"
+		>
 			{diff.entries.map((entry, index) =>
 				entry.kind === "added" ? (
-					<Line key={index} item={entry.item} className="text-green-700 dark:text-green-300">
+					<Line key={index} item={entry.item} sign="added">
 						<span className="sr-only">Added: </span>
-						{entry.item.text || <em>empty line</em>}
+						{entry.item.text || <em className="text-muted-foreground">empty line</em>}
 					</Line>
 				) : entry.kind === "removed" ? (
-					<Line key={index} item={entry.item} className="text-red-700 line-through dark:text-red-300">
+					<Line key={index} item={entry.item} sign="removed" className="line-through decoration-red-500/50">
 						<span className="sr-only">Removed: </span>
-						{entry.item.text || <em>empty line</em>}
+						{entry.item.text || <em className="text-muted-foreground">empty line</em>}
 					</Line>
 				) : (
 					<Changed key={index} before={entry.before} after={entry.after} />
 				),
 			)}
-			{diff.omitted > 0 && <p className="text-muted-foreground">and {diff.omitted} more</p>}
+			{diff.omitted > 0 && <p className="px-1.5 py-0.5 pl-5 text-muted-foreground">and {diff.omitted} more</p>}
 		</div>
 	);
 }

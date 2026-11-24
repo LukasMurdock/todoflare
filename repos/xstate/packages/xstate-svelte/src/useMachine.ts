@@ -1,23 +1,32 @@
 import {
+  Actor,
   ActorOptions,
   AnyStateMachine,
   type ConditionalRequired,
   type IsNotNever,
-  type RequiredActorOptionsKeys
+  type RequiredActorOptionsKeys,
+  type RequiredActorOptionsFor
 } from 'xstate';
-import { useActor } from './useActor';
+import { useActor } from './useActor.ts';
 
-/** @alias useActor */
+/**
+ * @alias useActor
+ *
+ * @public
+ */
+export function useMachine<TMachine extends AnyStateMachine>(
+  actor: Actor<TMachine>
+): ReturnType<typeof useActor<TMachine>>;
 export function useMachine<TMachine extends AnyStateMachine>(
   machine: TMachine,
   ...[options]: ConditionalRequired<
-    [
-      options?: ActorOptions<TMachine> & {
-        [K in RequiredActorOptionsKeys<TMachine>]: unknown;
-      }
-    ],
+    [options?: ActorOptions<TMachine> & RequiredActorOptionsFor<TMachine>],
     IsNotNever<RequiredActorOptionsKeys<TMachine>>
   >
+): ReturnType<typeof useActor<TMachine>>;
+export function useMachine(
+  machine: AnyStateMachine | Actor<AnyStateMachine>,
+  options?: ActorOptions<AnyStateMachine>
 ) {
-  return useActor(machine, options);
+  return (useActor as any)(machine, options);
 }

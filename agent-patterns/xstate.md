@@ -15,22 +15,23 @@ vendored source under `repos/xstate/`; it is not a replacement for that source.
 ## Machine organization
 
 - Define reusable machine logic outside React components.
-- Prefer `setup({ ... }).createMachine({ ... })` so actors, actions, guards, and
-  delays have explicit names and inferred types.
+- Prefer `setup({ ... }).createMachine({ ... })` with typed `schemas` and named
+  actors, guards, and delays.
 - Model mutually exclusive situations as states rather than collections of
   booleans.
 - Name events for domain occurrences or user intent, and use typed event payloads.
 - Keep context limited to data; represent behavior and lifecycle in states and
   transitions.
-- Use `assign(...)` for context updates. Keep guards and assignment functions
-  deterministic.
+- Return shallow `context` patches from transition and entry functions. Keep
+  guards and patch calculations deterministic, and queue effects with `enq`.
 - Model asynchronous work as actors and handle success, failure, and cancellation
   explicitly rather than starting promises from actions.
 
 ## React integration
 
 - Import React bindings from `@xstate/react` and machine APIs from `xstate`.
-- Use `useMachine` when a component owns an actor's lifetime.
+- Use `useActor` when a component owns an actor's lifetime. The hooks keep
+  the original machine for the component's lifetime.
 - Use `useActorRef` plus `useSelector` when render subscriptions should be narrow
   or an actor reference needs to be shared.
 - Select the smallest value a component needs; avoid subscribing a large subtree

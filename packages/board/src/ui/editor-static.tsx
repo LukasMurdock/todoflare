@@ -31,7 +31,8 @@ export const editorVariants = cva(
           'size-full px-16 pt-4 pb-72 text-base sm:px-[max(64px,calc(50%-350px))]',
         demo: 'size-full px-16 pt-4 pb-72 text-base sm:px-[max(64px,calc(50%-350px))]',
         fullWidth: 'size-full px-16 pt-4 pb-72 text-base sm:px-24',
-        column: 'size-full px-3 pt-2 pb-16 text-sm',
+        column:
+          'size-full px-4 pt-3 pb-24 text-sm leading-[22px] max-sm:text-[15px] max-sm:leading-6',
         none: '',
         select: 'px-3 py-2 text-base data-readonly:w-fit',
       },

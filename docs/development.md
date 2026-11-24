@@ -154,8 +154,39 @@ and review the `api-report.md` diff. The host may import only
 
 ### Add state machine behavior
 
-Follow [agent-patterns/xstate.md](../agent-patterns/xstate.md). Check XState
-APIs against `repos/xstate/` (read-only), not web snippets.
+Follow [agent-patterns/xstate.md](../agent-patterns/xstate.md). The app uses
+XState 6 beta and the matching React bindings. Check APIs against the vendored
+release in `repos/xstate/` (read-only).
+
+### Regenerate the social preview
+
+`public/og.png` (the `og:image`) and `public/og.mp4` (the looping `og:video`)
+are rendered by `node scripts/generate-og.mjs`, which draws every frame in
+Playwright's Chromium and encodes with `ffmpeg` (needed on `PATH`). It uses SF
+Pro Display from `/Library/Fonts` when present. Frame 0 of the video is the
+still image, and the loop ends on it. `--qa <dir>` writes a contact sheet,
+thumbnails and a frame 0 vs frame 300 SSIM check. `--preview 0,150,233` renders
+single frames. The meta tags live in `index.html`.
+
+### UI capture & design hill climbs
+
+`pnpm capture:ui` (`design-capture/cli.mjs`) boots an isolated E2E build against
+`.wrangler/e2e-state`, captures every Todoflare surface and state (guest,
+signed-in, sharing/presence, public links, MCP agents/diffs, OAuth consent,
+recovery/offline banners, and multi-step flows), and writes an interactive UI
+review feed, agent-readable contact sheets, and `manifest.json` to
+`.design-review/<run>/` (gitignored).
+
+- `pnpm capture:ui --list` — list all built-in capture scenarios
+- `pnpm capture:ui:all` — capture all surfaces across light & dark themes and
+  desktop & mobile viewports
+- `pnpm capture:ui --run baseline` then
+  `pnpm capture:ui --run iter-01 --compare baseline --filter "share-*,agents-*"`
+  — run a fast targeted hill-climb diff with before/after slider & pixel diffs
+- `pnpm capture:ui --spec design-capture/example-spec.json --video` — capture
+  any ad-hoc account configuration, route, or interactive flow with MP4 video
+
+See [design-capture/README.md](../design-capture/README.md) for all options.
 
 ## Keeping docs true
 

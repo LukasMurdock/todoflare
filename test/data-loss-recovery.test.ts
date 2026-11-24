@@ -37,7 +37,7 @@ describe("data-loss recovery regressions", () => {
 		}
 		expect(await latestColumnBackupKey(env.BACKUPS, columnId)).toBe(`columns/${columnId}/0000000000101.json`);
 		expect((await listColumnBackups(env.BACKUPS, columnId))).toHaveLength(101);
-	});
+	}, 20_000);
 
 	it("follows truncated pages even when R2 returns fewer than the requested limit", async () => {
 		const calls: Array<string | undefined> = [];

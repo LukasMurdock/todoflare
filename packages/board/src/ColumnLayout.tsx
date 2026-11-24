@@ -30,18 +30,27 @@ export function ColumnLayout({
 	identity,
 	renderColumnActions,
 }: ColumnLayoutProps) {
-	const height = layout === "page" ? "h-full" : "min-h-0 flex-1";
+	// "page" grows with the page but never stops short of the viewport, so
+	// column hairlines, collapsed rails and the add gutter run to the bottom.
+	const height = layout === "page" ? "h-full min-h-dvh" : "min-h-0 flex-1";
 	if (status === "loading") {
 		return <div className={cn("flex", height)} aria-busy="true" />;
 	}
 
 	return (
-		<div className={cn("flex overflow-x-auto pr-28 scrollbar-hide scroll-pr-28", height)}>
+		<div
+			className={cn(
+				"flex overflow-x-auto pr-28 scrollbar-hide scroll-pr-28",
+				"max-sm:snap-x max-sm:snap-proximity max-sm:scroll-px-3",
+				height
+			)}
+		>
 			{columns.map((column, index) => (
 				<div
 					key={column.id}
 					data-column-id={column.id}
 					data-board-part={index === 0 ? "first-column" : undefined}
+					className="flex shrink-0 max-sm:snap-start"
 				>
 					<TodoColumn
 						column={column}
@@ -54,8 +63,8 @@ export function ColumnLayout({
 				</div>
 			))}
 
-			{/* Add column button */}
-			<div className="flex h-full w-16 flex-shrink-0 items-start justify-center pt-2">
+			{/* Add column button, centred on the h-10 column header */}
+			<div className="flex w-16 shrink-0 items-start justify-center pt-1">
 				{onAdd && (
 					<button
 						data-board-part="add-column"
@@ -63,19 +72,22 @@ export function ColumnLayout({
 						type="button"
 						aria-label="Add column"
 						className={cn(
-							"flex h-8 w-8 items-center justify-center rounded-md",
-							"border border-dashed border-border",
-							"text-muted-foreground hover:border-foreground hover:text-foreground",
-							"transition-colors"
+							"grid size-8 place-items-center rounded-lg",
+							"border border-border bg-background text-muted-foreground shadow-raised",
+							"hover:-translate-y-px hover:border-foreground/20 hover:text-foreground",
+							"active:translate-y-0 active:scale-[0.96]",
+							"transition-[color,border-color,transform,box-shadow] duration-150 ease-out-quint",
+							"[&_svg]:transition-transform [&_svg]:duration-300 [&_svg]:ease-spring hover:[&_svg]:rotate-90",
+							"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
 						)}
 						title="Add column"
 					>
-						<PlusIcon className="h-4 w-4" />
+						<PlusIcon className="size-4" />
 					</button>
 				)}
 			</div>
 
-			<div className="h-full w-12 flex-shrink-0" aria-hidden="true" />
+			<div className="w-12 shrink-0" aria-hidden="true" />
 		</div>
 	);
 }
@@ -88,7 +100,7 @@ function PlusIcon({ className }: { className?: string }) {
 			viewBox="0 0 24 24"
 			fill="none"
 			stroke="currentColor"
-			strokeWidth="2"
+			strokeWidth="1.75"
 			strokeLinecap="round"
 			strokeLinejoin="round"
 			className={className}

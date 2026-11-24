@@ -6,6 +6,8 @@ import { expect, test } from "@playwright/test";
 // #16243). Requests the Worker rejects before reading the body, like an MCP
 // call without a token, must not break the requests after them.
 test("a request rejected before its body is read does not break the next one", async ({ baseURL }) => {
+	// Four lanes issue 800 requests against the local Workers runtime.
+	test.setTimeout(90_000);
 	const base = baseURL ?? "http://127.0.0.1:4173";
 	const failures: string[] = [];
 	const loop = async (lane: number) => {

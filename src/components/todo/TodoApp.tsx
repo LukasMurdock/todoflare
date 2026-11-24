@@ -125,8 +125,8 @@ export function TodoApp() {
 				<>
 					<StorageRecoveryBanner />
 					<ReconnectBanner />
-					{/* Account badge in top-right corner */}
-					<div className="fixed top-2 right-2 z-50">
+					{/* Account badge: top-right on desktop, bottom-right on mobile so it never covers column headers */}
+					<div data-account-badge className="fixed top-2 right-2 z-50 max-sm:top-auto max-sm:right-4 max-sm:bottom-4">
 						<AccountBadge />
 					</div>
 				</>

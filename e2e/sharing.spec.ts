@@ -121,16 +121,10 @@ test.describe("collaborative editing", () => {
 		const ownerPage = await ownerContext.newPage();
 
 		await bootstrapAuthenticatedPage(ownerPage, ownerId);
-		await addColumnAndGetId(ownerPage);
+		const columnId = await addColumnAndGetId(ownerPage);
+		const column = ownerPage.locator(`[data-column-id="${columnId}"]`);
 
-		const publicText = `Public text ${Date.now()}`;
-		const ownerEditor = ownerPage
-			.getByRole("textbox", { name: "Todo editor" })
-			.first();
-		await ownerEditor.click();
-		await ownerPage.keyboard.type(publicText);
-
-		await ownerPage.getByRole("button", { name: "Share column" }).first().click();
+		await column.getByRole("button", { name: "Share column" }).click();
 		const publicLinkResponsePromise = ownerPage.waitForResponse(
 			(response) =>
 				response.request().method() === "POST" &&
@@ -156,6 +150,10 @@ test.describe("collaborative editing", () => {
 		const publicPage = await publicContext.newPage();
 		await publicPage.goto(publicUrl);
 		await expect(publicPage.getByText("Public View")).toBeVisible();
+		const publicText = `Public text ${Date.now()}`;
+		const ownerEditor = column.getByRole("textbox", { name: "Todo editor" });
+		await ownerEditor.click();
+		await ownerEditor.pressSequentially(publicText);
 		await expect(publicPage.getByText(publicText)).toBeVisible({ timeout: 15000 });
 		await expect(publicPage.getByRole("link", { name: "Create your own" })).toBeVisible();
 		await expect(publicPage.getByRole("button", { name: "Add column" })).toHaveCount(0);
@@ -179,8 +177,9 @@ test.describe("collaborative editing", () => {
 		const ownerPage = await ownerContext.newPage();
 		await bootstrapAuthenticatedPage(ownerPage, ownerId);
 		const columnId = await addColumnAndGetId(ownerPage);
+		const column = ownerPage.locator(`[data-column-id="${columnId}"]`);
 
-		await ownerPage.getByRole("button", { name: "Share column" }).first().click();
+		await column.getByRole("button", { name: "Share column" }).click();
 		await ownerPage.getByRole("textbox", { name: "Account ID" }).fill(collaboratorId);
 		const shareResponsePromise = ownerPage.waitForResponse(
 			(response) =>

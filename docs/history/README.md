@@ -12,3 +12,4 @@ them may no longer exist. For how things work now, read
 | [xstate-2.md](xstate-2.md) | Design for the ordered account-convergence actor (2026-07-20) |
 | [velocity-01.md](velocity-01.md) | Developer velocity audit and its workflow traces |
 | [data-loss-remediation.md](data-loss-remediation.md) | The seven data-loss findings, their fixes and the 2026-10-01 rollout |
+| [microsoft-sso-research.md](microsoft-sso-research.md) | Requirements, risks and recommended design for Microsoft Entra ID login (2026-10-24) |

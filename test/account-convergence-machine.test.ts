@@ -129,6 +129,16 @@ function harness(options?: {
 }
 
 describe("account convergence machine", () => {
+	it.each([
+		{ type: "LOGIN", accountId: ACCOUNT_ID },
+		{ type: "CREATE_ACCOUNT" },
+	] as const)("persists the account ID after $type", async (event) => {
+		const test = harness();
+		test.actor.send(event);
+		await waitFor(test.actor, (state) => state.matches("ready"));
+		expect(test.persistedCredentials).toEqual([ACCOUNT_ID]);
+	});
+
 	it("retains cached content and queued edits through expiry, failed reconnect and same-account reconnect", async () => {
 		let authenticated = false;
 		let replayed = 0;

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Bot, Undo2 } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -97,61 +98,112 @@ export function ColumnAgentsMenu({ accountId, columnId }: ColumnAgentsMenuProps)
 		}
 	};
 
+	const eyebrow = "text-[10.5px] font-medium tracking-[0.08em] text-muted-foreground uppercase";
+
 	return (
 		<Popover open={open} onOpenChange={setOpen}>
 			<PopoverTrigger asChild>
-				<button className="relative rounded p-1 hover:bg-muted" aria-label="Agents for this column" title="Agents">
-					<Bot className="h-4 w-4 text-muted-foreground" />
-					{activeHere.length > 0 && <span className="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-sky-500" aria-hidden />}
+				<button
+					className="relative rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-brand/25 focus-visible:outline-none data-[state=open]:bg-muted data-[state=open]:text-foreground"
+					aria-label="Agents for this column"
+					title="Agents"
+				>
+					<Bot className="size-4 stroke-[1.75]" />
+					{activeHere.length > 0 && <span className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-brand ring-2 ring-background" aria-hidden />}
 				</button>
 			</PopoverTrigger>
-			<PopoverContent className="w-96" align="end">
-				<div className="space-y-4">
-					<section className="space-y-2">
-						<h4 className="text-sm font-medium">Agent access</h4>
+			<PopoverContent
+				className="w-[min(24rem,calc(100vw-1.5rem))] p-0 outline-none"
+				align="end"
+				collisionPadding={12}
+				onOpenAutoFocus={(event) => event.preventDefault()}
+			>
+				<div className="flex items-center gap-2 border-b border-border/60 px-3 py-2.5">
+					<Bot className="size-4 stroke-[1.75] text-muted-foreground" />
+					<h3 className="text-[13px] font-semibold">Agents</h3>
+					{activeHere.length > 0 && (
+						<span className="ml-auto inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+							<span aria-hidden className="size-1.5 rounded-full bg-brand" />
+							{activeHere.length} with access
+						</span>
+					)}
+				</div>
+				<div className="flex flex-col gap-4 p-3">
+					<section className="flex flex-col gap-2">
+						<h4 className={eyebrow}>Agent access</h4>
 						{agents.length === 0 ? (
-							<p className="text-xs text-muted-foreground">No agents connected. Connect one from your account menu → Agents.</p>
+							<p className="text-xs leading-5 text-muted-foreground">No agents connected. Connect one from your account menu → Agents.</p>
 						) : (
-							agents.map((agent) => (
-								<div key={agent.id} className="flex items-center justify-between gap-2">
-									<span className="min-w-0 truncate text-sm">{agent.name}</span>
-									<AgentLevelSelect
-										label={`${agent.name} access to this column`}
-										value={agent.grants.find((grant) => grant.columnId === columnId)?.level ?? null}
-										disabled={locked}
-										onChange={(level) => setLevel(agent.id, level)}
-									/>
-								</div>
-							))
+							<ul className="flex flex-col gap-1">
+								{agents.map((agent) => (
+									<li key={agent.id} className="flex items-center justify-between gap-2">
+										<span className="flex min-w-0 items-center gap-2">
+											<span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+												<Bot className="size-3.5 stroke-[1.75]" />
+											</span>
+											<span className="min-w-0 truncate text-[13px]">{agent.name}</span>
+										</span>
+										<AgentLevelSelect
+											label={`${agent.name} access to this column`}
+											value={agent.grants.find((grant) => grant.columnId === columnId)?.level ?? null}
+											disabled={locked}
+											onChange={(level) => setLevel(agent.id, level)}
+										/>
+									</li>
+								))}
+							</ul>
 						)}
 						{recent.pending && <ConfirmSignIn busy={busy} onConfirm={confirm} onCancel={recent.cancel} />}
 					</section>
-					<section className="space-y-2 border-t pt-3">
-						<h4 className="text-sm font-medium">Recent agent changes</h4>
+					<section className="flex flex-col gap-2 border-t border-border/60 pt-3">
+						<h4 className={eyebrow}>Recent agent changes</h4>
 						{changes === null ? (
-							<p className="text-xs text-muted-foreground">Loading…</p>
+							<div className="flex flex-col gap-2" aria-busy>
+								<p className="sr-only">Loading…</p>
+								{[0, 1].map((row) => (
+									<div key={row} className="flex gap-2.5" aria-hidden>
+										<span className="w-0.5 shrink-0 rounded-full bg-muted" />
+										<div className="flex flex-1 flex-col gap-1.5 py-0.5">
+											<span className="h-3 w-3/4 animate-pulse rounded bg-muted" />
+											<span className="h-2.5 w-1/3 animate-pulse rounded bg-muted" />
+										</div>
+									</div>
+								))}
+							</div>
 						) : changes.length === 0 ? (
 							<p className="text-xs text-muted-foreground">No agent has changed this column.</p>
 						) : (
-							<ul className="max-h-96 space-y-2 overflow-y-auto">
-								{changes.map((change) => (
-									<li key={change.id} className="flex items-start justify-between gap-2 rounded border p-2" data-testid="agent-change">
-										<div className="min-w-0 flex-1 space-y-1">
-											<p className={change.undoneAt ? "text-sm text-muted-foreground line-through" : "text-sm"}>{change.summary}</p>
-											<AgentChangeDiffView diff={change.diff} muted={change.undoneAt !== null} />
-											<p className="text-xs text-muted-foreground">
-												{change.agentName} · {when(change.createdAt)}
-												{change.undoneAt ? ` · ${undoneLabel(change)}` : ""}
-											</p>
-										</div>
-										{!change.undoneAt && (
-											<Button variant="ghost" size="sm" className="h-7 shrink-0 px-2" disabled={locked} onClick={() => undo(change)} aria-label={`Undo: ${change.summary}`}>
-												<Undo2 className="mr-1 h-3 w-3" />
-												Undo
-											</Button>
-										)}
-									</li>
-								))}
+							<ul className="-mr-1 flex max-h-96 flex-col gap-3 overflow-y-auto pr-1">
+								{changes.map((change) => {
+									const undone = change.undoneAt !== null;
+									return (
+										<li key={change.id} className="flex gap-2.5" data-testid="agent-change">
+											<span aria-hidden className={cn("w-0.5 shrink-0 rounded-full", undone ? "bg-border" : "bg-brand/40")} />
+											<div className="flex min-w-0 flex-1 flex-col gap-1.5">
+												<div className="flex items-start justify-between gap-2">
+													<p className={cn("min-w-0 text-[13px] leading-5", undone && "text-muted-foreground line-through")}>{change.summary}</p>
+													{!undone && (
+														<Button variant="ghost" size="sm" className="-mt-0.5 h-6 shrink-0 gap-1 px-1.5 text-xs" disabled={locked} onClick={() => undo(change)} aria-label={`Undo: ${change.summary}`}>
+															<Undo2 className="size-3" />
+															Undo
+														</Button>
+													)}
+												</div>
+												<AgentChangeDiffView diff={change.diff} muted={undone} />
+												<p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-muted-foreground">
+													<span className="font-medium text-foreground/80">{change.agentName}</span>
+													<span aria-hidden>·</span>
+													<span className="tabular-nums">{when(change.createdAt)}</span>
+													{undone && (
+														<span className="rounded-full border border-border/70 bg-muted/60 px-1.5 py-px text-[10.5px]">
+															{undoneLabel(change)}
+														</span>
+													)}
+												</p>
+											</div>
+										</li>
+									);
+								})}
 							</ul>
 						)}
 					</section>

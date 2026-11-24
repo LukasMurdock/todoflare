@@ -1,0 +1,43 @@
+{
+  "name": "Example custom hill-climb spec",
+  "scenarios": [
+    {
+      "id": "custom-agent-diff-flow",
+      "title": "Custom Flow: Signed-in board + MCP agent append + diff popover",
+      "category": "custom",
+      "surface": "ColumnAgentsMenu",
+      "description": "Demonstrates declarative account, column, MCP agent, and step-by-step screenshot capture.",
+      "account": {
+        "mode": "signed-in",
+        "columns": [
+          {
+            "lines": ["# Q4 Launch", "[] Polish share menu", "[] Check dark mode contrast"],
+            "publicLink": true
+          }
+        ],
+        "agent": {
+          "name": "Claude Code",
+          "grants": [{ "columnIndex": 0, "level": "edit" }],
+          "mcpCalls": [
+            {
+              "tool": "append_items",
+              "columnIndex": 0,
+              "args": {
+                "items": [{ "text": "Verify mobile popover clearance" }]
+              }
+            }
+          ]
+        }
+      },
+      "steps": [
+        { "action": "screenshot", "name": "01-board", "label": "Board with live agent edit" },
+        { "action": "click", "role": "button", "name": "Agents for this column" },
+        { "action": "wait", "ms": 250 },
+        { "action": "screenshot", "name": "02-agent-diff", "label": "Column agents popover showing Added diff" },
+        { "action": "goto", "url": "/p/{{publicId}}" },
+        { "action": "waitForText", "text": "Q4 Launch" },
+        { "action": "screenshot", "name": "03-public-view", "label": "Read-only public view of the same column" }
+      ]
+    }
+  ]
+}

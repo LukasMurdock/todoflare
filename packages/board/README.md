@@ -260,14 +260,19 @@ for tests of your embed.
   universal and element rules (`* { font-family: serif }`,
   `button { all: unset }`), so the board looks the same on any page.
 - Theme colors are CSS variables on `[data-todo-board]`. The board uses
-  `--background` and `--foreground` (surface and text), `--muted` and
-  `--muted-foreground` (column headers, placeholders, secondary text),
-  `--primary` and `--primary-foreground` (checked todos, the link underline
-  while Cmd/Ctrl is held), `--border`, `--input` (unchecked todo boxes),
-  `--ring` (focus rings), `--accent` (hover backgrounds), `--brand` (text
-  selection) and `--destructive` (invalid states). The palette also defines
-  `--card`, `--popover`, `--secondary` and `--highlight` for hosts that opt in
-  page-wide with `<html data-todo-theme>`. Override any of them:
+  `--background` and `--foreground` (surface and text, unchecked todo box
+  outlines), `--muted` and `--muted-foreground` (keycaps, placeholders,
+  secondary text, checked todo text), `--primary` and `--primary-foreground`
+  (checked todo boxes, the link underline while Cmd/Ctrl is held), `--border`
+  (keycaps, the add-column button), `--hairline` (column dividers, header
+  rules, dialog edges), `--accent` (dialog button hovers), `--ring` (focus
+  rings), `--brand` (text caret, selection, a dragged column's outline) and
+  `--destructive` (the delete confirmation, invalid states). `--shadow-raised`
+  and `--shadow-pop` are the two elevations: resting controls, and dialogs or
+  a dragged column. The palette also defines `--card`, `--popover`,
+  `--secondary`, `--input`, `--destructive-text` and `--highlight` for hosts
+  that opt in page-wide with `<html data-todo-theme>`, and sets
+  `color-scheme`. Override any of them:
 
   ```css
   [data-todo-board] { --primary: oklch(0.55 0.2 260); --border: #ddd; }

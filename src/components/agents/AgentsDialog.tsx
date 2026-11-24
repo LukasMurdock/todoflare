@@ -3,6 +3,8 @@ import { ArrowLeft, Bot, Check, ChevronRight, Copy, Download, ExternalLink, Glob
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { NativeSelect } from "@/components/ui/native-select";
+import { cn } from "@/lib/utils";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { refreshAgentConnections, removeAgentConnection, replaceAgentConnection, useAgentConnections } from "@/hooks/useAgentConnections";
 import { agentsApi, mcpEndpointUrl } from "@/lib/agents/agents-api";
@@ -70,23 +72,48 @@ export function claudeCodeCommand(endpoint: string, token: string): string {
 	return `claude mcp add --scope user --transport http todoflare ${endpoint} --header "Authorization: Bearer ${token}"`;
 }
 
-function CopyField({ value, label }: { value: string; label: string }) {
+function useCopied() {
 	const [copied, setCopied] = useState(false);
+	const copy = async (value: string) => {
+		await navigator.clipboard.writeText(value);
+		setCopied(true);
+		setTimeout(() => setCopied(false), 2000);
+	};
+	return [copied, copy] as const;
+}
+
+function CopyField({ value, label }: { value: string; label: string }) {
+	const [copied, copy] = useCopied();
 	return (
-		<div className="flex items-center gap-2">
-			<code className="min-w-0 flex-1 break-all rounded bg-muted px-2 py-1.5 text-xs">{value}</code>
+		<div className="flex items-stretch gap-2">
+			<code className="min-w-0 flex-1 rounded-md border border-border/70 bg-muted/40 px-2.5 py-1.5 font-mono text-xs leading-5 whitespace-pre-wrap [overflow-wrap:anywhere]">{value}</code>
+			<Button variant="outline" size="sm" className="h-auto min-h-8 shrink-0" aria-label={`Copy ${label}`} onClick={() => copy(value)}>
+				{copied ? <Check className="size-3.5 text-emerald-500" /> : <Copy className="size-3.5" />}
+				{copied ? "Copied" : "Copy"}
+			</Button>
+		</div>
+	);
+}
+
+/** A shell command, set as a terminal block with its own copy button. */
+function CommandBlock({ value, label }: { value: string; label: string }) {
+	const [copied, copy] = useCopied();
+	return (
+		<div className="relative rounded-lg bg-zinc-950 p-3 pr-20 text-zinc-100 ring-1 ring-black/10 dark:ring-white/10">
+			<div className="flex gap-2 font-mono text-[12px] leading-5">
+				<span aria-hidden className="shrink-0 text-zinc-500 select-none">
+					$
+				</span>
+				<code className="min-w-0 whitespace-pre-wrap [overflow-wrap:anywhere]">{value}</code>
+			</div>
 			<Button
-				variant="outline"
+				variant="ghost"
 				size="sm"
-				className="shrink-0"
+				className="absolute top-2 right-2 h-7 gap-1 px-2 text-xs text-zinc-300 hover:bg-white/10 hover:text-white"
 				aria-label={`Copy ${label}`}
-				onClick={async () => {
-					await navigator.clipboard.writeText(value);
-					setCopied(true);
-					setTimeout(() => setCopied(false), 2000);
-				}}
+				onClick={() => copy(value)}
 			>
-				{copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
+				{copied ? <Check className="size-3.5 text-emerald-400" /> : <Copy className="size-3.5" />}
 				{copied ? "Copied" : "Copy"}
 			</Button>
 		</div>
@@ -96,10 +123,11 @@ function CopyField({ value, label }: { value: string; label: string }) {
 /** One numbered instruction. */
 function Step({ number, title, children }: { number: number; title: React.ReactNode; children?: React.ReactNode }) {
 	return (
-		<li className="flex gap-3">
-			<span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">{number}</span>
+		<li className="group relative flex gap-3 pb-5 last:pb-0">
+			<span aria-hidden className="absolute top-7 bottom-1 left-3 w-px -translate-x-1/2 bg-border group-last:hidden" />
+			<span className="relative flex size-6 shrink-0 items-center justify-center rounded-full bg-background text-[11px] font-semibold tabular-nums ring-1 ring-border">{number}</span>
 			<div className="min-w-0 flex-1 space-y-2 pt-0.5">
-				<p className="text-sm font-medium">{title}</p>
+				<p className="text-[13px] leading-5 font-medium">{title}</p>
 				{children}
 			</div>
 		</li>
@@ -109,7 +137,7 @@ function Step({ number, title, children }: { number: number; title: React.ReactN
 function BackButton({ onClick, disabled = false }: { onClick(): void; disabled?: boolean }) {
 	return (
 		<Button variant="ghost" size="sm" className="-ml-2 h-7 px-2" disabled={disabled} onClick={onClick}>
-			<ArrowLeft className="h-3 w-3" />
+			<ArrowLeft className="size-3.5" />
 			Back
 		</Button>
 	);
@@ -163,12 +191,17 @@ export function AgentsDialog({ accountId, open, onOpenChange }: AgentsDialogProp
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent className="max-h-[calc(100dvh-2rem)] max-w-xl grid-rows-[auto_minmax(0,1fr)]">
-				<DialogHeader>
-					<DialogTitle>Agents</DialogTitle>
-					<DialogDescription>Let an AI agent like Claude read or edit the columns you choose, and nothing else.</DialogDescription>
+			<DialogContent className="max-h-[calc(100dvh-2rem)] sm:max-w-xl grid-rows-[auto_minmax(0,1fr)]">
+				<DialogHeader className="flex-row items-start gap-3 text-left">
+					<span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-brand/10 text-brand">
+						<Bot className="size-[18px] stroke-[1.75]" />
+					</span>
+					<div className="min-w-0 space-y-1">
+						<DialogTitle>Agents</DialogTitle>
+						<DialogDescription>Let an AI agent like Claude read or edit the columns you choose, and nothing else.</DialogDescription>
+					</div>
 				</DialogHeader>
-				<div className="min-h-0 space-y-5 overflow-y-auto">
+				<div className="-mx-6 -mb-6 min-h-0 space-y-5 overflow-y-auto px-6 pb-6">
 					{state.status === "disabled" ? (
 						<p className="text-sm text-muted-foreground">Agent access is not available on this server yet.</p>
 					) : view.kind === "home" ? (
@@ -197,7 +230,7 @@ export function AgentsDialog({ accountId, open, onOpenChange }: AgentsDialogProp
 						<TokenConnected view={view} endpoint={endpoint} onDone={() => go({ kind: "home" })} />
 					) : null}
 					{recent.pending && <ConfirmSignIn busy={busy} onConfirm={() => run(recent.confirm)} onCancel={recent.cancel} />}
-					{error && <p className="text-sm text-destructive">{error}</p>}
+					{error && <p className="text-[13px] text-red-600 dark:text-red-400">{error}</p>}
 				</div>
 			</DialogContent>
 		</Dialog>
@@ -206,20 +239,22 @@ export function AgentsDialog({ accountId, open, onOpenChange }: AgentsDialogProp
 
 function AppChoices({ onChoose }: { onChoose(app: AgentApp): void }) {
 	return (
-		<ul className="space-y-2">
+		<ul className="flex flex-col gap-1.5">
 			{APPS.map(({ app, title, detail, icon: Icon }) => (
 				<li key={app}>
 					<button
 						type="button"
-						className="flex w-full items-center gap-3 rounded-md border p-3 text-left transition-colors hover:bg-muted"
+						className="group flex min-h-14 w-full items-center gap-3 rounded-lg border border-border/70 px-3 py-2 text-left transition-[background-color,border-color,transform] duration-150 hover:border-border hover:bg-muted/50 focus-visible:border-brand/60 focus-visible:ring-2 focus-visible:ring-brand/25 focus-visible:outline-none active:scale-[0.99]"
 						onClick={() => onChoose(app)}
 					>
-						<Icon className="h-5 w-5 shrink-0 text-muted-foreground" />
+						<span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground transition-colors group-hover:text-foreground">
+							<Icon className="size-4 stroke-[1.75]" />
+						</span>
 						<span className="min-w-0 flex-1">
-							<span className="block text-sm font-medium">{title}</span>
+							<span className="block text-[13px] leading-5 font-medium">{title}</span>
 							<span className="block text-xs text-muted-foreground">{detail}</span>
 						</span>
-						<ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+						<ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform duration-150 group-hover:translate-x-0.5" />
 					</button>
 				</li>
 			))}
@@ -266,7 +301,7 @@ function Home({
 
 	const choices = (
 		<section className="space-y-2">
-			<h3 className="text-sm font-medium">{agents.length === 0 ? "Which app do you want to connect?" : "Connect another app"}</h3>
+			<h3 className="text-[13px] font-medium">{agents.length === 0 ? "Which app do you want to connect?" : "Connect another app"}</h3>
 			<AppChoices onChoose={onChoose} />
 		</section>
 	);
@@ -274,25 +309,32 @@ function Home({
 	return (
 		<>
 			{agents.length === 0 && choices}
-			<section className={agents.length === 0 ? "space-y-3 border-t pt-4" : "space-y-3"}>
-				<h3 className="text-sm font-medium">Connected agents</h3>
+			<section className={cn("flex flex-col gap-2.5", agents.length === 0 && "border-t border-border/60 pt-4")}>
+				<h3 className="text-[13px] font-medium">Connected agents</h3>
 				{state.status === "loading" || state.status === "idle" ? (
-					<p className="text-sm text-muted-foreground">Loading…</p>
+					<div className="h-16 animate-pulse rounded-lg bg-muted/60" aria-busy>
+						<span className="sr-only">Loading…</span>
+					</div>
 				) : state.status === "error" ? (
-					<p className="text-sm text-destructive">{state.message}</p>
+					<p className="text-[13px] text-red-600 dark:text-red-400">{state.message}</p>
 				) : agents.length === 0 ? (
-					<p className="text-sm text-muted-foreground">No agents connected.</p>
+					<p className="rounded-lg border border-dashed border-border/80 px-3 py-4 text-center text-[13px] text-muted-foreground">No agents connected.</p>
 				) : (
 					agents.map((agent) => {
 						const grantable = (columns ?? []).filter((column) => !agent.grants.some((grant) => grant.columnId === column.columnId));
 						return (
-							<div key={agent.id} className="space-y-2 rounded border p-3" data-testid="agent-connection">
-								<div className="flex items-start justify-between gap-3">
-									<div className="min-w-0">
-										<p className="truncate text-sm font-medium">{agent.name}</p>
-										<p className="text-xs text-muted-foreground">
+							<div key={agent.id} className="overflow-hidden rounded-lg border border-border/70" data-testid="agent-connection">
+								<div className="flex items-start justify-between gap-3 px-3 py-2.5">
+									<div className="flex min-w-0 items-start gap-2.5">
+										<span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+											<Bot className="size-3.5 stroke-[1.75]" />
+										</span>
+										<div className="min-w-0">
+										<p className="truncate text-[13px] leading-5 font-medium">{agent.name}</p>
+										<p className="text-[11.5px] text-muted-foreground">
 											{agent.clientId ? "Connected with sign-in" : "Token"} · used {relative(agent.lastUsedAt, now)} · expires {relative(agent.expiresAt, now)}
 										</p>
+										</div>
 									</div>
 									{confirming === agent.id ? (
 										<div className="flex shrink-0 gap-1">
@@ -305,9 +347,9 @@ function Home({
 										</div>
 									) : (
 										<Button
-											variant="outline"
+											variant="ghost"
 											size="sm"
-											className="h-7 shrink-0 px-2 text-destructive hover:text-destructive"
+											className="h-7 shrink-0 px-2 text-red-600 hover:bg-red-500/10 hover:text-red-600 dark:text-red-400 dark:hover:text-red-400"
 											disabled={busy}
 											onClick={() => setConfirming(agent.id)}
 										>
@@ -316,23 +358,29 @@ function Home({
 									)}
 								</div>
 								{agent.grants.length === 0 && (
-									<p className="rounded bg-amber-500/10 px-2 py-1 text-xs">It can’t see any columns yet. Add one below.</p>
+									<p className="border-t border-l-2 border-border/60 border-l-amber-500 bg-amber-500/10 px-3 py-1.5 text-xs">It can’t see any columns yet. Add one below.</p>
 								)}
+								{agent.grants.length > 0 && (
+								<ul className="divide-y divide-border/60 border-t border-border/60">
 								{agent.grants.map((grant) => (
-									<div key={grant.columnId} className="flex items-center justify-between gap-2">
-										<span className="min-w-0 truncate text-sm">{titleOf(grant.columnId)}</span>
+									<li key={grant.columnId} className="flex items-center justify-between gap-2 py-1.5 pr-1.5 pl-3">
+										<span className="min-w-0 truncate text-[13px]">{titleOf(grant.columnId)}</span>
 										<AgentLevelSelect
 											label={`${agent.name} access to ${titleOf(grant.columnId)}`}
 											value={grant.level}
 											disabled={busy}
 											onChange={(level) => setLevel(agent, grant.columnId, level)}
 										/>
-									</div>
+									</li>
 								))}
+								</ul>
+								)}
 								{grantable.length > 0 && (
-									<select
+									<div className="border-t border-border/60 p-1.5">
+									<NativeSelect
 										aria-label={`Give ${agent.name} a column`}
-										className="h-8 w-full rounded-md border border-dashed border-input bg-background px-2 text-sm text-muted-foreground"
+										wrapperClassName="w-full"
+										className="border-dashed bg-transparent font-normal text-muted-foreground"
 										value=""
 										disabled={busy}
 										onChange={(event) => event.target.value && setLevel(agent, event.target.value, "read")}
@@ -344,15 +392,16 @@ function Home({
 												{column.owned ? "" : " (shared with you)"}
 											</option>
 										))}
-									</select>
+									</NativeSelect>
+									</div>
 								)}
 							</div>
 						);
 					})
 				)}
 			</section>
-			{agents.length > 0 && <div className="border-t pt-4">{choices}</div>}
-			<p className="border-t pt-4 text-xs text-muted-foreground">
+			{agents.length > 0 && <div className="border-t border-border/60 pt-4">{choices}</div>}
+			<p className="border-t border-border/60 pt-4 text-xs leading-5 text-muted-foreground">
 				Agents act as you, only on the columns you give them. They can never share columns, change links, delete columns or connect other agents. Each column’s
 				agent button shows what agents did there, with undo.
 			</p>
@@ -382,8 +431,8 @@ function TokenSetup({
 	return (
 		<section className="space-y-4">
 			<BackButton onClick={onBack} disabled={busy} />
-			<h3 className="text-base font-semibold">Connect {title}</h3>
-			<ol className="space-y-5">
+			<h3 className="text-[15px] font-semibold tracking-[-0.01em]">Connect {title}</h3>
+			<ol>
 				<Step number={1} title="Choose which columns it can use">
 					<AgentColumnPicker columns={columns} levels={levels} onChange={setLevels} disabled={busy} />
 					<p className="text-xs text-muted-foreground">You can change these any time under Agents, without a new command.</p>
@@ -391,9 +440,9 @@ function TokenSetup({
 				<Step number={2} title="Name it and choose how long it lasts">
 					<div className="flex gap-2">
 						<Input aria-label="Agent name" value={name} maxLength={80} disabled={busy} onChange={(event) => setName(event.target.value)} placeholder="Agent name" />
-						<select
+						<NativeSelect
 							aria-label="Access lasts"
-							className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+							className="h-9"
 							value={expiresInDays}
 							disabled={busy}
 							onChange={(event) => setExpiresInDays(Number(event.target.value))}
@@ -403,7 +452,7 @@ function TokenSetup({
 									{choice.label}
 								</option>
 							))}
-						</select>
+						</NativeSelect>
 					</div>
 				</Step>
 				<Step number={3} title={app === "claude-code" ? "Get the command for your terminal" : "Get the address and token"}>
@@ -420,38 +469,40 @@ function TokenConnected({ view, endpoint, onDone }: { view: Extract<View, { kind
 	const columnCount = view.agent.grants.length;
 	return (
 		<section className="space-y-4" data-testid="agent-token">
-			<div className="flex items-center gap-2 rounded border border-green-600/40 bg-green-600/10 p-3 text-sm">
-				<Check className="h-4 w-4 shrink-0 text-green-600" />
+			<div className="flex items-center gap-2.5 rounded-lg border border-emerald-500/30 bg-emerald-500/[0.08] px-3 py-2.5 text-[13px]">
+				<span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-white">
+					<Check className="size-3 stroke-[2.5]" />
+				</span>
 				<span>
 					{view.agent.name} can use {columnCount} column{columnCount === 1 ? "" : "s"}. Finish setting it up below.
 				</span>
 			</div>
-			<p className="text-xs text-amber-700 dark:text-amber-400">
+			<p className="border-l-2 border-amber-500 pl-2.5 text-xs leading-5 text-amber-800 dark:text-amber-300">
 				This contains a secret key and is shown only once. Don’t share it. If you lose it, disconnect this agent and connect again.
 			</p>
 			{view.app === "claude-code" ? (
-				<ol className="space-y-5">
+				<ol>
 					<Step number={1} title="Copy this command">
-						<CopyField value={claudeCodeCommand(endpoint, view.token)} label="Claude Code command" />
+						<CommandBlock value={claudeCodeCommand(endpoint, view.token)} label="Claude Code command" />
 					</Step>
 					<Step number={2} title="Paste it into your terminal and press Enter">
-						<p className="text-xs text-muted-foreground">
-							Connected Todoflare before? Run <code className="rounded bg-muted px-1">claude mcp remove --scope user todoflare</code> first.
+						<p className="text-xs leading-5 text-muted-foreground">
+							Connected Todoflare before? Run <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.95em] [box-decoration-break:clone]">claude mcp remove --scope user todoflare</code> first.
 						</p>
 					</Step>
-					<Step number={3} title={<>Start Claude Code with <code className="rounded bg-muted px-1">claude</code> and ask it to use Todoflare</>}>
+					<Step number={3} title={<>Start Claude Code with <code className="rounded bg-muted px-1 font-mono text-[0.95em]">claude</code> and ask it to use Todoflare</>}>
 						<p className="text-xs text-muted-foreground">For example: “List my Todoflare columns” or “Add ‘Buy stamps’ to my Errands column”.</p>
 					</Step>
 				</ol>
 			) : (
-				<ol className="space-y-5">
+				<ol>
 					<Step number={1} title="Give your app this MCP server address">
 						<CopyField value={endpoint} label="server address" />
 					</Step>
 					<Step number={2} title="And this token, sent as a bearer token">
 						<CopyField value={view.token} label="token" />
 						<p className="text-xs text-muted-foreground">
-							The app sends it as the header <code className="rounded bg-muted px-1">Authorization: Bearer &lt;token&gt;</code>.
+							The app sends it as the header <code className="rounded bg-muted px-1 font-mono text-[0.95em]">Authorization: Bearer &lt;token&gt;</code>.
 						</p>
 					</Step>
 				</ol>
@@ -467,8 +518,8 @@ function ClaudeAiSetup({ endpoint, onBack }: { endpoint: string; onBack(): void 
 	return (
 		<section className="space-y-4">
 			<BackButton onClick={onBack} />
-			<h3 className="text-base font-semibold">Connect Claude.ai</h3>
-			<ol className="space-y-5">
+			<h3 className="text-[15px] font-semibold tracking-[-0.01em]">Connect Claude.ai</h3>
+			<ol>
 				<Step number={1} title="Copy this address">
 					<CopyField value={endpoint} label="connector address" />
 				</Step>
@@ -476,7 +527,7 @@ function ClaudeAiSetup({ endpoint, onBack }: { endpoint: string; onBack(): void 
 					<Button variant="outline" size="sm" asChild>
 						<a href={CLAUDE_CONNECTORS_URL} target="_blank" rel="noopener noreferrer">
 							Open Claude.ai connectors
-							<ExternalLink className="h-3 w-3" />
+							<ExternalLink className="size-3.5" />
 						</a>
 					</Button>
 				</Step>
@@ -485,7 +536,7 @@ function ClaudeAiSetup({ endpoint, onBack }: { endpoint: string; onBack(): void 
 					<p className="text-xs text-muted-foreground">You’ll then see Claude under Connected agents here, and can change its columns any time.</p>
 				</Step>
 			</ol>
-			<div className="flex justify-end">
+			<div className="sticky bottom-0 -mx-6 -mb-6 flex justify-end border-t border-border/60 bg-background/95 px-6 py-3 backdrop-blur-md">
 				<Button variant="outline" onClick={onBack}>
 					Done
 				</Button>
@@ -498,44 +549,44 @@ function ChatGptSetup({ endpoint, onBack }: { endpoint: string; onBack(): void }
 	return (
 		<section className="space-y-4">
 			<BackButton onClick={onBack} />
-			<h3 className="text-base font-semibold">Connect ChatGPT</h3>
-			<ol className="space-y-5">
+			<h3 className="text-[15px] font-semibold tracking-[-0.01em]">Connect ChatGPT</h3>
+			<ol>
 				<Step number={1} title="In ChatGPT, open Plugins, click Add, and choose “Add custom MCP server”">
 					<Button variant="outline" size="sm" asChild>
 						<a href={CHATGPT_PLUGINS_URL} target="_blank" rel="noopener noreferrer">
 							Open ChatGPT plugins
-							<ExternalLink className="h-3 w-3" />
+							<ExternalLink className="size-3.5" />
 						</a>
 					</Button>
 				</Step>
 				<Step number={2} title="Fill in the form with these">
 					<dl className="space-y-2">
 						<div className="space-y-1">
-							<dt className="text-xs text-muted-foreground">Icon (optional)</dt>
+							<dt className="text-[10.5px] font-medium tracking-[0.06em] text-muted-foreground uppercase">Icon (optional)</dt>
 							<dd>
 								<Button variant="outline" size="sm" asChild>
 									<a href={CHATGPT_FORM.iconPath} download="todoflare-icon.png">
-										<img src={CHATGPT_FORM.iconPath} alt="" className="h-4 w-4 rounded-sm" />
+										<img src={CHATGPT_FORM.iconPath} alt="" className="size-4 rounded-sm" />
 										Download icon
-										<Download className="h-3 w-3" />
+										<Download className="size-3.5" />
 									</a>
 								</Button>
 							</dd>
 						</div>
 						<div className="space-y-1">
-							<dt className="text-xs text-muted-foreground">Name</dt>
+							<dt className="text-[10.5px] font-medium tracking-[0.06em] text-muted-foreground uppercase">Name</dt>
 							<dd>
 								<CopyField value={CHATGPT_FORM.name} label="name" />
 							</dd>
 						</div>
 						<div className="space-y-1">
-							<dt className="text-xs text-muted-foreground">Description</dt>
+							<dt className="text-[10.5px] font-medium tracking-[0.06em] text-muted-foreground uppercase">Description</dt>
 							<dd>
 								<CopyField value={CHATGPT_FORM.description} label="description" />
 							</dd>
 						</div>
 						<div className="space-y-1">
-							<dt className="text-xs text-muted-foreground">Connection: Server URL</dt>
+							<dt className="text-[10.5px] font-medium tracking-[0.06em] text-muted-foreground uppercase">Connection: Server URL</dt>
 							<dd>
 								<CopyField value={endpoint} label="server URL" />
 							</dd>
@@ -548,7 +599,7 @@ function ChatGptSetup({ endpoint, onBack }: { endpoint: string; onBack(): void }
 					<p className="text-xs text-muted-foreground">You’ll then see ChatGPT under Connected agents here, and can change its columns any time.</p>
 				</Step>
 			</ol>
-			<div className="flex justify-end">
+			<div className="sticky bottom-0 -mx-6 -mb-6 flex justify-end border-t border-border/60 bg-background/95 px-6 py-3 backdrop-blur-md">
 				<Button variant="outline" onClick={onBack}>
 					Done
 				</Button>

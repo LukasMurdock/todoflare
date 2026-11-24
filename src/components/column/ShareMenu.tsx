@@ -109,23 +109,39 @@ export function ShareMenu({ columnId, columnMeta }: ShareMenuProps) {
 		}
 	};
 
+	const shareValid = validateAccountId(shareInput);
+	const eyebrow = "text-[10.5px] font-medium tracking-[0.08em] text-muted-foreground uppercase";
+
 	return (
 		<Popover open={isOpen} onOpenChange={setIsOpen}>
 			<PopoverTrigger asChild>
 				<button
-					className="rounded p-1 hover:bg-muted"
+					className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-brand/25 focus-visible:outline-none data-[state=open]:bg-muted data-[state=open]:text-foreground"
 					type="button"
 					aria-label="Share column"
 					title="Share column"
 				>
-					<Share2 className="h-4 w-4 text-muted-foreground" />
+					<Share2 className="size-4 stroke-[1.75]" />
 				</button>
 			</PopoverTrigger>
-			<PopoverContent align="start" className="w-80">
-				<div className="space-y-4">
-					<div className="space-y-2">
-						<h4 className="font-medium text-sm">Share with account</h4>
-						<div className="flex gap-2">
+			<PopoverContent
+				align="start"
+				collisionPadding={12}
+				className="w-[min(20rem,calc(100vw-1.5rem))] p-0 outline-none"
+				onOpenAutoFocus={(event) => {
+					if (typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches) {
+						event.preventDefault();
+					}
+				}}
+			>
+				<div className="flex items-center gap-2 border-b border-border/60 px-3 py-2.5">
+					<Share2 className="size-4 stroke-[1.75] text-muted-foreground" />
+					<h3 className="text-[13px] font-semibold">Share column</h3>
+				</div>
+				<div className="flex flex-col gap-4 p-3">
+					<section className="flex flex-col gap-2">
+						<h4 className={eyebrow}>Share with account</h4>
+						<div className="flex">
 							<Input
 								aria-label="Account ID"
 								placeholder="0000 0000 0000 0000"
@@ -133,111 +149,137 @@ export function ShareMenu({ columnId, columnMeta }: ShareMenuProps) {
 								onChange={handleInputChange}
 								onKeyDown={handleKeyDown}
 								disabled={isSharing}
-								className="font-mono text-sm"
+								className="h-8 rounded-r-none font-mono text-[13px] tracking-[0.06em] tabular-nums focus-visible:z-10"
 								maxLength={19}
+								inputMode="numeric"
 							/>
 							<Button
 								size="sm"
+								variant={shareValid ? "default" : "outline"}
 								onClick={handleShare}
-								disabled={isSharing || !validateAccountId(shareInput)}
+								disabled={isSharing || !shareValid}
+								className="-ml-px h-8 rounded-l-none disabled:opacity-65"
 							>
 								{isSharing ? "..." : "Share"}
 							</Button>
 						</div>
-						{error && <p className="text-xs text-destructive">{error}</p>}
-					</div>
+						{error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
+					</section>
 
 					{sharedWith.length > 0 && (
-						<div className="space-y-2">
-							<h4 className="font-medium text-sm text-muted-foreground">
-								Shared with
-							</h4>
-							<div className="space-y-1">
+						<section className="flex flex-col gap-1.5">
+							<h4 className={eyebrow}>Shared with</h4>
+							<ul className="flex flex-col">
 								{sharedWith.map((accountId) => (
-									<div
+									<li
 										key={accountId}
-										className="flex items-center justify-between py-1"
+										className="group -mx-1.5 flex items-center gap-2.5 rounded-md px-1.5 py-1 hover:bg-muted/60"
 									>
-										<span className="font-mono text-sm">
+										<span
+											aria-hidden
+											className="size-5 shrink-0 rounded-full ring-1 ring-black/5 dark:ring-white/10"
+											style={{ backgroundColor: accountColor(accountId) }}
+										/>
+										<span className="min-w-0 flex-1 truncate font-mono text-[13px] tabular-nums">
 											{truncateAccountId(accountId)}
 										</span>
-									<Button
-										variant="ghost"
-										size="sm"
-										onClick={() => handleRevoke(accountId)}
-										aria-label={`Revoke access for ${truncateAccountId(accountId)}`}
-										className="h-6 px-2 text-destructive hover:text-destructive"
-									>
-											<X className="h-3 w-3" />
+										<Button
+											variant="ghost"
+											size="icon-sm"
+											onClick={() => handleRevoke(accountId)}
+											aria-label={`Revoke access for ${truncateAccountId(accountId)}`}
+											title="Revoke access"
+											className="size-6 text-muted-foreground hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400"
+										>
+											<X className="size-3.5" />
 										</Button>
-									</div>
+									</li>
 								))}
-							</div>
-						</div>
+							</ul>
+						</section>
 					)}
 
-					<div className="border-t pt-4 space-y-2">
-						<h4 className="font-medium text-sm">Public link</h4>
+					<section className="flex flex-col gap-2 border-t border-border/60 pt-3">
+						<div className="flex items-center gap-2">
+							<h4 className={eyebrow}>Public link</h4>
+							{publicId && (
+								<span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+									<span aria-hidden className="size-1.5 rounded-full bg-emerald-500 shadow-[0_0_0_3px_rgb(16_185_129/0.18)]" />
+									Live
+								</span>
+							)}
+						</div>
 						{publicId ? (
-							<div className="space-y-2">
-								<div className="flex items-center gap-2">
-									<span className="flex-1 text-xs font-mono bg-muted px-2 py-1 rounded truncate">
+							<>
+								<div className="flex h-8 items-center rounded-md border border-input bg-muted/40 pl-2.5">
+									<span className="min-w-0 flex-1 truncate font-mono text-xs" title={publicUrl ?? undefined}>
 										{publicUrl}
 									</span>
 									<Button
 										variant="ghost"
-										size="sm"
+										size="icon-sm"
 										onClick={handleCopyPublicLink}
-										className="h-7 px-2"
+										aria-label={publicLinkCopied ? "Copied public link" : "Copy public link"}
+										title="Copy link"
+										className="size-7 shrink-0"
 									>
 										{publicLinkCopied ? (
-											<Check className="h-3 w-3 text-green-500" />
+											<Check className="size-3.5 text-emerald-500" />
 										) : (
-											<Copy className="h-3 w-3" />
+											<Copy className="size-3.5" />
 										)}
 									</Button>
 								</div>
-								<div className="flex gap-2">
+								<div className="flex gap-1.5">
 									<Button
-										variant="outline"
+										variant="ghost"
 										size="sm"
 										onClick={handleEnablePublicLink}
 										disabled={isTogglingPublic}
-										className="flex-1"
+										className="h-7 flex-1 gap-1.5 text-xs"
 									>
-										<RefreshCw className="h-3 w-3 mr-1" />
+										<RefreshCw className="size-3.5" />
 										Regenerate
 									</Button>
 									<Button
-										variant="outline"
+										variant="ghost"
 										size="sm"
 										onClick={handleDisablePublicLink}
 										disabled={isTogglingPublic}
-										className="flex-1 text-destructive hover:text-destructive"
+										className="h-7 flex-1 gap-1.5 text-xs text-red-600 hover:bg-red-500/10 hover:text-red-600 dark:text-red-400 dark:hover:text-red-400"
 									>
-										<Unlink className="h-3 w-3 mr-1" />
+										<Unlink className="size-3.5" />
 										Disable
 									</Button>
 								</div>
-							</div>
+							</>
 						) : (
 							<Button
 								variant="outline"
 								size="sm"
 								onClick={handleEnablePublicLink}
 								disabled={isTogglingPublic}
-								className="w-full"
+								className="w-full gap-1.5"
 							>
-								<Link className="h-3 w-3 mr-1" />
+								<Link className="size-3.5" />
 								{isTogglingPublic ? "Enabling..." : "Enable public link"}
 							</Button>
 						)}
 						<p className="text-xs text-muted-foreground">
 							Anyone with the link can view (read-only)
 						</p>
-					</div>
+					</section>
 				</div>
 			</PopoverContent>
 		</Popover>
 	);
+}
+
+/** A stable color per account, so the same collaborator always looks the same. */
+function accountColor(accountId: string): string {
+	let hash = 0;
+	for (let index = 0; index < accountId.length; index++) {
+		hash = (hash * 31 + accountId.charCodeAt(index)) >>> 0;
+	}
+	return `oklch(0.72 0.12 ${hash % 360})`;
 }
