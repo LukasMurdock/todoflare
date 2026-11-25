@@ -82,7 +82,7 @@ src/
                         public, agents, mcp, oauth, discovery, admin-backups, auth)
     workflows/          Named multi-store operations: share, revoke, delete, restore, public
                         link, clone, export, restore-from-backup, reconcile, purge
-    http/               Guards (read-only), idempotency, request validation, error envelopes
+    http/               Guards (read-only), idempotency, request validation, byte-range, error envelopes
     agent-access/       MCP protocol, tools, access decision, Yjs edits and undo, D1 store
     oauth/              Authorization server: clients (CIMD, DCR), codes, tokens
     auth.ts, session.ts Better Auth configuration and per-request session

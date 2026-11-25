@@ -3,6 +3,7 @@ import { API_ROUTES, OAUTH_AUTHORIZE_PAGE_PATH, PUBLIC_PAGE_PATH } from "../../l
 import { MCP_MODERN_PROTOCOL_VERSIONS, MCP_PROTOCOL_VERSIONS } from "../agent-access/mcp-protocol";
 import { agentToolDescriptors } from "../agent-access/tools";
 import { mcpResourceUrl, protectedResourceMetadataUrl } from "../oauth/authorization-server";
+import { serveByteRangeResponse } from "../http/byte-range";
 import { isAgentAccessEnabled } from "./agents";
 import { CAPABILITIES, SERVER_INFO, SERVER_INSTRUCTIONS } from "./mcp";
 import type { App, AppContext, Bindings } from "../bindings";
@@ -140,6 +141,19 @@ export function registerDiscoveryRoutes(app: App) {
 			...CORS,
 			"Content-Type": 'application/linkset+json; profile="https://www.rfc-editor.org/info/rfc9727"',
 			Link: `<${url(origin(c), API_ROUTES.apiCatalog)}>; rel="api-catalog"`,
+		});
+	});
+	// Static Assets does not answer Range probes with 206 Partial Content; serve
+	// /og.mp4 through the Worker so Safari, iOS and social unfurlers can stream it.
+	app.on(["GET", "HEAD"], API_ROUTES.ogVideo.path, async (c) => {
+		if (!c.env.ASSETS) return disabled();
+		const assetUrl = new URL(API_ROUTES.ogVideo.path, c.req.url);
+		const asset = await c.env.ASSETS.fetch(new Request(assetUrl, { method: "GET" }));
+		if (!asset.ok) return new Response(null, { status: asset.status });
+		const bytes = new Uint8Array(await asset.arrayBuffer());
+		return serveByteRangeResponse(c.req.raw, bytes, {
+			contentType: asset.headers.get("Content-Type") || "video/mp4",
+			etag: asset.headers.get("ETag"),
 		});
 	});
 }

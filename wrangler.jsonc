@@ -11,12 +11,14 @@
 	"main": "./src/index.tsx",
 	"assets": {
 		"directory": "./dist",
+		"binding": "ASSETS",
 		"not_found_handling": "single-page-application",
 		"run_worker_first": [
 			"/api/*",
 			"/.well-known/*",
 			"/robots.txt",
-			"/llms.txt"
+			"/llms.txt",
+			"/og.mp4"
 		]
 	},
 	"vars": {

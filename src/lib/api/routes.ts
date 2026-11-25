@@ -39,6 +39,7 @@ export const API_ROUTES = {
 	oauthAuthorizationServer: { method: "GET", path: "/.well-known/oauth-authorization-server" },
 	robotsTxt: { method: "GET", path: "/robots.txt" },
 	llmsTxt: { method: "GET", path: "/llms.txt" },
+	ogVideo: { method: "GET", path: "/og.mp4" },
 	mcpServerCard: { method: "GET", path: "/.well-known/mcp/server-card.json" },
 	apiCatalog: { method: "GET", path: "/.well-known/api-catalog" },
 	passkeyEndpoints: { method: "GET", path: "/.well-known/passkey-endpoints" },

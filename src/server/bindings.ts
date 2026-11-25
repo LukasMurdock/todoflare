@@ -21,6 +21,7 @@ export type Bindings = {
 	/** "production" or "staging"; only production invites crawlers. */
 	ENVIRONMENT?: string;
 	BACKUPS?: R2Bucket;
+	ASSETS?: Fetcher;
 	BACKUP_ADMIN_TOKEN?: string;
 	AUTO_BACKUP_ENABLED?: string;
 	BACKUP_MAX_COLUMNS?: string;
