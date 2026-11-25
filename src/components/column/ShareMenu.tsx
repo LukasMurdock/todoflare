@@ -31,7 +31,6 @@ export function ShareMenu({ columnId, columnMeta }: ShareMenuProps) {
 	const [error, setError] = useState<string | null>(null);
 	const [isSharing, setIsSharing] = useState(false);
 	const [isTogglingPublic, setIsTogglingPublic] = useState(false);
-	const [copied, setCopied] = useState(false);
 	const [publicLinkCopied, setPublicLinkCopied] = useState(false);
 
 	const sharedWith = columnMeta?.sharedWith ?? [];
@@ -93,19 +92,19 @@ export function ShareMenu({ columnId, columnMeta }: ShareMenuProps) {
 	};
 
 	const handleCopyPublicLink = async () => {
-		if (!publicUrl) return;
+		if (!publicUrl) {return;}
 		try {
 			await navigator.clipboard.writeText(publicUrl);
 			setPublicLinkCopied(true);
 			setTimeout(() => setPublicLinkCopied(false), 2000);
-		} catch (err) {
-			console.error("Failed to copy:", err);
+		} catch (error_) {
+			console.error("Failed to copy:", error_);
 		}
 	};
 
 	const handleKeyDown = (e: React.KeyboardEvent) => {
 		if (e.key === "Enter") {
-			handleShare();
+			void handleShare();
 		}
 	};
 
@@ -156,7 +155,7 @@ export function ShareMenu({ columnId, columnMeta }: ShareMenuProps) {
 							<Button
 								size="sm"
 								variant={shareValid ? "default" : "outline"}
-								onClick={handleShare}
+								onClick={() => void handleShare()}
 								disabled={isSharing || !shareValid}
 								className="-ml-px h-8 rounded-l-none disabled:opacity-65"
 							>
@@ -186,7 +185,7 @@ export function ShareMenu({ columnId, columnMeta }: ShareMenuProps) {
 										<Button
 											variant="ghost"
 											size="icon-sm"
-											onClick={() => handleRevoke(accountId)}
+											onClick={() => void handleRevoke(accountId)}
 											aria-label={`Revoke access for ${truncateAccountId(accountId)}`}
 											title="Revoke access"
 											className="size-6 text-muted-foreground hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400"
@@ -218,7 +217,7 @@ export function ShareMenu({ columnId, columnMeta }: ShareMenuProps) {
 									<Button
 										variant="ghost"
 										size="icon-sm"
-										onClick={handleCopyPublicLink}
+										onClick={() => void handleCopyPublicLink()}
 										aria-label={publicLinkCopied ? "Copied public link" : "Copy public link"}
 										title="Copy link"
 										className="size-7 shrink-0"
@@ -234,7 +233,7 @@ export function ShareMenu({ columnId, columnMeta }: ShareMenuProps) {
 									<Button
 										variant="ghost"
 										size="sm"
-										onClick={handleEnablePublicLink}
+										onClick={() => void handleEnablePublicLink()}
 										disabled={isTogglingPublic}
 										className="h-7 flex-1 gap-1.5 text-xs"
 									>
@@ -244,7 +243,7 @@ export function ShareMenu({ columnId, columnMeta }: ShareMenuProps) {
 									<Button
 										variant="ghost"
 										size="sm"
-										onClick={handleDisablePublicLink}
+										onClick={() => void handleDisablePublicLink()}
 										disabled={isTogglingPublic}
 										className="h-7 flex-1 gap-1.5 text-xs text-red-600 hover:bg-red-500/10 hover:text-red-600 dark:text-red-400 dark:hover:text-red-400"
 									>
@@ -257,7 +256,7 @@ export function ShareMenu({ columnId, columnMeta }: ShareMenuProps) {
 							<Button
 								variant="outline"
 								size="sm"
-								onClick={handleEnablePublicLink}
+								onClick={() => void handleEnablePublicLink()}
 								disabled={isTogglingPublic}
 								className="w-full gap-1.5"
 							>

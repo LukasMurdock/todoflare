@@ -8,10 +8,9 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const root = path.resolve(import.meta.dirname, "..");
 const entry = path.join(root, "packages/board/src/index.ts");
 const reportPath = path.join(root, "packages/board/api-report.md");
 const update = process.argv.includes("--update");
@@ -28,7 +27,7 @@ const typeText = (type, at) => checker.typeToString(type, at, flags);
 function describe(symbol) {
 	const target = symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
 	const declaration = target.declarations?.[0];
-	if (!declaration) return `// ${symbol.name}: no declaration`;
+	if (!declaration) {return `// ${symbol.name}: no declaration`;}
 	const file = declaration.getSourceFile();
 	if (ts.isFunctionDeclaration(declaration)) {
 		const signature = checker.getSignatureFromDeclaration(declaration);

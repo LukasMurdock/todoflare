@@ -15,12 +15,11 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { compile, optimize } from "@tailwindcss/node";
 import { Scanner } from "@tailwindcss/oxide";
 
 const ROOT = "[data-todo-board]";
-const here = path.dirname(fileURLToPath(import.meta.url));
+const here = import.meta.dirname;
 const require = createRequire(import.meta.url);
 
 /** Splits a selector list on top-level commas (not those inside :is(...)). */
@@ -29,44 +28,44 @@ function splitSelectors(list) {
 	let depth = 0;
 	let current = "";
 	for (const char of list) {
-		if (char === "(" || char === "[") depth++;
-		if (char === ")" || char === "]") depth--;
+		if (char === "(" || char === "[") {depth++;}
+		if (char === ")" || char === "]") {depth--;}
 		if (char === "," && depth === 0) {
 			parts.push(current.trim());
 			current = "";
-		} else current += char;
+		} else {current += char;}
 	}
-	if (current.trim()) parts.push(current.trim());
+	if (current.trim()) {parts.push(current.trim());}
 	return parts;
 }
 
 function scopeSelector(selector) {
-	if (/^(html|:host|body)$/.test(selector)) return [ROOT];
+	if (/^(html|:host|body)$/.test(selector)) {return [ROOT];}
 	// Universal rules apply to the root itself and everything inside it.
-	if (selector === "*" || selector.startsWith("::")) return [`${ROOT}${selector === "*" ? "" : selector}`, `${ROOT} ${selector}`];
+	if (selector === "*" || selector.startsWith("::")) {return [`${ROOT}${selector === "*" ? "" : selector}`, `${ROOT} ${selector}`];}
 	return [`${ROOT} ${selector}`];
 }
 
 /** Rewrites every rule of a stylesheet to apply only inside the board, dropping @layer wrappers. */
 export function scopeStylesheet(css) {
-	const text = css.replace(/\/\*[\s\S]*?\*\//g, "");
+	const text = css.replaceAll(/\/\*[\s\S]*?\*\//g, "");
 	let out = "";
 	let index = 0;
 	while (index < text.length) {
 		const open = text.indexOf("{", index);
-		if (open === -1) break;
+		if (open === -1) {break;}
 		const prelude = text.slice(index, open).trim();
 		let depth = 1;
 		let close = open + 1;
 		while (depth > 0) {
-			if (text[close] === "{") depth++;
-			if (text[close] === "}") depth--;
+			if (text[close] === "{") {depth++;}
+			if (text[close] === "}") {depth--;}
 			close++;
 		}
 		const body = text.slice(open + 1, close - 1);
-		if (prelude.startsWith("@layer")) out += scopeStylesheet(body);
-		else if (prelude.startsWith("@")) out += `${prelude} {\n${scopeStylesheet(body)}}\n`;
-		else out += `${splitSelectors(prelude).flatMap(scopeSelector).join(",\n")} {${body}}\n`;
+		if (prelude.startsWith("@layer")) {out += scopeStylesheet(body);}
+		else if (prelude.startsWith("@")) {out += `${prelude} {\n${scopeStylesheet(body)}}\n`;}
+		else {out += `${splitSelectors(prelude).flatMap(scopeSelector).join(",\n")} {${body}}\n`;}
 		index = close;
 	}
 	return out;

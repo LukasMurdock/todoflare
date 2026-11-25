@@ -10,5 +10,5 @@ export function e2eAccountHeaders(accountId: string): Record<string, string> {
 }
 
 export function usingE2EAuthFixture(): boolean {
-	return typeof __TODOFLARE_E2E__ !== "undefined" && __TODOFLARE_E2E__;
+	return typeof __TODOFLARE_E2E__ === "boolean" && __TODOFLARE_E2E__;
 }

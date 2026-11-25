@@ -1,19 +1,19 @@
-import * as React from "react"
-import * as PopoverPrimitive from "@radix-ui/react-popover"
+import type { ComponentProps } from "react"
+import { Anchor as PopoverAnchorPrimitive, Content as PopoverContentPrimitive, Portal as PopoverPortalPrimitive, Root as PopoverRootPrimitive, Trigger as PopoverTriggerPrimitive } from "@radix-ui/react-popover"
 
 import { cn } from "@/lib/utils"
 import { usePortalContainer } from "@todoflare/board";
 
 function Popover({
   ...props
-}: React.ComponentProps<typeof PopoverPrimitive.Root>) {
-  return <PopoverPrimitive.Root data-slot="popover" {...props} />
+}: ComponentProps<typeof PopoverRootPrimitive>) {
+  return <PopoverRootPrimitive data-slot="popover" {...props} />
 }
 
 function PopoverTrigger({
   ...props
-}: React.ComponentProps<typeof PopoverPrimitive.Trigger>) {
-  return <PopoverPrimitive.Trigger data-slot="popover-trigger" {...props} />
+}: ComponentProps<typeof PopoverTriggerPrimitive>) {
+  return <PopoverTriggerPrimitive data-slot="popover-trigger" {...props} />
 }
 
 function PopoverContent({
@@ -22,10 +22,10 @@ function PopoverContent({
   sideOffset = 6,
   collisionPadding = 12,
   ...props
-}: React.ComponentProps<typeof PopoverPrimitive.Content>) {
+}: ComponentProps<typeof PopoverContentPrimitive>) {
   return (
-    <PopoverPrimitive.Portal container={usePortalContainer()}>
-      <PopoverPrimitive.Content
+    <PopoverPortalPrimitive container={usePortalContainer()}>
+      <PopoverContentPrimitive
         data-slot="popover-content"
         align={align}
         sideOffset={sideOffset}
@@ -36,14 +36,14 @@ function PopoverContent({
         )}
         {...props}
       />
-    </PopoverPrimitive.Portal>
+    </PopoverPortalPrimitive>
   )
 }
 
 function PopoverAnchor({
   ...props
-}: React.ComponentProps<typeof PopoverPrimitive.Anchor>) {
-  return <PopoverPrimitive.Anchor data-slot="popover-anchor" {...props} />
+}: ComponentProps<typeof PopoverAnchorPrimitive>) {
+  return <PopoverAnchorPrimitive data-slot="popover-anchor" {...props} />
 }
 
 export { Popover, PopoverTrigger, PopoverContent, PopoverAnchor }

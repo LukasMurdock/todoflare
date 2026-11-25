@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { env } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { purgeExpiredTrashedColumns } from "../src/server/workflows/purge-expired-trashed-columns";
@@ -5,7 +6,7 @@ import { TRASH_RETENTION_MS } from "../src/server/persistence-records";
 import type { ColumnMeta } from "../src/types/account";
 
 const FIXED_NOW = 1_900_000_000_000;
-const seededAccountIds: string[] = [];
+const seededAccountIds: Array<string> = [];
 
 afterEach(async () => {
 	for (const accountId of seededAccountIds.splice(0)) {
@@ -29,10 +30,7 @@ async function seedTrash(
 }
 
 async function loadTrash(accountId: string) {
-	return JSON.parse((await env.ACCOUNTS.get(`trash:${accountId}`)) ?? "[]") as Array<{
-		columnId: string;
-		deletedAt: number;
-	}>;
+	return z.array(z.object({ columnId: z.string(), deletedAt: z.number() })).parse(JSON.parse((await env.ACCOUNTS.get(`trash:${accountId}`)) ?? "[]"));
 }
 
 describe("purgeExpiredTrashedColumns workflow", () => {
@@ -59,9 +57,9 @@ describe("purgeExpiredTrashedColumns workflow", () => {
 		expect(initResponse.ok).toBe(true);
 		await stub.fetch("http://do/trash", { method: "POST", body: JSON.stringify({ deletedAt: FIXED_NOW - TRASH_RETENTION_MS }) });
 
-		const clock = vi.spyOn(Date, "now").mockReturnValue(FIXED_NOW);
+		vi.useFakeTimers({ toFake: ["Date"], now: FIXED_NOW });
 		const result = await purgeExpiredTrashedColumns({ env, now: () => FIXED_NOW });
-		clock.mockRestore();
+		vi.useRealTimers();
 
 		expect(result).toEqual({
 			accountsScanned: 1,
@@ -129,7 +127,8 @@ describe("purgeExpiredTrashedColumns workflow", () => {
 			deletedAt: FIXED_NOW - TRASH_RETENTION_MS,
 		};
 		const accountId = await seedTrash([entry]);
-		const deleteColumn = vi.fn(async () => Response.json({ success: true }));
+		const deleted: Array<string> = [];
+		const deleteColumn = async (id: string) => { deleted.push(id); return Response.json({ success: true }); };
 		const accounts = {
 			get: (key: string) => env.ACCOUNTS.get(key),
 			put: (key: string, value: string) => env.ACCOUNTS.put(key, value),
@@ -150,7 +149,7 @@ describe("purgeExpiredTrashedColumns workflow", () => {
 		});
 
 		expect(result.columnsFailed).toBe(1);
-		expect(deleteColumn).not.toHaveBeenCalled();
+		expect(deleted).toEqual([]);
 		expect(await loadTrash(accountId)).toEqual([entry]);
 	});
 
@@ -172,7 +171,8 @@ describe("purgeExpiredTrashedColumns workflow", () => {
 			}),
 		);
 		await env.ACCOUNTS.put(trashKey, "[]");
-		const deleteColumn = vi.fn(async () => Response.json({ success: true }));
+		const deleted: Array<string> = [];
+		const deleteColumn = async (id: string) => { deleted.push(id); return Response.json({ success: true }); };
 
 		const result = await purgeExpiredTrashedColumns({
 			env,
@@ -180,7 +180,7 @@ describe("purgeExpiredTrashedColumns workflow", () => {
 			deleteColumn,
 		});
 
-		expect(deleteColumn).toHaveBeenCalledWith(entry.columnId);
+		expect(deleted).toEqual([entry.columnId]);
 		expect(result.columnsPurged).toBe(1);
 	});
 
@@ -188,7 +188,8 @@ describe("purgeExpiredTrashedColumns workflow", () => {
 		const accountId = await seedTrash([]);
 		const trashKey = `trash:${accountId}`;
 		await env.ACCOUNTS.put(trashKey, "{");
-		const deleteColumn = vi.fn(async () => Response.json({ success: true }));
+		const deleted: Array<string> = [];
+		const deleteColumn = async (id: string) => { deleted.push(id); return Response.json({ success: true }); };
 
 		const result = await purgeExpiredTrashedColumns({
 			env: { ACCOUNTS: env.ACCOUNTS, COLUMN_ROOM: env.COLUMN_ROOM },
@@ -199,7 +200,7 @@ describe("purgeExpiredTrashedColumns workflow", () => {
 		expect(result.trashRecordsInvalid).toBe(1);
 		expect(result.columnsPurged).toBe(0);
 		expect(result.trashEntriesRemoved).toBe(0);
-		expect(deleteColumn).not.toHaveBeenCalled();
+		expect(deleted).toEqual([]);
 		expect(await env.ACCOUNTS.get(trashKey)).toBe("{");
 	});
 
@@ -216,15 +217,15 @@ describe("purgeExpiredTrashedColumns workflow", () => {
 			{ columnId: freshId, deletedAt: expiredAt + 1 },
 		];
 		const accountId = await seedTrash(entries);
-		const attempted: string[] = [];
+		const attempted: Array<string> = [];
 
 		const result = await purgeExpiredTrashedColumns({
 			env,
 			now: () => FIXED_NOW,
 			deleteColumn: async (columnId) => {
 				attempted.push(columnId);
-				if (columnId === nonOkId) return new Response(null, { status: 500 });
-				if (columnId === thrownId) throw new Error("injected failure");
+				if (columnId === nonOkId) {return new Response(null, { status: 500 });}
+				if (columnId === thrownId) {throw new Error("injected failure");}
 				return Response.json({ success: true });
 			},
 		});

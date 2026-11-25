@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import { createAccount } from "../e2e/helpers/account-api";
 import { addColumnAndGetId, bootstrapAuthenticatedPage, LOCAL_COLUMNS_KEY, WELCOME_KEY } from "../e2e/helpers/ui-session";
 import { GUEST_COLUMNS } from "./fixtures";
@@ -10,7 +11,7 @@ async function openGuestBoard(page: Page, { welcomed = true } = {}) {
 	await page.addInitScript(
 		({ columnsKey, welcomeKey, columns, welcomed }) => {
 			localStorage.setItem(columnsKey, JSON.stringify(columns));
-			if (welcomed) localStorage.setItem(welcomeKey, "true");
+			if (welcomed) {localStorage.setItem(welcomeKey, "true");}
 		},
 		{ columnsKey: LOCAL_COLUMNS_KEY, welcomeKey: WELCOME_KEY, columns: GUEST_COLUMNS, welcomed },
 	);
@@ -49,7 +50,7 @@ test("delete confirmation for a column with content", async ({ page }) => {
 });
 
 test("signed-in board with share menu", async ({ page, request, baseURL }) => {
-	const accountId = await createAccount(request, baseURL!);
+	const accountId = await createAccount(request, baseURL ?? "http://127.0.0.1:4173");
 	await bootstrapAuthenticatedPage(page, accountId);
 	// Not ensureColumnExists: a guest placeholder column renders before the account loads.
 	await addColumnAndGetId(page);
@@ -67,7 +68,7 @@ test("signed-in board with share menu", async ({ page, request, baseURL }) => {
 });
 
 test("public read-only page", async ({ page, browser, request, baseURL }) => {
-	const accountId = await createAccount(request, baseURL!);
+	const accountId = await createAccount(request, baseURL ?? "http://127.0.0.1:4173");
 	await bootstrapAuthenticatedPage(page, accountId);
 	await addColumnAndGetId(page);
 	const editor = page.getByRole("textbox", { name: "Todo editor" }).first();
@@ -79,7 +80,8 @@ test("public read-only page", async ({ page, browser, request, baseURL }) => {
 	await page.getByRole("button", { name: "Enable public link" }).click();
 	const link = page.getByText(/\/p\/[A-Za-z0-9]{8}/).first();
 	await expect(link).toBeVisible();
-	const publicPath = /\/p\/[A-Za-z0-9]{8}/.exec((await link.textContent()) ?? "")![0];
+	const publicPath = /\/p\/[A-Za-z0-9]{8}/.exec((await link.textContent()) ?? "")?.[0];
+	if (!publicPath) {throw new Error("Missing public link");}
 
 	const viewer = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 	await viewer.goto(publicPath);

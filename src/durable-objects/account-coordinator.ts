@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
-import { reorderColumnOrder } from "../server/account-record-store";
-import { parseDeletedColumnRecords } from "../server/persistence-records";
+import { applyAccountRecordMutation } from "../server/account-record-store";
+import type { AccountRecordMutation } from "../server/account-record-store";
 
 interface AccountCoordinatorEnv {
 	ACCOUNTS: KVNamespace;
@@ -12,16 +12,6 @@ interface RecordRow extends Record<string, SqlStorageValue> {
 	deleted: number;
 	dirty: number;
 }
-
-type AccountMutation =
-	| { kind: "account-add-column"; columnId: string; maxColumns?: number }
-	| { kind: "account-remove-column"; columnId: string }
-	| { kind: "account-reorder"; columnOrder: string[] }
-	| { kind: "account-set-hidden"; hiddenSharedColumns: string[] }
-	| { kind: "shared-add"; columnId: string }
-	| { kind: "shared-remove"; columnId: string }
-	| { kind: "trash-upsert"; columnId: string; deletedAt: number; retentionMs: number }
-	| { kind: "trash-remove"; columnId: string };
 
 function jsonError(message: string, status = 400): Response {
 	return Response.json({ error: message }, { status });
@@ -68,9 +58,15 @@ export class AccountCoordinatorSql extends DurableObject<AccountCoordinatorEnv> 
 		);
 	}
 
+	private requireRow(key: string): RecordRow {
+		const row = this.load(key);
+		if (!row) {throw new Error("Missing persisted coordinator row");}
+		return row;
+	}
+
 	private async bootstrap(key: string): Promise<RecordRow> {
 		const existing = this.load(key);
-		if (existing) return existing;
+		if (existing) {return existing;}
 
 		const value = await this.env.ACCOUNTS.get(key);
 		this.ctx.storage.sql.exec(
@@ -79,7 +75,7 @@ export class AccountCoordinatorSql extends DurableObject<AccountCoordinatorEnv> 
 			value,
 			value === null ? 1 : 0,
 		);
-		return this.load(key) as RecordRow;
+		return this.requireRow(key);
 	}
 
 	private async project(row: RecordRow): Promise<boolean> {
@@ -99,69 +95,11 @@ export class AccountCoordinatorSql extends DurableObject<AccountCoordinatorEnv> 
 				recordKey: row.record_key,
 				error: error instanceof Error ? error.message : String(error),
 			});
-			await this.ctx.storage.setAlarm(Date.now() + 5_000);
+			await this.ctx.storage.setAlarm(Date.now() + 5000);
 			return false;
 		}
 	}
 
-	private applyMutation(value: string | null, mutation: AccountMutation): string {
-		switch (mutation.kind) {
-		case "account-add-column":
-		case "account-remove-column":
-		case "account-reorder":
-		case "account-set-hidden": {
-			if (value === null) throw new Error("Account not found");
-			const account = JSON.parse(value) as {
-				columnOrder: string[];
-				hiddenSharedColumns: string[];
-			};
-			if (mutation.kind === "account-add-column") {
-				if (!account.columnOrder.includes(mutation.columnId)) {
-					if (account.columnOrder.length >= (mutation.maxColumns ?? 100)) {
-						throw new Error("Column limit reached");
-					}
-					account.columnOrder.push(mutation.columnId);
-				}
-			} else if (mutation.kind === "account-remove-column") {
-				account.columnOrder = account.columnOrder.filter(
-					(columnId) => columnId !== mutation.columnId,
-				);
-			} else if (mutation.kind === "account-reorder") {
-				account.columnOrder = reorderColumnOrder(account.columnOrder, mutation.columnOrder);
-			} else {
-				account.hiddenSharedColumns = mutation.hiddenSharedColumns;
-			}
-			return JSON.stringify(account);
-		}
-		case "shared-add":
-		case "shared-remove": {
-			const columns = value === null ? [] : (JSON.parse(value) as string[]);
-			const next =
-				mutation.kind === "shared-add"
-					? Array.from(new Set([...columns, mutation.columnId]))
-					: columns.filter((columnId) => columnId !== mutation.columnId);
-			return JSON.stringify(next);
-		}
-		case "trash-upsert":
-		case "trash-remove": {
-			const parsedTrash = parseDeletedColumnRecords(value);
-			if (!parsedTrash.ok) throw new Error(`Trash record ${parsedTrash.code}`);
-			const trash = parsedTrash.value;
-			if (mutation.kind === "trash-remove") {
-				return JSON.stringify(trash.filter((entry) => entry.columnId !== mutation.columnId));
-			}
-			const retained = trash.filter(
-				(entry) =>
-					mutation.deletedAt - entry.deletedAt < mutation.retentionMs &&
-					entry.columnId !== mutation.columnId,
-			);
-			return JSON.stringify([
-				{ columnId: mutation.columnId, deletedAt: mutation.deletedAt },
-				...retained,
-			]);
-		}
-		}
-	}
 
 	private async handle(request: Request): Promise<Response> {
 		if (request.method !== "POST") {
@@ -169,11 +107,12 @@ export class AccountCoordinatorSql extends DurableObject<AccountCoordinatorEnv> 
 		}
 
 		const pathname = new URL(request.url).pathname;
-		const body = (await request.json().catch(() => null)) as {
+		const body = (await request.json<{
+			mutation?: AccountRecordMutation;
 			key?: unknown;
 			value?: unknown;
-		} | null;
-		if (!body || typeof body.key !== "string") return jsonError("Invalid record key");
+		} | null>().catch(() => null));
+		if (!body || typeof body.key !== "string") {return jsonError("Invalid record key");}
 		const key = body.key;
 		if (!/^(account|shared|trash):[0-9]+$/.test(key)) {
 			return jsonError("Record is not account-scoped");
@@ -185,14 +124,14 @@ export class AccountCoordinatorSql extends DurableObject<AccountCoordinatorEnv> 
 		}
 
 		if (pathname === "/put") {
-			if (typeof body.value !== "string") return jsonError("Invalid record value");
+			if (typeof body.value !== "string") {return jsonError("Invalid record value");}
 			await this.bootstrap(key);
 			this.ctx.storage.sql.exec(
 				"UPDATE account_records SET value = ?, deleted = 0, dirty = 1 WHERE record_key = ?",
 				body.value,
 				key,
 			);
-			await this.project(this.load(key) as RecordRow);
+			await this.project(this.requireRow(key));
 			return Response.json({ stored: true });
 		}
 
@@ -202,24 +141,24 @@ export class AccountCoordinatorSql extends DurableObject<AccountCoordinatorEnv> 
 				"UPDATE account_records SET value = NULL, deleted = 1, dirty = 1 WHERE record_key = ?",
 				key,
 			);
-			await this.project(this.load(key) as RecordRow);
+			await this.project(this.requireRow(key));
 			return Response.json({ deleted: true });
 		}
 
 		if (pathname === "/mutate") {
-			const mutation = (body as { mutation?: AccountMutation }).mutation;
+			const mutation = body.mutation;
 			if (!mutation || typeof mutation.kind !== "string") {
 				return jsonError("Invalid mutation");
 			}
 			const row = await this.bootstrap(key);
 			try {
-				const value = this.applyMutation(row.deleted !== 0 ? null : row.value, mutation);
+				const value = applyAccountRecordMutation(row.deleted !== 0 ? null : row.value, mutation);
 				this.ctx.storage.sql.exec(
 					"UPDATE account_records SET value = ?, deleted = 0, dirty = 1 WHERE record_key = ?",
 					value,
 					key,
 				);
-				await this.project(this.load(key) as RecordRow);
+				await this.project(this.requireRow(key));
 				return Response.json({ value });
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
@@ -243,9 +182,9 @@ export class AccountCoordinatorSql extends DurableObject<AccountCoordinatorEnv> 
 				.toArray();
 			let failed = false;
 			for (const row of dirty) {
-				if (!(await this.project(row))) failed = true;
+				if (!(await this.project(row))) {failed = true;}
 			}
-			if (failed) await this.ctx.storage.setAlarm(Date.now() + 30_000);
+			if (failed) {await this.ctx.storage.setAlarm(Date.now() + 30_000);}
 		});
 	}
 }

@@ -71,7 +71,7 @@ export const PUBLIC_PAGE_PATH = "/p/:publicId";
 export const OAUTH_AUTHORIZE_PAGE_PATH = "/oauth/authorize";
 
 /** Endpoints OAuth clients call from other origins (browser-based MCP clients). */
-export const CROSS_ORIGIN_API_PATHS: readonly string[] = [API_ROUTES.oauthToken.path, API_ROUTES.oauthRegister.path];
+export const CROSS_ORIGIN_API_PATHS: ReadonlyArray<string> = [API_ROUTES.oauthToken.path, API_ROUTES.oauthRegister.path];
 
 type RouteParams<P extends string> =
 	P extends `${string}:${infer Name}/${infer Rest}`
@@ -82,9 +82,9 @@ type RouteParams<P extends string> =
 
 /** Fills a route pattern's `:name` parameters, URL-encoding each value. */
 export function routePath<P extends string>(pattern: P, params: RouteParams<P>): string {
-	return pattern.replace(/:([A-Za-z]+)/g, (_match, name: string) => {
+	return pattern.replaceAll(/:([A-Za-z]+)/g, (_match, name: string) => {
 		const value = (params as Record<string, string | undefined>)[name];
-		if (value === undefined) throw new Error(`Missing route parameter ${name} for ${pattern}`);
+		if (value === undefined) {throw new Error(`Missing route parameter ${name} for ${pattern}`);}
 		return encodeURIComponent(value);
 	});
 }

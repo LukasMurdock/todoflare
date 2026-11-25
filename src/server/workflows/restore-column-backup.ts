@@ -1,10 +1,8 @@
 import { normalizeAccountId } from "../../lib/account";
 import { normalizeAccountIdSet } from "../../lib/column-access";
 import type { ColumnMeta } from "../../types/account";
-import {
-	checksumColumnBackupPayload,
-	type ColumnBackupPayload,
-} from "../column-backup-payload";
+import { checksumColumnBackupPayload } from '../column-backup-payload';
+import type { ColumnBackupPayload } from '../column-backup-payload';
 import { accountRecordStore, mutateAccountRecord } from "../account-record-store";
 import { registerColumn } from "../lifecycle-journal";
 import { claimPublicId, releasePublicId } from "../public-id-registry";
@@ -86,13 +84,13 @@ export async function restoreColumnBackup<TColumnRoomId>(
 		return { ok: false, code: "backup_checksum_mismatch" };
 	}
 	const parsedBackupMeta = parseColumnMetaRecord(payload.meta);
-	if (!parsedBackupMeta.ok) return { ok: false, code: "column_meta_invalid" };
+	if (!parsedBackupMeta.ok) {return { ok: false, code: "column_meta_invalid" };}
 	const backupMeta = parsedBackupMeta.value;
 
 	const ownerId = normalizeAccountId(backupMeta.ownerId);
 	const trashKey = `trash:${ownerId}`;
 	const trash = parseDeletedColumnRecords(await records.get(trashKey));
-	if (!trash.ok) return { ok: false, code: "account_invalid" };
+	if (!trash.ok) {return { ok: false, code: "account_invalid" };}
 
 	let preRestoreBackup: { key: string | null };
 	try {
@@ -110,7 +108,7 @@ export async function restoreColumnBackup<TColumnRoomId>(
 	}
 	if (currentResponse.ok) {
 		const parsedCurrent = parseColumnMetaRecord(await currentResponse.json());
-		if (!parsedCurrent.ok) return { ok: false, code: "column_meta_invalid" };
+		if (!parsedCurrent.ok) {return { ok: false, code: "column_meta_invalid" };}
 		currentMeta = parsedCurrent.value;
 	}
 	if (
@@ -142,7 +140,7 @@ export async function restoreColumnBackup<TColumnRoomId>(
 	const ownerRaw = await records.get(ownerKey);
 	if (ownerRaw) {
 		const parsedOwner = parseAccountRecord(ownerRaw);
-		if (!parsedOwner.ok) return { ok: false, code: "account_invalid" };
+		if (!parsedOwner.ok) {return { ok: false, code: "account_invalid" };}
 		if (input.trashedAt === undefined && !parsedOwner.value.columnOrder.includes(columnId)) {
 			await mutateAccountRecord(env, ownerKey, {
 				kind: "account-add-column",
@@ -164,7 +162,7 @@ export async function restoreColumnBackup<TColumnRoomId>(
 	for (const accountId of new Set([...desiredShared, ...previousShared])) {
 		const key = `shared:${accountId}`;
 		const parsedIndex = parseSharedColumnIndex(await records.get(key));
-		if (!parsedIndex.ok) return { ok: false, code: "shared_index_invalid" };
+		if (!parsedIndex.ok) {return { ok: false, code: "shared_index_invalid" };}
 		const next = desiredShared.has(accountId)
 			? Array.from(new Set([...parsedIndex.value, columnId]))
 			: parsedIndex.value.filter((id) => id !== columnId);

@@ -19,13 +19,13 @@ function unauthorized(): AccountCredentialResult {
 }
 
 /** The Vitest and E2E-build fixture: an Account ID header stands in for a session. */
-function usesTestFixture(request: Request, env: { AUTH_TEST_BYPASS?: string }): boolean {
+function fixtureAccount(request: Request, env: { AUTH_TEST_BYPASS?: string }): string | null {
 	const compiledE2E =
-		typeof __TODOFLARE_E2E__ !== "undefined" && __TODOFLARE_E2E__;
-	if (!(env.AUTH_TEST_BYPASS === "true" || compiledE2E)) return false;
-	if (request.headers.get("X-Test-Disable-Auth-Bypass") === "1") return false;
+		typeof __TODOFLARE_E2E__ === "boolean" && __TODOFLARE_E2E__;
+	if (!(env.AUTH_TEST_BYPASS === "true" || compiledE2E)) {return null;}
+	if (request.headers.get("X-Test-Disable-Auth-Bypass") === "1") {return null;}
 	const credential = request.headers.get("X-Todoflare-Test-Account");
-	return credential !== null && validateAccountId(credential);
+	return credential !== null && validateAccountId(credential) ? normalizeAccountId(credential) : null;
 }
 
 /** Resolve a permanent account exclusively from a Better Auth session cookie. */
@@ -33,17 +33,18 @@ export async function requireAccountCredential(
 	request: Request,
 	env: AuthBindings & { AUTH_TEST_BYPASS?: string },
 ): Promise<AccountCredentialResult> {
-	if (usesTestFixture(request, env)) {
-		return { ok: true, accountId: normalizeAccountId(request.headers.get("X-Todoflare-Test-Account")!) };
+	const accountId = fixtureAccount(request, env);
+	if (accountId) {
+		return { ok: true, accountId };
 	}
 	const session = await getRequestSession(request, env);
 	if (!session || !validateAccountId(session.user.id)) {
 		return unauthorized();
 	}
 
-	if (namesAnotherAccount(request.headers, session.user.id)) return unauthorized();
+	if (namesAnotherAccount(request.headers, session.user.id)) {return unauthorized();}
 
-	if (isProvisional(await credentialInventory(env.AUTH_DB, session.user.id))) return unauthorized();
+	if (isProvisional(await credentialInventory(env.AUTH_DB, session.user.id))) {return unauthorized();}
 
 	return { ok: true, accountId: normalizeAccountId(session.user.id) };
 }
@@ -58,7 +59,7 @@ export async function requireRecentSignIn(
 	request: Request,
 	env: AuthBindings & { AUTH_TEST_BYPASS?: string },
 ): Promise<Response | null> {
-	if (usesTestFixture(request, env)) return null;
+	if (fixtureAccount(request, env)) {return null;}
 	const session = await getRequestSession(request, env);
 	return session && isRecentSession(session.session.createdAt) ? null : recentSignInRequired();
 }

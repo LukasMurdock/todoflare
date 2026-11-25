@@ -1,4 +1,5 @@
-import { expect, type BrowserContext, type Page } from "@playwright/test";
+import { expect } from '@playwright/test';
+import type { BrowserContext, Page } from '@playwright/test';
 
 /**
  * Signs a fresh account in with a real passkey on a virtual authenticator, as
@@ -18,60 +19,39 @@ export async function signInWithNewPasskey(page: Page, context: BrowserContext, 
 	// WebAuthn request, and Chromium refuses create() for the first moments of
 	// one ("A request is already pending").
 	await page.goto(`${origin}/robots.txt`);
-	const accountId = await page.evaluate(async () => {
-		const encode = (value: ArrayBuffer): string => {
-			let binary = "";
-			for (const byte of new Uint8Array(value)) binary += String.fromCharCode(byte);
-			return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-		};
-		const decode = (value: string): ArrayBuffer => {
-			const padded = value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
-			return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0)).buffer;
-		};
-		const bootstrap = await fetch("/api/auth/sign-in/anonymous", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-		if (!bootstrap.ok) throw new Error(`sign-in/anonymous ${bootstrap.status}: ${await bootstrap.text()}`);
-		const provisional = (await bootstrap.json()) as { user: { id: string } };
-		const optionsResponse = await fetch("/api/auth/passkey/generate-register-options?name=Primary");
-		if (!optionsResponse.ok) throw new Error(`generate-register-options ${optionsResponse.status}: ${await optionsResponse.text()}`);
-		const options = (await optionsResponse.json()) as PublicKeyCredentialCreationOptionsJSON;
-		const credential = (await navigator.credentials.create({
-			publicKey: {
-				...options,
-				challenge: decode(options.challenge),
-				user: { ...options.user, id: decode(options.user.id) },
-				excludeCredentials: options.excludeCredentials?.map((item) => ({ ...item, id: decode(item.id) })),
-			},
-		}).catch((cause: unknown) => {
-			throw new Error(`navigator.credentials.create: ${String(cause)}`);
-		})) as PublicKeyCredential;
-		const attestation = credential.response as AuthenticatorAttestationResponse;
-		const verification = await fetch("/api/auth/passkey/verify-registration", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({
-				name: "Primary",
-				response: {
-					id: credential.id,
-					rawId: encode(credential.rawId),
-					type: credential.type,
-					authenticatorAttachment: credential.authenticatorAttachment,
-					response: {
-						clientDataJSON: encode(attestation.clientDataJSON),
-						attestationObject: encode(attestation.attestationObject),
-						transports: attestation.getTransports?.() ?? [],
-					},
-					clientExtensionResults: credential.getClientExtensionResults(),
-				},
-			}),
-		});
-		if (!verification.ok) throw new Error(`verify-registration ${verification.status}: ${await verification.text()}`);
-		const provision = await fetch("/api/account", { method: "POST" });
-		if (!provision.ok) throw new Error(`POST /api/account ${provision.status}: ${await provision.text()}`);
-		localStorage.setItem("todoflare-account", provisional.user.id);
+	const accountId = await page.evaluate(registerPasskey);
+	await page.evaluate((id) => {
+		localStorage.setItem("todoflare-account", id);
 		localStorage.setItem("todoflare-welcomed", "true");
-		return provisional.user.id;
-	});
+	}, accountId);
 	await page.goto(`${origin}/`);
 	await expect(page.getByRole("button", { name: "Add column" })).toBeVisible();
 	return accountId;
+}
+
+/** Runs inside Chromium through page.evaluate. */
+export async function registerPasskey() {
+	const jsonHeaders = { "Content-Type": "application/json" };
+	const bootstrap = await fetch("/api/auth/sign-in/anonymous", { method: "POST", headers: jsonHeaders, body: "{}" });
+	if (!bootstrap.ok) {throw new Error(await bootstrap.text());}
+	const provisional: unknown = await bootstrap.json();
+	if (!provisional || typeof provisional !== "object" || !("user" in provisional) ||
+		!provisional.user || typeof provisional.user !== "object" || !("id" in provisional.user) ||
+		typeof provisional.user.id !== "string") {throw new Error("Anonymous account has no user ID");}
+
+	const options = await fetch("/api/auth/passkey/generate-register-options?name=Primary");
+	if (!options.ok) {throw new Error(await options.text());}
+	// Chromium validates the JSON options and decodes their base64url fields.
+	// oxlint-disable-next-line typescript/no-unsafe-argument -- The native WebAuthn JSON parser validates and decodes the server response.
+	const publicKey = PublicKeyCredential.parseCreationOptionsFromJSON(await options.json());
+	const credential = await navigator.credentials.create({ publicKey });
+	// oxlint-disable-next-line @nkzw/no-instanceof -- Verify the browser returned a public-key credential before serializing it.
+	if (!(credential instanceof PublicKeyCredential)) {throw new Error("Passkey registration returned no public key credential");}
+	const verify = await fetch("/api/auth/passkey/verify-registration", {
+		method: "POST", headers: jsonHeaders, body: JSON.stringify({ name: "Primary", response: credential.toJSON() }),
+	});
+	if (!verify.ok) {throw new Error(await verify.text());}
+	const provision = await fetch("/api/account", { method: "POST" });
+	if (!provision.ok) {throw new Error(await provision.text());}
+	return provisional.user.id;
 }

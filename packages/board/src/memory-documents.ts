@@ -1,4 +1,4 @@
-import * as Y from "yjs";
+import { Doc as YDoc } from "yjs";
 import type { DocumentAdapter } from "./documents";
 
 /**
@@ -8,7 +8,7 @@ import type { DocumentAdapter } from "./documents";
 export function createMemoryDocuments(): DocumentAdapter {
 	return {
 		async open() {
-			const doc = new Y.Doc();
+			const doc = new YDoc();
 			return { doc, release: () => doc.destroy() };
 		},
 	};

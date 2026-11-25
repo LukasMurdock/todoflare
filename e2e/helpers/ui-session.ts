@@ -1,4 +1,6 @@
-import { expect, type Page } from "@playwright/test";
+import { z } from "zod";
+import { expect } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import { LOCAL_COLUMNS_STORAGE_KEY } from "../../src/lib/local-column-storage";
 
 export const ACCOUNT_STORAGE_KEY = "todoflare-account";
@@ -29,7 +31,7 @@ export async function bootstrapAuthenticatedPage(
 
 export async function ensureColumnExists(page: Page): Promise<void> {
 	const collapseButtons = page.getByRole("button", { name: "Collapse column" });
-	if ((await collapseButtons.count()) > 0) return;
+	if ((await collapseButtons.count()) > 0) {return;}
 
 	// Exactly the create route: the new column's ws-ticket POST also contains "/api/column".
 	const createResponsePromise = page.waitForResponse(
@@ -43,7 +45,7 @@ export async function ensureColumnExists(page: Page): Promise<void> {
 		throw new Error(`Failed to create column: ${await createResponse.text()}`);
 	}
 
-	await expect(collapseButtons.first()).toBeVisible({ timeout: 15000 });
+	await expect(collapseButtons.first()).toBeVisible({ timeout: 15_000 });
 }
 
 export async function addColumnAndGetId(page: Page): Promise<string> {
@@ -58,10 +60,10 @@ export async function addColumnAndGetId(page: Page): Promise<string> {
 		throw new Error(`Failed to create column: ${await createResponse.text()}`);
 	}
 
-	const payload = (await createResponse.json()) as { column: { id: string } };
+	const payload = z.object({ column: z.object({ id: z.string() }) }).parse(await createResponse.json());
 	await expect(
 		page.getByRole("button", { name: "Collapse column" }).first(),
-	).toBeVisible({ timeout: 15000 });
+	).toBeVisible({ timeout: 15_000 });
 
 	return payload.column.id;
 }

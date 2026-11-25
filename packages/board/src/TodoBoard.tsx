@@ -1,15 +1,8 @@
 "use client";
 
-import * as React from "react";
-import {
-	DndContext,
-	closestCenter,
-	KeyboardSensor,
-	PointerSensor,
-	useSensor,
-	useSensors,
-	type DragEndEvent,
-} from "@dnd-kit/core";
+import React from "react";
+import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
+import type { DragEndEvent } from '@dnd-kit/core';
 import {
 	SortableContext,
 	arrayMove,
@@ -82,7 +75,7 @@ export function TodoBoard({
 
 	/** Runs a host callback; a throw or rejection goes to onError instead of escaping the board. */
 	const runIntent = React.useCallback(
-		(operation: string, intent: () => unknown, columnId?: string) => {
+		<Result,>(operation: string, intent: () => Result, columnId?: string) => {
 			try {
 				Promise.resolve(intent()).catch((error: unknown) => reportError(error, { columnId, operation }));
 			} catch (error) {
@@ -98,18 +91,18 @@ export function TodoBoard({
 	);
 
 	const handleDragEnd = ({ active, over }: DragEndEvent) => {
-		if (!onReorderColumns || !over || active.id === over.id) return;
+		if (!onReorderColumns || !over || active.id === over.id) {return;}
 		const ids = columns.map((column) => column.id);
 		const from = ids.indexOf(String(active.id));
 		const to = ids.indexOf(String(over.id));
-		if (from === -1 || to === -1) return;
+		if (from === -1 || to === -1) {return;}
 		runIntent("reorder-columns", () => onReorderColumns(arrayMove(ids, from, to)));
 	};
 
 	// Mod+/ toggles the help dialog when focus is inside this board; hosts that
 	// want it page-wide call ref.openShortcutsHelp() from their own listener.
 	const handleKeyDown = (event: React.KeyboardEvent) => {
-		if (!isModShortcut(event, "/")) return;
+		if (!isModShortcut(event, "/")) {return;}
 		event.preventDefault();
 		setShortcutsOpen((open) => !open);
 	};

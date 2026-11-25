@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { parseDeletedColumnRecords } from "./persistence-records";
 
 /**
@@ -5,7 +6,7 @@ import { parseDeletedColumnRecords } from "./persistence-records";
  * first, then the rest in their current order. Unknown IDs are ignored and
  * each column appears once, which also repairs an order saved with duplicates.
  */
-export function reorderColumnOrder(current: readonly string[], requested: readonly string[]): string[] {
+export function reorderColumnOrder(current: ReadonlyArray<string>, requested: ReadonlyArray<string>): Array<string> {
 	const known = new Set(current);
 	return Array.from(new Set([...requested.filter((id) => known.has(id)), ...current]));
 }
@@ -31,8 +32,8 @@ interface AccountRecordStoreBindings<TAccountCoordinatorId> {
 export type AccountRecordMutation =
 	| { kind: "account-add-column"; columnId: string; maxColumns?: number }
 	| { kind: "account-remove-column"; columnId: string }
-	| { kind: "account-reorder"; columnOrder: string[] }
-	| { kind: "account-set-hidden"; hiddenSharedColumns: string[] }
+	| { kind: "account-reorder"; columnOrder: Array<string> }
+	| { kind: "account-set-hidden"; hiddenSharedColumns: Array<string> }
 	| { kind: "shared-add"; columnId: string }
 	| { kind: "shared-remove"; columnId: string }
 	| { kind: "trash-upsert"; columnId: string; deletedAt: number; retentionMs: number }
@@ -52,7 +53,7 @@ export function accountRecordStore<TAccountCoordinatorId>(
 			get: (key) => env.ACCOUNTS.get(key),
 			put: (key, value) => env.ACCOUNTS.put(key, value),
 			delete: async (key) => {
-				if (!env.ACCOUNTS.delete) throw new Error("Record store does not support delete");
+				if (!env.ACCOUNTS.delete) {throw new Error("Record store does not support delete");}
 				await env.ACCOUNTS.delete(key);
 			},
 		};
@@ -66,10 +67,13 @@ export function accountRecordStore<TAccountCoordinatorId>(
 	): Promise<{ value?: string | null }> {
 		const accountId = accountIdFromKey(key);
 		if (!accountId) {
-			if (path === "get") return { value: await env.ACCOUNTS.get(key) };
-			if (path === "put") await env.ACCOUNTS.put(key, value as string);
+			if (path === "get") {return { value: await env.ACCOUNTS.get(key) };}
+			if (path === "put") {
+				if (value === undefined) {throw new Error("Missing record value");}
+				await env.ACCOUNTS.put(key, value);
+			}
 			else {
-				if (!env.ACCOUNTS.delete) throw new Error("Record store does not support delete");
+				if (!env.ACCOUNTS.delete) {throw new Error("Record store does not support delete");}
 				await env.ACCOUNTS.delete(key);
 			}
 			return {};
@@ -86,7 +90,7 @@ export function accountRecordStore<TAccountCoordinatorId>(
 		if (!response.ok) {
 			throw new Error(`Account coordinator ${path} failed: ${response.status}`);
 		}
-		return (await response.json()) as { value?: string | null };
+		return await response.json<{ value?: string | null }>();
 	}
 
 	return {
@@ -117,25 +121,34 @@ export async function mutateAccountRecord<TAccountCoordinatorId>(
 			}),
 		);
 		if (!response.ok) {
-			const body = (await response.json().catch(() => ({}))) as { error?: string };
-			throw new Error(body.error ?? `Account mutation failed: ${response.status}`);
+			const body = await response.json<{ error?: string }>().catch(() => null);
+			throw new Error(body?.error ?? `Account mutation failed: ${response.status}`);
 		}
-		return ((await response.json()) as { value: string }).value;
+		return (await response.json<{ value: string }>()).value;
 	}
 
 	const store = accountRecordStore(env);
-	const raw = await store.get(key);
-	let value: string;
+	const value = applyAccountRecordMutation(await store.get(key), mutation);
+	await store.put(key, value);
+	return value;
+}
+
+// Account commands change individual fields. Retain other fields verbatim,
+// including accounts saved before schemaVersion existed.
+const columnIdsSchema = z.array(z.string());
+const mutableAccountSchema = z.looseObject({
+	columnOrder: columnIdsSchema,
+	hiddenSharedColumns: columnIdsSchema.optional(),
+});
+
+export function applyAccountRecordMutation(value: string | null, mutation: AccountRecordMutation): string {
 	switch (mutation.kind) {
 	case "account-add-column":
 	case "account-remove-column":
 	case "account-reorder":
 	case "account-set-hidden": {
-		if (raw === null) throw new Error("Account not found");
-		const account = JSON.parse(raw) as {
-			columnOrder: string[];
-			hiddenSharedColumns: string[];
-		};
+		if (value === null) {throw new Error("Account not found");}
+		const account = mutableAccountSchema.parse(JSON.parse(value));
 		if (mutation.kind === "account-add-column") {
 			if (!account.columnOrder.includes(mutation.columnId)) {
 				if (account.columnOrder.length >= (mutation.maxColumns ?? 100)) {
@@ -144,45 +157,42 @@ export async function mutateAccountRecord<TAccountCoordinatorId>(
 				account.columnOrder.push(mutation.columnId);
 			}
 		} else if (mutation.kind === "account-remove-column") {
-			account.columnOrder = account.columnOrder.filter((id) => id !== mutation.columnId);
+			account.columnOrder = account.columnOrder.filter(
+				(columnId) => columnId !== mutation.columnId,
+			);
 		} else if (mutation.kind === "account-reorder") {
 			account.columnOrder = reorderColumnOrder(account.columnOrder, mutation.columnOrder);
 		} else {
 			account.hiddenSharedColumns = mutation.hiddenSharedColumns;
 		}
-		value = JSON.stringify(account);
-		break;
+		return JSON.stringify(account);
 	}
 	case "shared-add":
 	case "shared-remove": {
-		const columns = raw === null ? [] : (JSON.parse(raw) as string[]);
-		value = JSON.stringify(
+		const columns = value === null ? [] : columnIdsSchema.parse(JSON.parse(value));
+		const next =
 			mutation.kind === "shared-add"
 				? Array.from(new Set([...columns, mutation.columnId]))
-				: columns.filter((id) => id !== mutation.columnId),
-		);
-		break;
+				: columns.filter((columnId) => columnId !== mutation.columnId);
+		return JSON.stringify(next);
 	}
 	case "trash-upsert":
 	case "trash-remove": {
-		const parsedTrash = parseDeletedColumnRecords(raw);
-		if (!parsedTrash.ok) throw new Error(`Trash record ${parsedTrash.code}`);
+		const parsedTrash = parseDeletedColumnRecords(value);
+		if (!parsedTrash.ok) {throw new Error(`Trash record ${parsedTrash.code}`);}
 		const trash = parsedTrash.value;
-		value = JSON.stringify(
-			mutation.kind === "trash-remove"
-				? trash.filter((entry) => entry.columnId !== mutation.columnId)
-				: [
-						{ columnId: mutation.columnId, deletedAt: mutation.deletedAt },
-						...trash.filter(
-							(entry) =>
-								mutation.deletedAt - entry.deletedAt < mutation.retentionMs &&
-								entry.columnId !== mutation.columnId,
-						),
-					],
+		if (mutation.kind === "trash-remove") {
+			return JSON.stringify(trash.filter((entry) => entry.columnId !== mutation.columnId));
+		}
+		const retained = trash.filter(
+			(entry) =>
+				mutation.deletedAt - entry.deletedAt < mutation.retentionMs &&
+				entry.columnId !== mutation.columnId,
 		);
-		break;
+		return JSON.stringify([
+			{ columnId: mutation.columnId, deletedAt: mutation.deletedAt },
+			...retained,
+		]);
 	}
 	}
-	await store.put(key, value);
-	return value;
 }

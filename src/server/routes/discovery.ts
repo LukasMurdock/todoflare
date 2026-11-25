@@ -32,7 +32,7 @@ function url(base: string, route: { path: string }): string {
  * stay out of indexes even there; the app shell, OAuth and API have nothing to index.
  */
 export function robotsTxt(env: Pick<Bindings, "ENVIRONMENT">, base: string): string {
-	if (env.ENVIRONMENT !== "production") return "User-agent: *\nDisallow: /\n";
+	if (env.ENVIRONMENT !== "production") {return "User-agent: *\nDisallow: /\n";}
 	return [
 		"# Todoflare. Boards are private; agents connect over MCP, see /llms.txt.",
 		"User-agent: *",
@@ -51,7 +51,7 @@ export function robotsTxt(env: Pick<Bindings, "ENVIRONMENT">, base: string): str
 
 export function llmsTxt(base: string, agentAccess: boolean): string {
 	const intro = ["# Todoflare", "", `> ${DESCRIPTION}`, ""];
-	if (!agentAccess) return [...intro, "Agent access is not enabled on this server.", ""].join("\n");
+	if (!agentAccess) {return [...intro, "Agent access is not enabled on this server.", ""].join("\n");}
 	return [
 		...intro,
 		"Todoflare has no public API for reading boards. An agent works on a person's",
@@ -117,7 +117,6 @@ export function apiCatalog(base: string) {
 }
 
 export function registerDiscoveryRoutes(app: App) {
-	const disabled = () => Response.json({ error: "Not found", code: "not_found" }, { status: 404 });
 
 	app.on(API_ROUTES.robotsTxt.method, API_ROUTES.robotsTxt.path, (c) =>
 		c.text(robotsTxt(c.env, origin(c)), 200, CACHE),
@@ -135,7 +134,7 @@ export function registerDiscoveryRoutes(app: App) {
 		c.json({}, 200, CACHE),
 	);
 	app.on(API_ROUTES.apiCatalog.method, API_ROUTES.apiCatalog.path, (c) => {
-		if (!isAgentAccessEnabled(c.env)) return disabled();
+		if (!isAgentAccessEnabled(c.env)) {return disabled();}
 		return c.body(JSON.stringify(apiCatalog(origin(c))), 200, {
 			...CACHE,
 			...CORS,
@@ -146,10 +145,10 @@ export function registerDiscoveryRoutes(app: App) {
 	// Static Assets does not answer Range probes with 206 Partial Content; serve
 	// /og.mp4 through the Worker so Safari, iOS and social unfurlers can stream it.
 	app.on(["GET", "HEAD"], API_ROUTES.ogVideo.path, async (c) => {
-		if (!c.env.ASSETS) return disabled();
+		if (!c.env.ASSETS) {return disabled();}
 		const assetUrl = new URL(API_ROUTES.ogVideo.path, c.req.url);
 		const asset = await c.env.ASSETS.fetch(new Request(assetUrl, { method: "GET" }));
-		if (!asset.ok) return new Response(null, { status: asset.status });
+		if (!asset.ok) {return new Response(null, { status: asset.status });}
 		const bytes = new Uint8Array(await asset.arrayBuffer());
 		return serveByteRangeResponse(c.req.raw, bytes, {
 			contentType: asset.headers.get("Content-Type") || "video/mp4",
@@ -157,3 +156,5 @@ export function registerDiscoveryRoutes(app: App) {
 		});
 	});
 }
+
+const disabled = () => Response.json({ error: "Not found", code: "not_found" }, { status: 404 });

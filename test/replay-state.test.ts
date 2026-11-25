@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-	removeSharedWithByColumn,
-	upsertSharedWithByColumn,
-	type SharedWithByColumn,
-} from "../src/lib/sync/replay-state";
+import { removeSharedWithByColumn, upsertSharedWithByColumn } from '../src/lib/sync/replay-state';
+import type { SharedWithByColumn } from '../src/lib/sync/replay-state';
 
 describe("replay sharedWith state", () => {
 	it("updates sharedWith for queued share replay ack", () => {

@@ -1,8 +1,10 @@
-import * as Y from "yjs";
+import type { XmlText as YXmlText} from "yjs";
+import { Doc as YDoc, applyUpdate, encodeStateAsUpdate, encodeStateVector as YencodeStateVector } from "yjs";
 import { describe, expect, it } from "vitest";
-import { columnBlocksToMarkdown, columnContentRoot, readColumnContent } from "../src/server/agent-access/column-content";
-import { applyAgentEdit, undoAgentChange, type AgentEdit, type EditOutcome } from "../src/server/agent-access/column-edits";
-import { docFromPlate } from "./helpers/plate-doc";
+import { columnBlocksToMarkdown, readColumnContent } from "../src/server/agent-access/column-content";
+import { applyAgentEdit, undoAgentChange } from '../src/server/agent-access/column-edits';
+import type { AgentEdit } from '../src/server/agent-access/column-edits';
+import { docFromPlate, plateBlocks } from "./helpers/plate-doc";
 
 const AGENT = "agent-origin";
 
@@ -15,24 +17,24 @@ function board() {
 	]);
 }
 
-function markdown(doc: Y.Doc) {
+function markdown(doc: YDoc) {
 	return columnBlocksToMarkdown(readColumnContent(doc).blocks);
 }
 
 /** Markdown with generated IDs replaced, for readable expectations. */
-function shape(doc: Y.Doc) {
-	return markdown(doc).replace(/ \^[A-Za-z0-9_-]{10}/g, (ref) => (/ \^(title|milk|eggs|blank)0+/.test(ref) ? ref.replace(/0+$/, "") : " ^new"));
+function shape(doc: YDoc) {
+	return markdown(doc).replaceAll(/ \^[A-Za-z0-9_-]{10}/g, (ref) => (/ \^(title|milk|eggs|blank)0+/.test(ref) ? ref.replace(/0+$/, "") : " ^new"));
 }
 
-function apply(doc: Y.Doc, edit: AgentEdit) {
+function apply(doc: YDoc, edit: AgentEdit) {
 	const outcome = applyAgentEdit(doc, edit, AGENT);
-	if (!outcome.ok) throw new Error(outcome.failure.message);
+	if (!outcome.ok) {throw new Error(outcome.failure.message);}
 	return outcome;
 }
 
-function blockXml(doc: Y.Doc, id: string): Y.XmlText {
-	for (const op of columnContentRoot(doc).toDelta() as Array<{ insert: unknown }>) {
-		if (op.insert instanceof Y.XmlText && op.insert.getAttribute("id") === id) return op.insert;
+function blockXml(doc: YDoc, id: string): YXmlText {
+	for (const block of plateBlocks(doc)) {
+		if (block.getAttribute("id") === id) { return block; }
 	}
 	throw new Error(`no block ${id}`);
 }
@@ -79,7 +81,7 @@ describe("agent edits", () => {
 	it("rewrites only the span of text that changed", () => {
 		const doc = board();
 		const xml = blockXml(doc, "milk000000");
-		const ops: unknown[] = [];
+		const ops: Array<unknown> = [];
 		xml.observe((event) => ops.push(...event.delta));
 		apply(doc, { kind: "update", itemId: "milk000000", changes: { text: "Oat Milk", expectedText: "Milk" } });
 		expect(ops).toEqual([{ insert: "Oat " }]);
@@ -152,11 +154,11 @@ describe("agent edits", () => {
 		["a repeated ID", { kind: "replace", expectedVersion: "", items: [{ id: "milk000000", text: "a", style: "todo" }, { id: "milk000000", text: "b", style: "todo" }] }, "invalid_edit"],
 	])("rejects %s without touching the document", (_name, edit, code) => {
 		const doc = board();
-		if (edit.kind === "replace") edit.expectedVersion = readColumnContent(doc).version;
-		const before = Y.encodeStateVector(doc);
-		const outcome = applyAgentEdit(doc, edit, AGENT) as Extract<EditOutcome, { ok: false }>;
-		expect(outcome.failure.code).toBe(code);
-		expect(Y.encodeStateVector(doc)).toEqual(before);
+		if (edit.kind === "replace") {edit.expectedVersion = readColumnContent(doc).version;}
+		const before = YencodeStateVector(doc);
+		const outcome = applyAgentEdit(doc, edit, AGENT);
+		expect(outcome).toMatchObject({ ok: false, failure: { code } });
+		expect(YencodeStateVector(doc)).toEqual(before);
 	});
 
 	it("reports a no-op update as unchanged", () => {
@@ -166,7 +168,7 @@ describe("agent edits", () => {
 
 	it("tags every edit with the agent's transaction origin", () => {
 		const doc = board();
-		const origins: unknown[] = [];
+		const origins: Array<unknown> = [];
 		doc.on("afterTransaction", (transaction) => origins.push(transaction.origin));
 		apply(doc, { kind: "append", afterId: null, items: [{ text: "x", style: "todo" }] });
 		expect(origins).toEqual([AGENT]);
@@ -185,7 +187,7 @@ describe("undoing agent edits", () => {
 	])("restores the exact prior content after %s", (_name, edit) => {
 		const doc = board();
 		const before = readColumnContent(doc);
-		if ("expectedVersion" in edit && edit.expectedVersion === "") edit.expectedVersion = before.version;
+		if ("expectedVersion" in edit && edit.expectedVersion === "") {edit.expectedVersion = before.version;}
 		const outcome = apply(doc, edit);
 		expect(readColumnContent(doc).version).not.toBe(before.version);
 		const undone = undoAgentChange(doc, outcome.undo, "undo");
@@ -196,7 +198,7 @@ describe("undoing agent edits", () => {
 	it("keeps an appended item a person has since edited", () => {
 		const doc = board();
 		const { undo, itemIds } = apply(doc, { kind: "append", afterId: null, items: [{ text: "Agent", style: "todo" }, { text: "Other", style: "todo" }] });
-		blockXml(doc, itemIds[0]!).insert(5, " + human");
+		blockXml(doc, itemIds[0]).insert(5, " + human");
 		expect(undoAgentChange(doc, undo, "undo")).toMatchObject({ restored: 1, kept: 1 });
 		expect(shape(doc)).toContain("Agent + human");
 		expect(shape(doc)).not.toContain("Other");
@@ -229,7 +231,7 @@ describe("undoing agent edits", () => {
 	it("leaves a replaced column alone once a person has edited it", () => {
 		const doc = board();
 		const { undo, itemIds } = apply(doc, { kind: "replace", expectedVersion: readColumnContent(doc).version, items: [{ text: "only", style: "paragraph" }] });
-		blockXml(doc, itemIds[0]!).insert(4, " mine");
+		blockXml(doc, itemIds[0]).insert(4, " mine");
 		expect(undoAgentChange(doc, undo, "undo")).toMatchObject({ restored: 0, kept: 1 });
 		expect(shape(doc)).toBe("only mine ^new");
 	});
@@ -237,9 +239,9 @@ describe("undoing agent edits", () => {
 	it("survives a round trip through stored JSON", () => {
 		const doc = board();
 		const { undo } = apply(doc, { kind: "delete", itemIds: ["eggs000000"], expectedVersion: readColumnContent(doc).version });
-		const reloaded = new Y.Doc();
-		Y.applyUpdate(reloaded, Y.encodeStateAsUpdate(doc));
-		undoAgentChange(reloaded, JSON.parse(JSON.stringify(undo)), "undo");
+		const reloaded = new YDoc();
+		applyUpdate(reloaded, encodeStateAsUpdate(doc));
+		undoAgentChange(reloaded, structuredClone(undo), "undo");
 		expect(shape(reloaded)).toBe("## Week ^title\n- [ ] Milk ^milk\n- [x] Eggs ^eggs");
 	});
 });

@@ -16,7 +16,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { slateNodesToInsertDelta } from "@slate-yjs/core";
-import * as Y from "yjs";
+import { Doc, XmlText, encodeStateAsUpdate } from "yjs";
 
 const base = process.argv[2] ?? "http://127.0.0.1:4173";
 // Lets the agent reach the endpoint through a different URL, e.g. a debugging proxy.
@@ -29,18 +29,18 @@ async function api(method, route, accountId, body) {
 		headers: {
 			"Content-Type": "application/json",
 			Origin: base,
-			...(accountId ? { "X-Todoflare-Test-Account": accountId } : {}),
+			...(accountId ? { "X-Todoflare-Test-Account": accountId } : undefined),
 		},
 		body: body === undefined ? undefined : JSON.stringify(body),
 	});
 	const text = await response.text();
-	if (!response.ok) throw new Error(`${method} ${route} → ${response.status} ${text}`);
+	if (!response.ok) {throw new Error(`${method} ${route} → ${response.status} ${text}`);}
 	return text ? JSON.parse(text) : null;
 }
 
 function columnYjs() {
-	const doc = new Y.Doc();
-	doc.get("content", Y.XmlText).applyDelta(
+	const doc = new Doc();
+	doc.get("content", XmlText).applyDelta(
 		slateNodesToInsertDelta([
 			{ id: "smoketitle", type: "h2", children: [{ text: "Launch week" }] },
 			{ id: "smoketodo1", type: "p", listStyleType: "todo", indent: 1, checked: false, children: [{ text: "Write the launch post" }] },
@@ -53,11 +53,11 @@ function columnYjs() {
 		]),
 		{ sanitize: false },
 	);
-	return Array.from(Y.encodeStateAsUpdate(doc));
+	return Array.from(encodeStateAsUpdate(doc));
 }
 
 const { account } = await api("POST", "/api/account");
-const accountId = account.id.replace(/\s/g, "");
+const accountId = account.id.replaceAll(/\s/g, "");
 const exportedColumnId = crypto.randomUUID();
 await api("POST", "/api/account/import", accountId, {
 	schemaVersion: 1,
@@ -124,7 +124,7 @@ console.log("Column afterwards:\n" + after + "\n");
 const { changes } = await api("GET", `/api/column/${columnId}/agent-changes`, accountId);
 console.log("Change log:\n" + changes.map((change) => `  ${change.agentName}: ${change.summary}`).join("\n") + "\n");
 const added = changes.find((change) => change.tool === "append_items");
-if (added) await api("POST", `/api/column/${columnId}/agent-changes/${added.id}/undo`, accountId);
+if (added) {await api("POST", `/api/column/${columnId}/agent-changes/${added.id}/undo`, accountId);}
 const undone = await readColumn();
 
 const checks = [
@@ -144,5 +144,5 @@ const afterRevoke = await fetch(`${base}/api/mcp`, {
 });
 checks.push(["is refused after revocation", afterRevoke.status === 401]);
 
-for (const [name, ok] of checks) console.log(`${ok ? "PASS" : "FAIL"}  ${name}`);
-if (checks.some(([, ok]) => !ok)) process.exit(1);
+for (const [name, ok] of checks) {console.log(`${ok ? "PASS" : "FAIL"}  ${name}`);}
+if (checks.some(([, ok]) => !ok)) {process.exit(1);}

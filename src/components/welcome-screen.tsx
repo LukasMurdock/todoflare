@@ -1,6 +1,5 @@
 "use client";
 
-import * as React from "react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useWelcomeRefs } from "@/contexts/welcome-refs-context";
 
@@ -33,7 +32,7 @@ interface AnnotationConfig {
 	arrowVerticalOffset?: number;
 }
 
-const annotations: AnnotationConfig[] = [
+const annotations: Array<AnnotationConfig> = [
 	{
 		key: "first-column",
 		label: "Start typing to add todos",
@@ -177,7 +176,7 @@ function CurvedArrow({ from, to, index }: { from: Position; to: Position; index:
 	const dx = to.x - from.x;
 	const dy = to.y - from.y;
 	const len = Math.sqrt(dx * dx + dy * dy);
-	if (len === 0) return null;
+	if (len === 0) {return null;}
 
 	// Quadratic bezier bowed perpendicular to the line.
 	const curveAmount = Math.min(30, len * 0.2);
@@ -246,7 +245,7 @@ export function WelcomeScreen({ onDismiss }: WelcomeScreenProps) {
 			cancelAnimationFrame(frame);
 			frame = requestAnimationFrame(updatePositions);
 		};
-		updatePositions();
+		schedule();
 		const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule);
 		refs.forEach((element) => observer?.observe(element));
 		window.addEventListener("resize", schedule);
@@ -271,16 +270,17 @@ export function WelcomeScreen({ onDismiss }: WelcomeScreenProps) {
 				changed = true;
 			}
 		});
-		if (changed) setPillSizes(next);
+		// oxlint-disable-next-line react/set-state-in-effect -- Placement depends on measured DOM sizes and must update before paint.
+		if (changed) {setPillSizes(next);}
 	}, [positions, pillSizes]);
 
 	// Dismiss when clicking on the first column or add-column button
 	useEffect(() => {
 		const handleClick = (event: MouseEvent) => {
-			const target = event.target as Node;
+			const path = event.composedPath();
 			const firstColumn = refs.get("first-column");
 			const addButton = refs.get("add-column-button");
-			if (firstColumn?.contains(target) || addButton?.contains(target)) {
+			if ((firstColumn && path.includes(firstColumn)) || (addButton && path.includes(addButton))) {
 				onDismiss();
 			}
 		};
@@ -290,7 +290,7 @@ export function WelcomeScreen({ onDismiss }: WelcomeScreenProps) {
 
 	const placed = annotations.flatMap((config) => {
 		const rect = positions.get(config.key);
-		if (!rect || (rect.width === 0 && rect.height === 0)) return [];
+		if (!rect || (rect.width === 0 && rect.height === 0)) {return [];}
 		const size = pillSizes.get(config.key) ?? FALLBACK_PILL;
 		return [{ config, layout: layoutAnnotation(config, rect, size, viewport, cardRect), measured: pillSizes.has(config.key) }];
 	});
@@ -330,8 +330,8 @@ export function WelcomeScreen({ onDismiss }: WelcomeScreenProps) {
 					<span
 						key={config.key}
 						ref={(element) => {
-							if (element) pillRefs.current.set(config.key, element);
-							else pillRefs.current.delete(config.key);
+							if (element) {pillRefs.current.set(config.key, element);}
+							else {pillRefs.current.delete(config.key);}
 						}}
 						className={`fixed inline-flex h-6 items-center rounded-full border border-hairline bg-background/95 px-2.5 text-xs font-medium whitespace-nowrap text-muted-foreground shadow-raised ${fadeIn}`}
 						style={{

@@ -9,7 +9,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { UnauthorizedError, type OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
+import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
+import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { OAuthClientInformationMixed, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { expect, test } from "@playwright/test";
 import { getYjsOutboxCountForColumn } from "./helpers/local-first-readers";
@@ -60,7 +61,7 @@ test("agent access works end to end on staging", async ({ page, context, baseURL
 	await expect.poll(() => getYjsOutboxCountForColumn(page, accountId, columnId)).toBe(0);
 
 	// 1. The Claude Code steps in the dialog: edit access to the column, then the command.
-	const compact = accountId.replace(/\D/g, "");
+	const compact = accountId.replaceAll(/\D/g, "");
 	await page.getByRole("button", { name: `${compact.slice(0, 4)}...${compact.slice(-4)}` }).click();
 	await page.getByRole("menuitem", { name: "Agents" }).click();
 	const dialog = page.getByRole("dialog", { name: "Agents" });
@@ -69,7 +70,7 @@ test("agent access works end to end on staging", async ({ page, context, baseURL
 	await dialog.getByRole("textbox", { name: "Agent name" }).fill("Claude Code (staging)");
 	await dialog.getByRole("button", { name: "Connect with 1 column" }).click();
 	const command = (await dialog.getByTestId("agent-token").locator("code").first().textContent())!.trim();
-	const token = /Bearer (tfa_[A-Za-z0-9_-]+)"/.exec(command)![1]!;
+	const token = /Bearer (tfa_[A-Za-z0-9_-]+)"/.exec(command)![1];
 	await dialog.getByRole("button", { name: "Done" }).click();
 	await expect(dialog.getByRole("combobox", { name: "Claude Code (staging) access to Staging errands" })).toHaveValue("edit");
 	await page.keyboard.press("Escape");
@@ -79,12 +80,12 @@ test("agent access works end to end on staging", async ({ page, context, baseURL
 	const config = path.join(dir, "mcp.json");
 	await writeFile(config, JSON.stringify({ mcpServers: { todoflare: { type: "http", url: `${origin}/api/mcp`, headers: { Authorization: `Bearer ${token}` } } } }), { mode: 0o600 });
 	try {
-		const { stdout } = await promisify(execFile)(
+		// oxlint-disable-next-line landmines/no-cold-start-in-test -- This deployment drill verifies the installed Claude CLI itself.
+		await promisify(execFile)(
 			"claude",
 			["-p", 'Using the todoflare tools, add a todo "Buy stamps" to my Staging errands column. Change nothing else.', "--mcp-config", config, "--strict-mcp-config", "--allowedTools", "mcp__todoflare", "--output-format", "json"],
 			{ encoding: "utf8", timeout: 180_000 },
 		);
-		console.log("Claude:", JSON.parse(stdout).result);
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}

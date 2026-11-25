@@ -30,7 +30,7 @@ export function AccountModal({ open, onOpenChange }: AccountModalProps) {
 	const create = async () => {
 		setOperation("create");
 		try {
-			if (await createAccount()) onOpenChange(false);
+			if (await createAccount()) {onOpenChange(false);}
 		} finally {
 			setOperation(null);
 		}
@@ -40,7 +40,7 @@ export function AccountModal({ open, onOpenChange }: AccountModalProps) {
 		setOperation("signin");
 		try {
 			const rotated = await loginWithRecoveryCode(accountId, recoveryCode.trim());
-			if (rotated) setNextRecoveryCode(rotated);
+			if (rotated) {setNextRecoveryCode(rotated);}
 		} finally {
 			setOperation(null);
 		}
@@ -49,7 +49,7 @@ export function AccountModal({ open, onOpenChange }: AccountModalProps) {
 	const signIn = async () => {
 		setOperation("signin");
 		try {
-			if (await loginWithPasskey()) onOpenChange(false);
+			if (await loginWithPasskey()) {onOpenChange(false);}
 		} finally {
 			setOperation(null);
 		}
@@ -57,13 +57,12 @@ export function AccountModal({ open, onOpenChange }: AccountModalProps) {
 
 	const busy = isLoading || operation !== null;
 	useEffect(() => {
-		if (!open || typeof PublicKeyCredential === "undefined") return;
-		const conditional = PublicKeyCredential.isConditionalMediationAvailable;
-		if (!conditional) return;
-		void conditional.call(PublicKeyCredential).then((available) => {
-			if (!available) return;
+		if (!open || typeof PublicKeyCredential === "undefined") {return;}
+		if (!PublicKeyCredential.isConditionalMediationAvailable) {return;}
+		void PublicKeyCredential.isConditionalMediationAvailable().then((available) => {
+			if (!available) {return;}
 			void loginWithPasskey(true).then((success) => {
-				if (success) onOpenChange(false);
+				if (success) {onOpenChange(false);}
 			});
 		});
 	}, [loginWithPasskey, onOpenChange, open]);
@@ -86,11 +85,11 @@ export function AccountModal({ open, onOpenChange }: AccountModalProps) {
 						autoComplete="username webauthn"
 						aria-label="Passkey account"
 					/>
-					<Button onClick={create} disabled={busy} className="h-10 w-full">
+					<Button onClick={() => void create()} disabled={busy} className="h-10 w-full">
 						<Fingerprint className="stroke-[1.75]" />
 						{operation === "create" ? "Creating passkey..." : "Create synced account"}
 					</Button>
-					<Button variant="outline" onClick={signIn} disabled={busy} className="h-10 w-full">
+					<Button variant="outline" onClick={() => void signIn()} disabled={busy} className="h-10 w-full">
 						{operation === "signin" ? "Signing in..." : "Sign in with a passkey"}
 					</Button>
 					<Button
@@ -123,7 +122,7 @@ export function AccountModal({ open, onOpenChange }: AccountModalProps) {
 								spellCheck={false}
 								className="bg-background font-mono text-[13px]"
 							/>
-							<Button className="w-full" onClick={recover} disabled={busy || accountId.replace(/\D/g, "").length !== 16 || recoveryCode.length < 40}>Recover account</Button>
+							<Button className="w-full" onClick={() => void recover()} disabled={busy || accountId.replaceAll(/\D/g, "").length !== 16 || recoveryCode.length < 40}>Recover account</Button>
 						</div>
 					)}
 					{nextRecoveryCode && (

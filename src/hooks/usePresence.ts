@@ -10,13 +10,14 @@ import type { PresenceUser, SyncMessage } from "@/types/account";
  */
 export function usePresence(columnId: string) {
 	const { accountId, onColumnMessage, getColumnPresence } = useSyncContext();
-	const [presence, setPresence] = useState<PresenceUser[]>([]);
+	const [presence, setPresence] = useState<Array<PresenceUser>>([]);
 
 	useEffect(() => {
-		if (!columnId) return;
+		if (!columnId) {return;}
 
 		// Get initial presence
 		const initialPresence = getColumnPresence(columnId);
+		// oxlint-disable-next-line react/set-state-in-effect -- Read the external session snapshot on subscription, including messages that arrived before mount.
 		setPresence(filterSelf(initialPresence, accountId));
 
 		// Subscribe to presence updates
@@ -36,15 +37,15 @@ export function usePresence(columnId: string) {
  * Filter out the current user from presence list
  */
 function filterSelf(
-	users: PresenceUser[],
+	users: Array<PresenceUser>,
 	currentAccountId: string | null,
-): PresenceUser[] {
-	if (!currentAccountId) return users;
+): Array<PresenceUser> {
+	if (!currentAccountId) {return users;}
 
 	return users.filter((user) => {
 		// Normalize for comparison
-		const userId = user.accountId.replace(/\s/g, "");
-		const currentId = currentAccountId.replace(/\s/g, "");
+		const userId = user.accountId.replaceAll(/\s/g, "");
+		const currentId = currentAccountId.replaceAll(/\s/g, "");
 		return userId !== currentId;
 	});
 }

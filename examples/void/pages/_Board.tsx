@@ -2,14 +2,15 @@
 // no window, localStorage or IndexedDB), then hydrated in the browser.
 import { useState } from "react";
 import type { Value } from "platejs";
-import { TodoBoard, createMemoryDocuments, type BoardColumn } from "@todoflare/board";
+import { TodoBoard, createMemoryDocuments } from '@todoflare/board';
+import type { BoardColumn } from '@todoflare/board';
 
 export interface BoardIslandProps {
-	columns: { id: string; content: Value }[];
+	columns: Array<{ id: string; content: Value }>;
 }
 
 export default function BoardIsland({ columns: initial }: BoardIslandProps) {
-	const [columns, setColumns] = useState<BoardColumn[]>(() =>
+	const [columns, setColumns] = useState<Array<BoardColumn>>(() =>
 		initial.map(({ id, content }) => ({ id, snapshot: content, removal: "delete" })),
 	);
 	const [documents] = useState(createMemoryDocuments);
@@ -22,7 +23,7 @@ export default function BoardIsland({ columns: initial }: BoardIslandProps) {
 				documents={documents}
 				onCreateColumn={() => setColumns((list) => [...list, { id: crypto.randomUUID(), removal: "delete" }])}
 				onRemoveColumn={(column) => setColumns((list) => list.filter((c) => c.id !== column.id))}
-				onReorderColumns={(ids) => setColumns((list) => ids.map((id) => list.find((c) => c.id === id)!))}
+				onReorderColumns={(ids) => setColumns((list) => ids.flatMap((id) => list.filter((column) => column.id === id)))}
 				onCollapsedChange={(column, collapsed) =>
 					setColumns((list) => list.map((c) => (c.id === column.id ? { ...c, collapsed } : c)))
 				}

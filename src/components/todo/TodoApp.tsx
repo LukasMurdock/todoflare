@@ -1,6 +1,6 @@
 "use client";
 
-import * as React from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 
 import { ReconnectBanner } from "@/components/account/ReconnectBanner";
 import { StorageRecoveryBanner } from "@/components/account/StorageRecoveryBanner";
@@ -8,7 +8,8 @@ import { AccountBadge } from "@/components/account/AccountBadge";
 import { PresenceAvatars } from "@/components/column/PresenceAvatars";
 import { ShareMenu } from "@/components/column/ShareMenu";
 import { ColumnAgentsMenu } from "@/components/agents/ColumnAgentsMenu";
-import { createMemoryDocuments, TodoBoard, type BoardColumn, type TodoBoardApi } from "@todoflare/board";
+import { createMemoryDocuments, TodoBoard } from '@todoflare/board';
+import type { BoardColumn, TodoBoardApi } from '@todoflare/board';
 import { useWelcomeRefsOptional } from "@/contexts/welcome-refs-context";
 import { useSyncContext } from "@/contexts/sync-context";
 import { useColumns } from "@/hooks/useColumns";
@@ -42,10 +43,10 @@ export function TodoApp() {
 		sendAwareness,
 	} = useSyncContext();
 	const isSyncedMode = !!accountId && !!account;
-	const board = React.useRef<TodoBoardApi>(null);
+	const board = useRef<TodoBoardApi>(null);
 
 	// Signed-in columns live in the Cloudflare room; guest columns in memory, saved from onContentChange.
-	const documents = React.useMemo(
+	const documents = useMemo(
 		() =>
 			isSyncedMode
 				? createCloudflareDocuments({
@@ -56,7 +57,7 @@ export function TodoApp() {
 		[isSyncedMode, loadColumnDocument, subscribeToColumn, onColumnMessage, sendUpdate, sendAwareness],
 	);
 
-	const identity = React.useMemo(
+	const identity = useMemo(
 		() =>
 			isSyncedMode && accountId
 				? { name: displayAccountId(accountId), color: getAccountColor(accountId) }
@@ -66,8 +67,8 @@ export function TodoApp() {
 
 	const readOnly =
 		browserStorageError !== null || (isSyncedMode && syncStateSummary.storageState !== "durable");
-	const boardColumns = React.useMemo(
-		(): BoardColumn[] =>
+	const boardColumns = useMemo(
+		(): Array<BoardColumn> =>
 			columns.map((column) => {
 				const owned = isColumnOwner(column.id);
 				const owner = getColumnOwner(column.id);
@@ -88,21 +89,21 @@ export function TodoApp() {
 		[columns, isColumnOwner, getColumnOwner, readOnly, isSyncedMode],
 	);
 
-	const columnsById = React.useMemo(() => new Map(columns.map((column) => [column.id, column])), [columns]);
+	const columnsById = useMemo(() => new Map(columns.map((column) => [column.id, column])), [columns]);
 
 	// The welcome tour anchors its callouts to board elements.
 	const { registerRef } = useWelcomeRefsOptional();
-	React.useEffect(() => {
+	useEffect(() => {
 		registerRef("add-column-button", board.current?.getElement("add-column") ?? null);
 		registerRef("first-column", board.current?.getElement("first-column") ?? null);
 		registerRef("shortcuts-button", board.current?.getElement("shortcuts-button") ?? null);
-	});
+	}, [boardColumns, registerRef]);
 
 	// Todoflare is the whole page, so Mod+/ opens help wherever focus is.
 	useKeyboardShortcut({
 		key: "/",
 		modifiers: MOD,
-		onTrigger: React.useCallback(() => board.current?.openShortcutsHelp(), []),
+		onTrigger: useCallback(() => board.current?.openShortcutsHelp(), []),
 	});
 
 	return (

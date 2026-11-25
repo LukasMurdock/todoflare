@@ -1,12 +1,7 @@
-import {
-	YJS_OUTBOX_KINDS,
-	type YjsOutboxKind,
-	type YjsUpdateOutboxDoc,
-} from "../local-first/collections";
-import {
-	replaceLocalFirstCollection,
-	type LocalFirstDatabase,
-} from "../local-first/database";
+import { YJS_OUTBOX_KINDS } from '../local-first/collections';
+import type { YjsOutboxKind, YjsUpdateOutboxDoc } from '../local-first/collections';
+import { replaceLocalFirstCollection } from '../local-first/database';
+import type { LocalFirstDatabase } from '../local-first/database';
 import { createOutboxJournal } from "../local-first/outbox-journal";
 
 const DEFAULT_STORAGE_KEY = "todoflare-yjs-update-outbox-v1";
@@ -14,11 +9,11 @@ const DEFAULT_AWARENESS_MAX_AGE_MS = 30_000;
 
 export type { YjsOutboxKind };
 
-export interface YjsOutboxEntry extends Omit<YjsUpdateOutboxDoc, "schemaVersion"> {}
+export type YjsOutboxEntry = Omit<YjsUpdateOutboxDoc, "schemaVersion">;
 
 export interface YjsOutboxStorage {
-	read(): YjsOutboxEntry[];
-	write(entries: YjsOutboxEntry[]): void;
+	read(): Array<YjsOutboxEntry>;
+	write(entries: Array<YjsOutboxEntry>): void;
 }
 
 export interface EnqueueYjsOutboxInput {
@@ -35,7 +30,7 @@ function byCreatedAt(a: YjsOutboxEntry, b: YjsOutboxEntry): number {
 	return a.createdAt - b.createdAt;
 }
 
-function cloneEntries(entries: YjsOutboxEntry[]): YjsOutboxEntry[] {
+function cloneEntries(entries: Array<YjsOutboxEntry>): Array<YjsOutboxEntry> {
 	return entries.map((entry) => ({
 		...entry,
 		updateBytes: [...entry.updateBytes],
@@ -44,9 +39,9 @@ function cloneEntries(entries: YjsOutboxEntry[]): YjsOutboxEntry[] {
 }
 
 function mergeEntriesById(
-	baseEntries: YjsOutboxEntry[],
-	overrideEntries: YjsOutboxEntry[],
-): YjsOutboxEntry[] {
+	baseEntries: Array<YjsOutboxEntry>,
+	overrideEntries: Array<YjsOutboxEntry>,
+): Array<YjsOutboxEntry> {
 	const merged = new Map<string, YjsOutboxEntry>();
 
 	for (const entry of baseEntries) {
@@ -61,18 +56,18 @@ function mergeEntriesById(
 }
 
 function isValidKind(value: unknown): value is YjsOutboxKind {
-	return (YJS_OUTBOX_KINDS as readonly unknown[]).includes(value);
+	return (YJS_OUTBOX_KINDS as ReadonlyArray<unknown>).includes(value);
 }
 
 function normalizeEntry(raw: unknown): YjsOutboxEntry | null {
-	if (!raw || typeof raw !== "object") return null;
+	if (!raw || typeof raw !== "object") {return null;}
 
 	const candidate = raw as Partial<YjsOutboxEntry>;
-	if (typeof candidate.id !== "string") return null;
-	if (typeof candidate.accountId !== "string") return null;
-	if (typeof candidate.columnId !== "string") return null;
-	if (!isValidKind(candidate.kind)) return null;
-	if (!Array.isArray(candidate.updateBytes)) return null;
+	if (typeof candidate.id !== "string") {return null;}
+	if (typeof candidate.accountId !== "string") {return null;}
+	if (typeof candidate.columnId !== "string") {return null;}
+	if (!isValidKind(candidate.kind)) {return null;}
+	if (!Array.isArray(candidate.updateBytes)) {return null;}
 	if (!candidate.updateBytes.every((item) => typeof item === "number")) {
 		return null;
 	}
@@ -84,9 +79,9 @@ function normalizeEntry(raw: unknown): YjsOutboxEntry | null {
 	) {
 		return null;
 	}
-	if (typeof candidate.createdAt !== "number") return null;
-	if (typeof candidate.attemptCount !== "number") return null;
-	if (typeof candidate.nextRetryAt !== "number") return null;
+	if (typeof candidate.createdAt !== "number") {return null;}
+	if (typeof candidate.attemptCount !== "number") {return null;}
+	if (typeof candidate.nextRetryAt !== "number") {return null;}
 	if (candidate.ackedAt !== null && typeof candidate.ackedAt !== "number") {
 		return null;
 	}
@@ -120,7 +115,7 @@ function normalizeEntry(raw: unknown): YjsOutboxEntry | null {
 }
 
 export class LocalYjsUpdateOutbox {
-	private entries: YjsOutboxEntry[];
+	private entries: Array<YjsOutboxEntry>;
 	private storage: YjsOutboxStorage;
 	private readonly journal: YjsOutboxStorage;
 	private readonly onPersistenceError?: (error: unknown) => void;
@@ -150,7 +145,7 @@ export class LocalYjsUpdateOutbox {
 		this.persist();
 	}
 
-	getAllEntries(): YjsOutboxEntry[] {
+	getAllEntries(): Array<YjsOutboxEntry> {
 		return cloneEntries(this.entries);
 	}
 
@@ -192,11 +187,11 @@ export class LocalYjsUpdateOutbox {
 		accountId: string,
 		columnId: string,
 		options?: { awarenessMaxAgeMs?: number },
-	): YjsOutboxEntry[] {
+	): Array<YjsOutboxEntry> {
 		const awarenessMaxAgeMs =
 			options?.awarenessMaxAgeMs ?? DEFAULT_AWARENESS_MAX_AGE_MS;
 		const now = Date.now();
-		const replayable: YjsOutboxEntry[] = [];
+		const replayable: Array<YjsOutboxEntry> = [];
 		let changed = false;
 
 		this.entries = this.entries.filter((entry) => {
@@ -224,9 +219,9 @@ export class LocalYjsUpdateOutbox {
 	}
 
 	/** Removes ephemeral awareness entries after WebSocket.send() accepts them. */
-	removeAwarenessAfterSocketWrite(entryIds: string[]): number {
+	removeAwarenessAfterSocketWrite(entryIds: Array<string>): number {
 		const ids = new Set(entryIds);
-		if (ids.size === 0) return 0;
+		if (ids.size === 0) {return 0;}
 
 		const before = this.entries.length;
 		this.entries = this.entries.filter(
@@ -258,7 +253,7 @@ export class LocalYjsUpdateOutbox {
 				),
 		);
 
-		if (this.entries.length === before) return false;
+		if (this.entries.length === before) {return false;}
 		this.persist();
 		return true;
 	}
@@ -288,7 +283,7 @@ export class LocalYjsUpdateOutbox {
 	}
 
 	clearAll() {
-		if (this.entries.length === 0) return;
+		if (this.entries.length === 0) {return;}
 		this.entries = [];
 		this.persist();
 	}
@@ -299,7 +294,7 @@ export class LocalYjsUpdateOutbox {
 		this.entries.sort(byCreatedAt);
 		try { this.storage.write(this.entries); }
 		catch (error) {
-			if (!this.onPersistenceError) throw error;
+			if (!this.onPersistenceError) {throw error;}
 			// Keep the actor alive so retained memory edits can still reach the
 			// server. The UI callback immediately blocks further editing.
 			this.onPersistenceError(error);
@@ -317,7 +312,7 @@ export function createLocalStorageYjsOutboxStorage(storageKey: string): YjsOutbo
 }
 
 export function createMemoryYjsOutboxStorage(
-	initialEntries: YjsOutboxEntry[] = [],
+	initialEntries: Array<YjsOutboxEntry> = [],
 ): YjsOutboxStorage {
 	let entries = cloneEntries(initialEntries).sort(byCreatedAt);
 

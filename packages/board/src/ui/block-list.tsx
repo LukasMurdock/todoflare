@@ -1,45 +1,27 @@
 'use client';
 
-import React from 'react';
-
-import type { TListElement } from 'platejs';
 
 import { isOrderedList } from '@platejs/list';
 import {
   useTodoListElement,
   useTodoListElementState,
 } from '@platejs/list/react';
-import {
-  type PlateElementProps,
-  type RenderNodeWrapper,
-  useReadOnly,
-} from 'platejs/react';
+import { useReadOnly } from 'platejs/react';
+import type { PlateElementProps, RenderNodeWrapper } from 'platejs/react';
 
 import { Checkbox } from './checkbox';
 import { cn } from './cn';
 
-const config: Record<
-  string,
-  {
-    Li: React.FC<PlateElementProps>;
-    Marker: React.FC<PlateElementProps>;
-  }
-> = {
-  todo: {
-    Li: TodoLi,
-    Marker: TodoMarker,
-  },
-};
-
 export const BlockList: RenderNodeWrapper = (props) => {
-  if (!props.element.listStyleType) return;
+  if (!props.element.listStyleType) {return;}
 
-  return (props) => <List {...props} />;
+  return List;
 };
 
 function List(props: PlateElementProps) {
-  const { listStart, listStyleType } = props.element as TListElement;
-  const { Li, Marker } = config[listStyleType] ?? {};
+  const listStart = typeof props.element.listStart === 'number' ? props.element.listStart : undefined;
+  const listStyleType = typeof props.element.listStyleType === 'string' ? props.element.listStyleType : undefined;
+  const todo = listStyleType === 'todo';
   const List = isOrderedList(props.element) ? 'ol' : 'ul';
 
   return (
@@ -48,14 +30,14 @@ function List(props: PlateElementProps) {
       style={{ listStyleType }}
       start={listStart}
     >
-      {Marker && <Marker {...props} />}
-      {Li ? <Li {...props} /> : <li>{props.children}</li>}
+      {todo && <TodoMarker {...props} />}
+      {todo ? <TodoLi {...props} /> : <li>{props.children}</li>}
     </List>
   );
 }
 
 function TodoMarker(props: PlateElementProps) {
-  const state = useTodoListElementState({ element: props.element });
+  const state: unknown = useTodoListElementState({ element: props.element });
   const { checkboxProps } = useTodoListElement(state);
   const readOnly = useReadOnly();
 
@@ -77,7 +59,7 @@ function TodoLi(props: PlateElementProps) {
     <li
       className={cn(
         'list-none pl-2 line-through decoration-[1.5px] transition-[color,text-decoration-color] duration-200 ease-out',
-        (props.element.checked as boolean)
+        props.element.checked
           ? 'text-muted-foreground decoration-muted-foreground/60'
           : 'decoration-transparent'
       )}

@@ -29,12 +29,12 @@ function openRawDb(): Promise<IDBDatabase> {
 	});
 }
 
-async function seedCollections(collections: RawCollection[]): Promise<void> {
+async function seedCollections(collections: Array<RawCollection>): Promise<void> {
 	const db = await openRawDb();
 	await new Promise<void>((resolve, reject) => {
 		const tx = db.transaction(LOCAL_FIRST_COLLECTION_STORE, "readwrite");
 		const store = tx.objectStore(LOCAL_FIRST_COLLECTION_STORE);
-		for (const collection of collections) store.put(collection);
+		for (const collection of collections) {store.put(collection);}
 		tx.oncomplete = () => resolve();
 		tx.onerror = () => reject(tx.error);
 		tx.onabort = () => reject(tx.error);
@@ -49,7 +49,7 @@ async function readRawCollection(name: string): Promise<RawCollection | undefine
 			.transaction(LOCAL_FIRST_COLLECTION_STORE, "readonly")
 			.objectStore(LOCAL_FIRST_COLLECTION_STORE)
 			.get(name);
-		request.onsuccess = () => resolve(request.result as RawCollection | undefined);
+		request.onsuccess = () => resolve(request.result);
 		request.onerror = () => reject(request.error);
 	});
 	db.close();
@@ -153,6 +153,23 @@ describe("local-first IndexedDB record contract", () => {
 		expect(storedQuarantine?.entries).toHaveLength(1);
 	});
 
+	it("keeps older recovery records and opaque quarantine bytes when another collection migrates", async () => {
+		const prior = { schemaVersion: 1, id: "older", reason: "Rejected by an earlier client", raw: ["old edit"] };
+		const future = { schemaVersion: 2, id: "future", payload: new Uint8Array([1, 2, 3]) };
+		await seedCollections([
+			{ name: "quarantine", entries: [["older", prior], ["future", future]] },
+			{ name: "mutationOutbox", entries: [["broken", legacyMutation("broken", { columnId: 42 })]] },
+		]);
+
+		const db = await getLocalFirstDb();
+		expect(db.collections.quarantine.get("older")).toEqual(prior);
+		const stored = await readRawCollection("quarantine");
+		const rows = new Map(stored?.entries);
+		expect(rows.size).toBe(3);
+		expect(rows.get("older")).toEqual(prior);
+		expect(rows.get("future")).toEqual(future);
+	});
+
 	it("preserves future-version records and blocks writes to their collection", async () => {
 		const future = {
 			schemaVersion: 2,
@@ -191,8 +208,8 @@ describe("local-first IndexedDB record contract", () => {
 	});
 
 	it("validates snapshots, Yjs bytes, and sync telemetry at startup", async () => {
-		const invalidSnapshot = legacyAccountSnapshot("account:bad");
-		invalidSnapshot.account.columnOrder = "not-an-array" as unknown as string[];
+		const snapshot = legacyAccountSnapshot("account:bad");
+		const invalidSnapshot = { ...snapshot, account: { ...snapshot.account, columnOrder: "not-an-array" } };
 		await seedCollections([
 			{ name: "accountSnapshot", entries: [["account:bad", invalidSnapshot]] },
 			{

@@ -1,27 +1,15 @@
+import { z } from "zod";
+import { columnMetaRecordSchema } from "./persistence-records";
 import type { ColumnMeta } from "../types/account";
 
-export type LifecycleOperation =
-	| {
-			kind: "create";
-			operationId: string;
-			createdAt: number;
-			meta: ColumnMeta;
-	  }
-	| {
-			kind: "delete" | "restore" | "enable-public" | "disable-public";
-			operationId: string;
-			createdAt: number;
-			columnId: string;
-			accountId: string;
-	  }
-	| {
-			kind: "share" | "revoke";
-			operationId: string;
-			createdAt: number;
-			columnId: string;
-			accountId: string;
-			targetAccountId: string;
-	  };
+const journalEntry = z.object({ operationId: z.string().min(1), createdAt: z.number() });
+const columnEntry = journalEntry.extend({ columnId: z.string(), accountId: z.string() });
+export const lifecycleOperationSchema = z.discriminatedUnion("kind", [
+	journalEntry.extend({ kind: z.literal("create"), meta: columnMetaRecordSchema }),
+	columnEntry.extend({ kind: z.enum(["delete", "restore", "enable-public", "disable-public"]) }),
+	columnEntry.extend({ kind: z.enum(["share", "revoke"]), targetAccountId: z.string() }),
+]);
+export type LifecycleOperation = z.output<typeof lifecycleOperationSchema>;
 
 interface JournalStore {
 	put(key: string, value: string): Promise<void>;

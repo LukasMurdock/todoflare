@@ -5,7 +5,7 @@ export const EXPECTED_ACCOUNT_HEADER = "X-Todoflare-Expected-Account";
 
 // This is an expected identity, never a credential. Bind work queued for one
 // account to its cookie session, including when another tab changes that cookie.
-export function accountRequestHeaders(accountId: string): Record<string, string> {
+export function accountRequestHeaders(accountId: string) {
 	return {
 		[EXPECTED_ACCOUNT_HEADER]: normalizeAccountId(accountId),
 		...e2eAccountHeaders(accountId),
@@ -18,6 +18,6 @@ export function accountRequestHeaders(accountId: string): Record<string, string>
  */
 export function namesAnotherAccount(headers: Headers, sessionAccountId: string): boolean {
 	const expected = headers.get(EXPECTED_ACCOUNT_HEADER);
-	if (expected === null) return false;
+	if (expected === null) {return false;}
 	return !validateAccountId(expected) || normalizeAccountId(expected) !== normalizeAccountId(sessionAccountId);
 }

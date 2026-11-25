@@ -16,7 +16,7 @@ describe("backup inventory", () => {
 	it("groups registered columns by owner and counts corrupt registry entries", async () => {
 		const owned = ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"];
 		const other = "00000000-0000-4000-8000-000000000003";
-		for (const id of owned) await register(id, OWNER);
+		for (const id of owned) {await register(id, OWNER);}
 		await register(other, OTHER);
 		await env.ACCOUNTS.put("column-registry:00000000-0000-4000-8000-000000000004", "{");
 

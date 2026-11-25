@@ -6,12 +6,12 @@ import {
 } from "../src/lib/account";
 
 function queuedRandomValues(
-	values: number[],
+	values: Array<number>,
 ): (bytes: Uint8Array<ArrayBuffer>) => void {
 	let offset = 0;
 	return (bytes) => {
 		for (let index = 0; index < bytes.length; index++) {
-			if (offset >= values.length) throw new Error("Random byte fixture exhausted");
+			if (offset >= values.length) {throw new Error("Random byte fixture exhausted");}
 			bytes[index] = values[offset++];
 		}
 	};
@@ -40,11 +40,15 @@ describe("generated identities", () => {
 
 	it("retries injected collisions and returns the first unused ID", async () => {
 		const candidates = ["collision-one", "collision-two", "available"];
-		const checked: string[] = [];
+		const checked: Array<string> = [];
 
 		await expect(
 			allocateGeneratedId({
-				createId: () => candidates.shift() as string,
+				createId: () => {
+				const next = candidates.shift();
+				if (!next) { throw new Error("Candidate list exhausted"); }
+				return next;
+			},
 				isInUse: async (id) => {
 					checked.push(id);
 					return id !== "available";

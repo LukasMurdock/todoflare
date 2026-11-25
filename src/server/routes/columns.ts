@@ -13,9 +13,9 @@ export function registerColumnRoutes(app: App) {
 	 */
 	app.on(API_ROUTES.getColumn.method, API_ROUTES.getColumn.path, async (c) => {
 		const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
-		if (!path.ok) return path.response;
+		if (!path.ok) {return path.response;}
 		const auth = await requireAccountCredential(c.req.raw, c.env);
-		if (!auth.ok) return auth.response;
+		if (!auth.ok) {return auth.response;}
 		const columnId = path.data.id;
 		const accountId = auth.accountId;
 
@@ -44,12 +44,12 @@ export function registerColumnRoutes(app: App) {
 	 */
 	app.on(API_ROUTES.columnWsTicket.method, API_ROUTES.columnWsTicket.path, async (c) => {
 		const readOnlyResponse = blockWritesIfReadOnly(c);
-		if (readOnlyResponse) return readOnlyResponse;
+		if (readOnlyResponse) {return readOnlyResponse;}
 
 		const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
-		if (!path.ok) return path.response;
+		if (!path.ok) {return path.response;}
 		const auth = await requireAccountCredential(c.req.raw, c.env);
-		if (!auth.ok) return auth.response;
+		if (!auth.ok) {return auth.response;}
 		const columnId = path.data.id;
 		const stub = c.env.COLUMN_ROOM.get(c.env.COLUMN_ROOM.idFromName(columnId));
 		return stub.fetch("http://do/ws-ticket", {
@@ -60,10 +60,10 @@ export function registerColumnRoutes(app: App) {
 
 	app.on(API_ROUTES.columnWs.method, API_ROUTES.columnWs.path, async (c) => {
 		const readOnlyResponse = blockWritesIfReadOnly(c);
-		if (readOnlyResponse) return readOnlyResponse;
+		if (readOnlyResponse) {return readOnlyResponse;}
 
 		const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
-		if (!path.ok) return path.response;
+		if (!path.ok) {return path.response;}
 		const ticket = c.req.query("ticket");
 		if (!ticket || !/^[A-Za-z0-9_-]{43}$/.test(ticket)) {
 			return apiErrorResponse("access_revoked", "Invalid WebSocket ticket", 403);

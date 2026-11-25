@@ -28,7 +28,7 @@ export interface CloneColumnSnapshotBindings<TColumnRoomId> {
 export interface CloneColumnSnapshotInput<TColumnRoomId> {
 	env: CloneColumnSnapshotBindings<TColumnRoomId>;
 	ownerId: string;
-	snapshot: { meta: unknown; yjs: number[] | null };
+	snapshot: { meta: unknown; yjs: Array<number> | null };
 	createColumnId?: () => string;
 	now?: () => number;
 	afterWrite?: (
@@ -57,14 +57,14 @@ export async function cloneColumnSnapshot<TColumnRoomId>(
 	input: CloneColumnSnapshotInput<TColumnRoomId>,
 ): Promise<CloneColumnSnapshotResult> {
 	const parsedMeta = parseColumnMetaRecord(input.snapshot.meta);
-	if (!parsedMeta.ok) return { ok: false, code: "column_meta_invalid" };
+	if (!parsedMeta.ok) {return { ok: false, code: "column_meta_invalid" };}
 
 	const ownerKey = `account:${normalizeAccountId(input.ownerId)}`;
 	const records = accountRecordStore(input.env);
 	const ownerRaw = await records.get(ownerKey);
-	if (!ownerRaw) return { ok: false, code: "account_not_found" };
+	if (!ownerRaw) {return { ok: false, code: "account_not_found" };}
 	const parsedOwner = parseAccountRecord(ownerRaw);
-	if (!parsedOwner.ok) return { ok: false, code: "account_invalid" };
+	if (!parsedOwner.ok) {return { ok: false, code: "account_invalid" };}
 
 	const columnId = input.createColumnId?.() ?? crypto.randomUUID();
 	const column: ColumnMeta = {

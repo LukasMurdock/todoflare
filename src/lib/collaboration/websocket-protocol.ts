@@ -60,8 +60,8 @@ function encodeSyncDeliveryPayload(
 function decodeSyncDeliveryPayload(
 	payload: Uint8Array,
 ): DurableSyncSubmission | null {
-	if (payload.byteLength < SYNC_DELIVERY_HEADER_BYTES) return null;
-	if (payload[0] !== SYNC_DELIVERY_VERSION) return null;
+	if (payload.byteLength < SYNC_DELIVERY_HEADER_BYTES) {return null;}
+	if (payload[0] !== SYNC_DELIVERY_VERSION) {return null;}
 
 	const idLength = payload[1] ?? 0;
 	const updateOffset = SYNC_DELIVERY_HEADER_BYTES + idLength;
@@ -77,7 +77,7 @@ function decodeSyncDeliveryPayload(
 		const outboxId = strictTextDecoder.decode(
 			payload.subarray(SYNC_DELIVERY_HEADER_BYTES, updateOffset),
 		);
-		if (!outboxId) return null;
+		if (!outboxId) {return null;}
 		return { outboxId, update: payload.subarray(updateOffset) };
 	} catch {
 		return null;
@@ -145,7 +145,7 @@ export function decodeWsFrame(data: ArrayBuffer): WebSocketFrame {
 }
 
 export function isWsFrameWithinLimits(data: ArrayBuffer): boolean {
-	if (data.byteLength === 0 || data.byteLength > MAX_WS_FRAME_BYTES) return false;
+	if (data.byteLength === 0 || data.byteLength > MAX_WS_FRAME_BYTES) {return false;}
 	const { op, payload } = decodeWsFrame(data);
 	return isWsPayloadWithinLimit(op, payload.byteLength);
 }
@@ -162,12 +162,19 @@ interface ServerMessageCodec<T extends ServerMessageType> {
 
 const EMPTY_PAYLOAD = new Uint8Array();
 
+function isPresenceUser(value: unknown): value is PresenceUser {
+	return value !== null && typeof value === "object" &&
+		"accountId" in value && typeof value.accountId === "string" &&
+		"color" in value && typeof value.color === "string" &&
+		"connectedAt" in value && typeof value.connectedAt === "number";
+}
+
 /**
  * The single declaration of every server-to-client message: its opcode, size
  * limit and payload encoding. The mapped type makes a SyncMessage variant
  * without a codec a compile error.
  */
-const SERVER_MESSAGE_CODECS: { [T in ServerMessageType]: ServerMessageCodec<T> } = {
+const SERVER_MESSAGE_CODECS = {
 	sync: {
 		op: WS_OP_SYNC,
 		maxPayloadBytes: MAX_SYNC_UPDATE_BYTES,
@@ -197,10 +204,11 @@ const SERVER_MESSAGE_CODECS: { [T in ServerMessageType]: ServerMessageCodec<T> }
 		encode: (message) => textEncoder.encode(JSON.stringify({ users: message.users })),
 		decode: (payload) => {
 			try {
-				const parsed = JSON.parse(textDecoder.decode(payload)) as {
-					users?: PresenceUser[];
-				};
-				return { type: "presence", users: parsed.users ?? [] };
+				const parsed: unknown = JSON.parse(textDecoder.decode(payload));
+				if (!parsed || typeof parsed !== "object") { return null; }
+				const users: unknown = "users" in parsed ? parsed.users : [];
+				if (!Array.isArray(users) || !users.every(isPresenceUser)) { return null; }
+				return { type: "presence", users };
 			} catch {
 				return null;
 			}
@@ -224,7 +232,7 @@ const SERVER_MESSAGE_CODECS: { [T in ServerMessageType]: ServerMessageCodec<T> }
 		encode: (message) => textEncoder.encode(message.message),
 		decode: (payload) => ({ type: "error", message: textDecoder.decode(payload) }),
 	},
-};
+} satisfies { [T in ServerMessageType]: ServerMessageCodec<T> };
 
 type AnyServerMessageCodec = {
 	op: number;
@@ -250,7 +258,7 @@ export function isWsPayloadWithinLimit(
 	op: number,
 	payloadBytes: number,
 ): boolean {
-	if (payloadBytes < 0 || payloadBytes + 1 > MAX_WS_FRAME_BYTES) return false;
+	if (payloadBytes < 0 || payloadBytes + 1 > MAX_WS_FRAME_BYTES) {return false;}
 	const limit = PAYLOAD_LIMIT_BY_OP.get(op);
 	return limit === undefined || payloadBytes <= limit;
 }
@@ -262,7 +270,7 @@ export function encodeServerMessage(message: SyncMessage): ArrayBuffer {
 }
 
 export function decodeWsMessage(data: ArrayBuffer): SyncMessage | null {
-	if (!isWsFrameWithinLimits(data)) return null;
+	if (!isWsFrameWithinLimits(data)) {return null;}
 	const { op, payload } = decodeWsFrame(data);
 	return SERVER_MESSAGE_BY_OP.get(op)?.decode(payload) ?? null;
 }

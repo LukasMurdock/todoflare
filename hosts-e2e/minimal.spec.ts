@@ -1,13 +1,14 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test } from '@playwright/test';
+import type { Page } from '@playwright/test';
 
 const boardSection = (page: Page, name: string) => page.getByRole("region", { name: `Board ${name}` });
 const log = (page: Page, name = "a") => page.getByRole("status", { name: `Log ${name}` }).or(page.getByLabel(`Log ${name}`));
 
 async function open(page: Page, query = "") {
-	const errors: string[] = [];
+	const errors: Array<string> = [];
 	page.on("pageerror", (error) => errors.push(error.message));
 	page.on("console", (message) => {
-		if (message.type() === "error") errors.push(message.text());
+		if (message.type() === "error") {errors.push(message.text());}
 	});
 	await page.goto(`/${query}`);
 	const editor = boardSection(page, query.includes("cycles") ? "cycled" : "a").getByRole("textbox", { name: "Todo editor" }).first();
@@ -109,7 +110,7 @@ test("hostile host CSS does not restyle the board", async ({ page }) => {
 		const text = getComputedStyle(li);
 		return {
 			font: text.fontFamily,
-			lineHeight: parseFloat(text.lineHeight) / parseFloat(text.fontSize),
+			lineHeight: Number.parseFloat(text.lineHeight) / Number.parseFloat(text.fontSize),
 			listStyle: text.listStyleType,
 			margin: getComputedStyle(li).marginTop,
 			checkboxBorder: getComputedStyle(checkbox).borderTopWidth,
@@ -139,9 +140,9 @@ test("mounting and unmounting 50 times leaks no listeners or nodes", async ({ pa
 		await toggle.click();
 		await expect(editor).toBeVisible();
 	};
-	for (let i = 0; i < 5; i++) await cycle();
+	for (let i = 0; i < 5; i++) {await cycle();}
 	const before = await measure();
-	for (let i = 0; i < 50; i++) await cycle();
+	for (let i = 0; i < 50; i++) {await cycle();}
 	const after = await measure();
 	// A leak of even one listener or node per mount would add 50.
 	expect(after.listeners - before.listeners).toBeLessThan(25);

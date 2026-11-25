@@ -6,7 +6,7 @@ import { AUTH_ENDPOINTS } from "../src/server/auth-policy";
 
 interface Endpoint {
 	path?: string;
-	options?: { method?: string | string[]; use?: unknown[] };
+	options?: { method?: string | Array<string>; use?: Array<unknown> };
 }
 
 // Every endpoint better-auth defines with Todoflare's plugin set, by
@@ -24,10 +24,9 @@ describe("auth endpoint policy", () => {
 
 	it("checks recent sign-in wherever better-auth would have checked freshness", () => {
 		const fresh = [...endpoints]
-			.filter(([key, endpoint]) => key in AUTH_ENDPOINTS && endpoint.options?.use?.includes(freshSessionMiddleware))
-			.map(([key]) => key);
+			.flatMap(([key, endpoint]) => key in AUTH_ENDPOINTS && endpoint.options?.use?.includes(freshSessionMiddleware) ? [key] : []);
 		expect(fresh).not.toHaveLength(0);
-		for (const key of fresh) expect(AUTH_ENDPOINTS[key].recentSignIn, key).toBeDefined();
+		for (const key of fresh) {expect(AUTH_ENDPOINTS[key].recentSignIn, key).toBeDefined();}
 	});
 
 	it.each([

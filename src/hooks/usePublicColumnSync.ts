@@ -1,6 +1,8 @@
+import { isSocketBuffer } from "@/lib/sync/column-socket-actor";
 import { useEffect, useRef, useState } from "react";
-import * as Y from "yjs";
+import { Doc as YDoc, XmlText, applyUpdate } from "yjs";
 import { yTextToSlateElement } from "@slate-yjs/core";
+import { ElementApi } from "platejs";
 import type { Value } from "platejs";
 import {
 	decodeWsMessage,
@@ -17,26 +19,26 @@ export function usePublicColumnSync(publicId: string) {
 	const [value, setValue] = useState<Value>(EMPTY_COLUMN_VALUE);
 	const [isLoading, setIsLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
-	const docRef = useRef<Y.Doc | null>(null);
+	const docRef = useRef<YDoc | null>(null);
 	const wsRef = useRef<WebSocket | null>(null);
 
 	useEffect(() => {
-		if (!publicId) return;
+		if (!publicId) {return;}
 
-		const doc = new Y.Doc();
+		const doc = new YDoc();
 		docRef.current = doc;
 
-		const yContent = doc.get("content", Y.XmlText) as Y.XmlText;
+		const yContent = doc.get("content", XmlText);
 
 		// Observe changes
 		const observer = () => {
 			try {
 				const slateValue = yTextToSlateElement(yContent);
-				if (slateValue && "children" in slateValue) {
-					setValue(slateValue.children as Value);
+				if (ElementApi.isElementList(slateValue.children)) {
+					setValue(slateValue.children);
 				}
-			} catch (err) {
-				console.error("Error converting Yjs to Slate:", err);
+			} catch (error_) {
+				console.error("Error converting Yjs to Slate:", error_);
 			}
 		};
 
@@ -56,25 +58,25 @@ export function usePublicColumnSync(publicId: string) {
 
 		ws.onmessage = (event) => {
 			try {
-				if (typeof event.data === "string") return;
-				const data = event.data as ArrayBuffer;
+				const data: unknown = event.data;
+				if (!isSocketBuffer(data)) {return;}
 				if (!isWsFrameWithinLimits(data)) {
 					setError("Received an oversized collaboration message");
 					ws.close();
 					return;
 				}
 				const message = decodeWsMessage(data);
-				if (!message) return;
+				if (!message) {return;}
 
 				if (message.type === "sync") {
-					Y.applyUpdate(doc, message.data, "remote");
+					applyUpdate(doc, message.data, "remote");
 				} else if (message.type === "column-deleted") {
 					setError("This column has been deleted");
 				} else if (message.type === "error") {
 					setError(message.message);
 				}
-			} catch (err) {
-				console.error("Error handling message:", err);
+			} catch (error_) {
+				console.error("Error handling message:", error_);
 			}
 		};
 

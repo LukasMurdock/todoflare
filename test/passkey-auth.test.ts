@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { applyD1Migrations, env, SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 
@@ -14,7 +15,7 @@ describe("passkey authentication boundary", () => {
 		const text = await response.text();
 		expect(text).not.toContain("accounts.invalid");
 		expect(text).not.toContain('"email"');
-		const body = JSON.parse(text) as { user: { id: string } };
+		const body = z.object({ user: z.object({ id: z.string() }) }).parse(JSON.parse(text));
 		expect(body.user.id).toMatch(/^\d{16}$/);
 
 		const cookie = response.headers.get("Set-Cookie");
@@ -32,10 +33,10 @@ describe("passkey authentication boundary", () => {
 			{ headers: { Cookie: cookie ?? "" } },
 		);
 		expect(options.status).toBe(200);
-		const registration = (await options.json()) as {
+		const registration = (await options.json<{
 			rp?: { id?: string };
 			user?: { id?: string; name?: string };
-		};
+		}>());
 		expect(registration.rp?.id).toBe("localhost");
 		expect(registration.user?.name).not.toContain("accounts.invalid");
 	});
@@ -51,7 +52,7 @@ describe("passkey authentication boundary", () => {
 	});
 	it("preserves an existing cookie session while rejecting every retired ID transport", async () => {
 		const login = await SELF.fetch("http://localhost:5173/api/auth/sign-in/anonymous", { method: "POST", headers: { Origin: "http://localhost:5173" } });
-		const { user } = await login.json() as { user: { id: string } };
+		const { user } = await login.json<{ user: { id: string } }>();
 		const cookie = login.headers.get("Set-Cookie")!;
 		await env.AUTH_DB.prepare('INSERT INTO passkey (id,publicKey,userId,credentialID,counter,deviceType,backedUp) VALUES (?, \'fixture\', ?, ?, 0, \'singleDevice\', 0)').bind(crypto.randomUUID(), user.id, crypto.randomUUID()).run();
 		await env.AUTH_DB.prepare('UPDATE "user" SET authState = \'passkey\' WHERE id = ?').bind(user.id).run();
@@ -65,7 +66,7 @@ describe("passkey authentication boundary", () => {
 		expect((await SELF.fetch(`http://localhost:5173/api/account/${user.id}`, { headers: { Cookie: cookie } })).status).toBe(404);
 		const account = await SELF.fetch("http://localhost:5173/api/account", { headers: { Cookie: cookie, "X-Test-Disable-Auth-Bypass": "1" } });
 		expect(account.status).toBe(200);
-		expect((await account.json() as { account: { id: string } }).account.id.replace(/\D/g, "")).toBe(user.id);
+		expect((await account.json<{ account: { id: string } }>()).account.id.replaceAll(/\D/g, "")).toBe(user.id);
 		const mismatch = await SELF.fetch("http://localhost:5173/api/column", {
 			method: "POST", headers: { Cookie: cookie, "X-Test-Disable-Auth-Bypass": "1", "X-Todoflare-Expected-Account": "1111111111111111" },
 		});
@@ -81,7 +82,7 @@ describe("passkey authentication boundary", () => {
 		const login = await SELF.fetch("http://localhost:5173/api/auth/sign-in/anonymous", {
 			method: "POST", headers: { Origin: "http://localhost:5173" },
 		});
-		const { user } = await login.json() as { user: { id: string } };
+		const { user } = await login.json<{ user: { id: string } }>();
 		const cookie = login.headers.getSetCookie().map(value => value.split(";")[0]).join("; ");
 		await env.AUTH_DB.prepare("INSERT INTO passkey (id,publicKey,userId,credentialID,counter,deviceType,backedUp) VALUES (?, 'fixture', ?, ?, 0, 'singleDevice', 0)").bind(crypto.randomUUID(), user.id, crypto.randomUUID()).run();
 		await env.ACCOUNTS.put(`account:${user.id}`, JSON.stringify({ schemaVersion: 1, id: user.id, columnOrder: [], hiddenSharedColumns: [], createdAt: 1 }));
@@ -100,7 +101,7 @@ describe("passkey authentication boundary", () => {
 
 	it("clears an expired session cookie and refuses account access", async () => {
 		const login = await SELF.fetch("http://localhost:5173/api/auth/sign-in/anonymous", { method: "POST", headers: { Origin: "http://localhost:5173" } });
-		const { user } = await login.json() as { user: { id: string } };
+		const { user } = await login.json<{ user: { id: string } }>();
 		await env.AUTH_DB.prepare('UPDATE session SET "expiresAt" = ? WHERE "userId" = ?').bind(Date.now() - 1000, user.id).run();
 		const response = await SELF.fetch("http://localhost:5173/api/account", { headers: { Cookie: login.headers.get("Set-Cookie")!, "X-Test-Disable-Auth-Bypass": "1" } });
 		expect(response.status).toBe(401);

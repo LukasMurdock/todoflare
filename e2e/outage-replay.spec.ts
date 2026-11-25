@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { expect, test } from "@playwright/test";
 import {
 	createAccount,
@@ -34,7 +35,7 @@ test.describe("collaborative editing", () => {
 		const collaboratorPage = await collaboratorContext.newPage();
 		await bootstrapAuthenticatedPage(collaboratorPage, collaboratorId);
 
-		const compactOwnerId = ownerId.replace(/\s/g, "");
+		const compactOwnerId = ownerId.replaceAll(/\s/g, "");
 		const ownerShort = `${compactOwnerId.slice(0, 4)}...${compactOwnerId.slice(-4)}`;
 
 		await withTemporaryBackendOutage(
@@ -57,7 +58,7 @@ test.describe("collaborative editing", () => {
 		// Keep one smoke test on the production five-second cadence. The rest of
 		// this matrix uses the deterministic E2E wake trigger.
 		await waitForQueueToDrain(ownerPage, ownerId, {
-			timeout: 15000,
+			timeout: 15_000,
 			wakeReplay: false,
 		});
 		await expect
@@ -65,16 +66,14 @@ test.describe("collaborative editing", () => {
 				async () => {
 					const response = await request.get(`${appUrl}/api/account`, {
 						headers: {
-							"X-Todoflare-Test-Account": collaboratorId.replace(/\D/g, ""),
+							"X-Todoflare-Test-Account": collaboratorId.replaceAll(/\D/g, ""),
 						},
 					});
-					if (!response.ok()) return false;
-					const payload = (await response.json()) as {
-						sharedColumns?: Array<{ id?: string }>;
-					};
+					if (!response.ok()) {return false;}
+					const payload = z.object({ sharedColumns: z.array(z.object({ id: z.string() })).optional() }).parse(await response.json());
 					return payload.sharedColumns?.some((column) => column.id === columnId) ?? false;
 				},
-				{ timeout: 15000 },
+				{ timeout: 15_000 },
 			)
 			.toBe(true);
 
@@ -83,7 +82,7 @@ test.describe("collaborative editing", () => {
 			await expect(
 				collaboratorPage.getByText(`Shared by ${ownerShort}`),
 			).toBeVisible({ timeout: 5000 });
-		}).toPass({ timeout: 30000, intervals: [500, 1000, 2000] });
+		}).toPass({ timeout: 30_000, intervals: [500, 1000, 2000] });
 
 		await ownerContext.close();
 		await collaboratorContext.close();
@@ -144,10 +143,10 @@ test.describe("collaborative editing", () => {
 
 		await bootstrapAuthenticatedPage(page, ownerId);
 		await expect(page.getByRole("button", { name: "Collapse column" })).toHaveCount(2, {
-			timeout: 15000,
+			timeout: 15_000,
 		});
 
-		const compactOwnerId = ownerId.replace(/\s/g, "");
+		const compactOwnerId = ownerId.replaceAll(/\s/g, "");
 		const ownerShort = `${compactOwnerId.slice(0, 4)}...${compactOwnerId.slice(-4)}`;
 
 		await withTemporaryBackendOutage(
@@ -156,7 +155,7 @@ test.describe("collaborative editing", () => {
 			async () => {
 				await page.locator('button[title="Delete column"]').first().click();
 				await expect(page.getByRole("button", { name: "Collapse column" })).toHaveCount(1, {
-					timeout: 15000,
+					timeout: 15_000,
 				});
 				await waitForQueuedMutations(page, ownerId);
 			},
@@ -166,7 +165,7 @@ test.describe("collaborative editing", () => {
 
 		await page.reload();
 		await expect(page.getByRole("button", { name: "Collapse column" })).toHaveCount(1, {
-			timeout: 15000,
+			timeout: 15_000,
 		});
 
 		await withTemporaryBackendOutage(
@@ -181,7 +180,7 @@ test.describe("collaborative editing", () => {
 				await page.getByRole("button", { name: "Close" }).click();
 
 				await expect(page.getByRole("button", { name: "Collapse column" })).toHaveCount(2, {
-					timeout: 15000,
+					timeout: 15_000,
 				});
 				await waitForQueuedMutations(page, ownerId);
 			},
@@ -191,7 +190,7 @@ test.describe("collaborative editing", () => {
 
 		await page.reload();
 		await expect(page.getByRole("button", { name: "Collapse column" })).toHaveCount(2, {
-			timeout: 15000,
+			timeout: 15_000,
 		});
 	});
 
@@ -210,7 +209,7 @@ test.describe("collaborative editing", () => {
 
 		await bootstrapAuthenticatedPage(page, ownerId);
 		await expect(page.getByRole("button", { name: "Collapse column" })).toHaveCount(2, {
-			timeout: 15000,
+			timeout: 15_000,
 		});
 
 
@@ -278,7 +277,7 @@ test.describe("collaborative editing", () => {
 			{
 				headers: {
 					"Content-Type": "application/json",
-					"X-Todoflare-Test-Account": ownerId.replace(/\D/g, ""),
+					"X-Todoflare-Test-Account": ownerId.replaceAll(/\D/g, ""),
 				},
 				data: {
 					targetAccountId: collaboratorId,
@@ -289,12 +288,12 @@ test.describe("collaborative editing", () => {
 
 		await bootstrapAuthenticatedPage(page, collaboratorId);
 		await expect(page.getByRole("button", { name: "Collapse column" })).toHaveCount(2, {
-			timeout: 15000,
+			timeout: 15_000,
 		});
 
-		const compactOwnerId = ownerId.replace(/\s/g, "");
+		const compactOwnerId = ownerId.replaceAll(/\s/g, "");
 		const ownerShort = `${compactOwnerId.slice(0, 4)}...${compactOwnerId.slice(-4)}`;
-		await expect(page.getByText(`Shared by ${ownerShort}`)).toBeVisible({ timeout: 15000 });
+		await expect(page.getByText(`Shared by ${ownerShort}`)).toBeVisible({ timeout: 15_000 });
 
 
 		await withTemporaryBackendOutage(
@@ -312,7 +311,7 @@ test.describe("collaborative editing", () => {
 		await page.reload();
 		await expect(page.getByText(`Shared by ${ownerShort}`)).toHaveCount(0);
 		await expect(page.getByRole("button", { name: "Collapse column" })).toHaveCount(1, {
-			timeout: 15000,
+			timeout: 15_000,
 		});
 	});
 });

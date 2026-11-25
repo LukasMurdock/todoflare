@@ -1,7 +1,8 @@
+import { z } from "zod";
 import type { APIRequestContext } from "@playwright/test";
 
-function accountHeaders(accountId: string): Record<string, string> {
-	return { "X-Todoflare-Test-Account": accountId.replace(/\D/g, "") };
+function accountHeaders(accountId: string) {
+	return { "X-Todoflare-Test-Account": accountId.replaceAll(/\D/g, "") };
 }
 
 export async function createAccount(
@@ -21,9 +22,7 @@ export async function createAccount(
 		);
 	}
 
-	const data = (await response.json()) as {
-		account: { id: string };
-	};
+	const data = z.object({ account: z.object({ id: z.string() }) }).parse(await response.json());
 
 	return data.account.id;
 }
@@ -43,7 +42,7 @@ export async function createColumn(
 		);
 	}
 
-	const payload = (await response.json()) as { column?: { id?: string } };
+	const payload = z.object({ column: z.object({ id: z.string() }) }).parse(await response.json());
 	if (!payload.column?.id) {
 		throw new Error("Failed to parse created column id");
 	}
@@ -55,7 +54,7 @@ export async function getAccountColumnOrder(
 	request: APIRequestContext,
 	baseURL: string,
 	accountId: string,
-): Promise<string[]> {
+): Promise<Array<string>> {
 	const response = await request.get(`${baseURL}/api/account`, {
 		headers: accountHeaders(accountId),
 	});
@@ -66,15 +65,7 @@ export async function getAccountColumnOrder(
 		);
 	}
 
-	const payload = (await response.json()) as {
-		account?: { columnOrder?: unknown };
-	};
+	const payload = z.object({ account: z.object({ columnOrder: z.array(z.string()) }) }).parse(await response.json());
 
-	if (!payload.account || !Array.isArray(payload.account.columnOrder)) {
-		throw new Error("Failed to parse account column order");
-	}
-
-	return payload.account.columnOrder.filter(
-		(columnId): columnId is string => typeof columnId === "string",
-	);
+	return payload.account.columnOrder;
 }

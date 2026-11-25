@@ -3,11 +3,13 @@ import { textChange } from "../src/lib/agents/text-change";
 import { describeAgentChange, MAX_DIFF_ENTRIES } from "../src/server/agent-access/change-diff";
 
 const todo = (text: string, checked = false) => ({ type: "p", listStyleType: "todo", indent: 1, checked, text });
-const snapshot = (id: string | null, text: string, attributes: Record<string, unknown> = {}) => ({
-	attributes: { ...(id ? { id } : {}), type: "p", ...attributes },
+const snapshot = (id: string | null, text: string, attributes: { listStyleType?: string; indent?: number } = {}) => ({
+	attributes: { ...(id && { id }), type: "p", ...attributes },
 	runs: [{ insert: text }],
 });
 const none = () => undefined;
+
+const paragraph = (text: string) => ({ text, style: "paragraph", checked: false, depth: 0 });
 
 describe("describeAgentChange", () => {
 	it("shows added items", () => {
@@ -61,7 +63,6 @@ describe("describeAgentChange", () => {
 			},
 			none,
 		);
-		const paragraph = (text: string) => ({ text, style: "paragraph", checked: false, depth: 0 });
 		expect(diff.entries).toEqual([
 			{ kind: "changed", before: paragraph("Before"), after: paragraph("After") },
 			{ kind: "added", item: paragraph("Added") },
@@ -71,8 +72,8 @@ describe("describeAgentChange", () => {
 	});
 
 	it("lists a record it cannot read with no diff rather than failing", () => {
-		expect(describeAgentChange({} as never, none)).toEqual({ entries: [], omitted: 0 });
-		expect(describeAgentChange({ kind: "reinsert", items: null } as never, none)).toEqual({ entries: [], omitted: 0 });
+		expect(describeAgentChange({}, none)).toEqual({ entries: [], omitted: 0 });
+		expect(describeAgentChange({ kind: "reinsert", items: null }, none)).toEqual({ entries: [], omitted: 0 });
 	});
 
 	it("keeps long diffs short and says how much it left out", () => {

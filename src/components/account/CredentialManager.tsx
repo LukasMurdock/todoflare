@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Check, Copy, KeyRound, LogOut, Plus, RefreshCw, ShieldAlert } from "lucide-react";
-import { accountCredentials, type AccountCredentials, type ListedPasskey } from "@/lib/auth-client";
+import { accountCredentials } from '@/lib/auth-client';
+import type { AccountCredentials, ListedPasskey } from '@/lib/auth-client';
 import { useRecentSignIn } from "@/hooks/use-recent-sign-in";
 import { ConfirmSignIn } from "./ConfirmSignIn";
 import { Button } from "@/components/ui/button";
@@ -21,7 +22,7 @@ interface CredentialManagerProps {
 }
 
 export function CredentialManager({ accountId, open, onOpenChange }: CredentialManagerProps) {
-	const [passkeys, setPasskeys] = useState<ListedPasskey[]>([]);
+	const [passkeys, setPasskeys] = useState<Array<ListedPasskey>>([]);
 	const [name, setName] = useState("");
 	const [recoveryCode, setRecoveryCode] = useState<string | null>(null);
 	const [notice, setNotice] = useState<string | null>(null);
@@ -33,16 +34,13 @@ export function CredentialManager({ accountId, open, onOpenChange }: CredentialM
 	// While a refused change waits for confirmation, nothing else may change.
 	const locked = busy || recent.pending;
 
-	const refresh = useCallback(async (on: AccountCredentials) => {
-		try {
-			setPasskeys(await on.listPasskeys());
-		} catch (cause) {
-			setError(cause instanceof Error && cause.message ? cause.message : "Unable to load passkeys");
-		}
-	}, []);
+	const refresh = useCallback((on: AccountCredentials) => on.listPasskeys().then(
+		setPasskeys,
+		(error: unknown) => setError(error instanceof Error && error.message ? error.message : "Unable to load passkeys"),
+	), []);
 
 	useEffect(() => {
-		if (open && credentials) void refresh(credentials);
+		if (open && credentials) {void refresh(credentials);}
 	}, [open, credentials, refresh]);
 
 	// A kept change belongs to one opening of the dialog.
@@ -56,15 +54,15 @@ export function CredentialManager({ accountId, open, onOpenChange }: CredentialM
 		setNotice(null);
 		try {
 			await action();
-		} catch (cause) {
-			setError(cause instanceof Error && cause.message ? cause.message : fallback);
+		} catch (error_) {
+			setError(error_ instanceof Error && error_.message ? error_.message : fallback);
 		} finally {
 			setBusy(false);
 		}
 	};
 
 	const change = (fallback: string, action: (on: AccountCredentials) => Promise<void>) => {
-		if (!credentials) return;
+		if (!credentials) {return;}
 		const on = credentials;
 		return run(fallback, () => recent.attempt(() => action(on), fallback));
 	};
@@ -117,7 +115,7 @@ export function CredentialManager({ accountId, open, onOpenChange }: CredentialM
 											<KeyRound className="size-3.5 stroke-[1.75]" />
 										</span>
 										<span className="min-w-0 flex-1 truncate text-sm">{passkey.name || "Passkey"}</span>
-										<Button variant="outline" size="sm" className="h-7 px-2.5 text-xs" disabled={locked} onClick={() => remove(passkey)}>
+										<Button variant="outline" size="sm" className="h-7 px-2.5 text-xs" disabled={locked} onClick={() => void remove(passkey)}>
 											Remove
 										</Button>
 									</li>
@@ -127,7 +125,7 @@ export function CredentialManager({ accountId, open, onOpenChange }: CredentialM
 						{passkeys.length < 2 && (
 							<p className="flex items-start gap-2 rounded-md border-l-2 border-amber-500 bg-amber-500/10 px-2.5 py-2 text-xs leading-5 text-amber-800 dark:text-amber-300">
 								<ShieldAlert className="mt-0.5 size-3.5 shrink-0" />
-								Add a backup passkey on another device so you can't be locked out.
+								Add a backup passkey on another device so you can’t be locked out.
 							</p>
 						)}
 						<div className="flex gap-2">
@@ -139,7 +137,7 @@ export function CredentialManager({ accountId, open, onOpenChange }: CredentialM
 								aria-label="Passkey name"
 								className="h-8"
 							/>
-							<Button size="sm" disabled={locked} onClick={add}>
+							<Button size="sm" disabled={locked} onClick={() => void add()}>
 								<Plus />
 								Add passkey
 							</Button>
@@ -150,7 +148,7 @@ export function CredentialManager({ accountId, open, onOpenChange }: CredentialM
 						<p className="text-xs leading-5 text-muted-foreground">
 							A recovery code signs you in if every passkey is lost. Creating a new one replaces the old.
 						</p>
-						<Button variant="outline" size="sm" className="self-start" disabled={locked} onClick={createRecoveryCode}>
+						<Button variant="outline" size="sm" className="self-start" disabled={locked} onClick={() => void createRecoveryCode()}>
 							<RefreshCw />
 							Create or rotate recovery code
 						</Button>
@@ -161,14 +159,14 @@ export function CredentialManager({ accountId, open, onOpenChange }: CredentialM
 						<p className="text-xs leading-5 text-muted-foreground">
 							Sign out every other browser that uses this account, for example after losing a device.
 						</p>
-						<Button variant="outline" size="sm" className="self-start" disabled={locked} onClick={signOutOtherSessions}>
+						<Button variant="outline" size="sm" className="self-start" disabled={locked} onClick={() => void signOutOtherSessions()}>
 							<LogOut />
 							Sign out other sessions
 						</Button>
 					</section>
 				</div>
 				{recent.pending && (
-					<ConfirmSignIn busy={busy} onConfirm={() => run(recent.fallback ?? "Passkey confirmation failed", recent.confirm)} onCancel={recent.cancel} />
+					<ConfirmSignIn busy={busy} onConfirm={() => void run(recent.fallback ?? "Passkey confirmation failed", recent.confirm)} onCancel={recent.cancel} />
 				)}
 				{notice && <p className="text-[13px] text-muted-foreground">{notice}</p>}
 				{error && (

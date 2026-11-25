@@ -1,18 +1,16 @@
+import { z } from "zod";
 // Accounts, agent connections and grants created through the Worker, for the
 // agent management and MCP tests.
 import { SELF, env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { expect } from "vitest";
-import worker, { type Bindings } from "../../src/index";
-import {
-	AGENT_GRANTS_PER_CONNECTION,
-	type AgentConnection,
-	createAgentResponseSchema,
-	listAgentsResponseSchema,
-} from "../../src/lib/api/agent-contract";
+import worker from '../../src/index';
+import type { Bindings } from '../../src/index';
+import { AGENT_GRANTS_PER_CONNECTION, createAgentResponseSchema, listAgentsResponseSchema } from '../../src/lib/api/agent-contract';
+import type { AgentConnection } from '../../src/lib/api/agent-contract';
 import { ACCOUNT_COMMANDS } from "../../src/lib/api/account-commands";
 import { API_ROUTES, routePath } from "../../src/lib/api/routes";
 import { headers } from "./metadata-fixtures";
-import * as Y from "yjs";
+import { encodeStateAsUpdate } from "yjs";
 import { docFromPlate } from "./plate-doc";
 
 export const BASE = "http://example.com";
@@ -44,7 +42,7 @@ export async function setGrant(accountId: string, agentId: string, columnId: str
 	return call(accountId, grantRoute("PUT", agentId, columnId), body);
 }
 
-export async function listAgents(accountId: string): Promise<AgentConnection[]> {
+export async function listAgents(accountId: string): Promise<Array<AgentConnection>> {
 	const response = await call(accountId, API_ROUTES.listAgents);
 	expect(response.status).toBe(200);
 	return listAgentsResponseSchema.parse(await response.json()).agents;
@@ -52,17 +50,17 @@ export async function listAgents(accountId: string): Promise<AgentConnection[]> 
 
 export async function fetchWithEnv(request: Request, overrides: Partial<Bindings>) {
 	const ctx = createExecutionContext();
-	const response = await worker.fetch(request, { ...env, ...overrides } as Bindings, ctx);
+	const response = await worker.fetch(request, { ...env, ...overrides }, ctx);
 	await waitOnExecutionContext(ctx);
 	return response;
 }
 
 
 /** Replaces a column's content, keeping its metadata. */
-export async function seedColumn(columnId: string, value: Array<Record<string, unknown>>) {
+export async function seedColumn(columnId: string, value: Parameters<typeof docFromPlate>[0]) {
 	const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
-	const exported = (await (await stub.fetch("http://do/export")).json()) as { meta: unknown };
-	const yjs = Array.from(Y.encodeStateAsUpdate(docFromPlate(value)));
+	const exported = (await (await stub.fetch("http://do/export")).json<{ meta: unknown }>());
+	const yjs = Array.from(encodeStateAsUpdate(docFromPlate(value)));
 	const response = await stub.fetch("http://do/import", {
 		method: "POST",
 		body: JSON.stringify({ meta: exported.meta, yjs, trashedAt: null }),
@@ -70,26 +68,44 @@ export async function seedColumn(columnId: string, value: Array<Record<string, u
 	expect(response.ok).toBe(true);
 }
 
+const mcpResponseSchema = z.object({
+	result: z.looseObject({
+		content: z.array(z.object({ type: z.string(), text: z.string() })).optional(),
+		structuredContent: z.record(z.string(), z.json()).optional(),
+		isError: z.boolean().optional(),
+	}).catchall(z.json()).optional(),
+	error: z.union([z.string(), z.object({ code: z.number(), message: z.string() })]).optional(),
+});
+
 export interface McpResponse {
 	status: number;
-	body: { result?: Record<string, unknown> & ToolCallResult; error?: { code: number; message: string } } | null;
+	body: z.infer<typeof mcpResponseSchema> | null;
 	headers: Headers;
 }
 
 export interface ToolCallResult {
 	content?: Array<{ type: string; text: string }>;
-	structuredContent?: Record<string, unknown>;
+	structuredContent?: Record<string, z.core.util.JSONType | undefined>;
 	isError?: boolean;
 }
 
 let rpcId = 0;
 
 export type McpEra = "legacy" | "modern";
-export const MCP_ERAS: McpEra[] = ["legacy", "modern"];
+export const MCP_ERAS: Array<McpEra> = ["legacy", "modern"];
 export const MODERN_VERSION = "2026-07-28";
 
+// JSON-RPC request objects may omit optional fields when serialized.
+interface RpcParams {
+	[field: string]: z.core.util.JSONType | RpcParams | undefined;
+}
+
 /** The per-request metadata and mirrored headers a 2026-07-28 client sends. */
-export function modernFraming(method: string, params: Record<string, unknown> = {}) {
+export function modernFraming(method: string, params: RpcParams = {}) {
+	const headers: Record<string, string> = {};
+	headers["MCP-Protocol-Version"] = MODERN_VERSION;
+	headers["Mcp-Method"] = method;
+	if (typeof params.name === "string") { headers["Mcp-Name"] = params.name; }
 	return {
 		params: {
 			...params,
@@ -99,11 +115,7 @@ export function modernFraming(method: string, params: Record<string, unknown> = 
 				"io.modelcontextprotocol/clientCapabilities": {},
 			},
 		},
-		headers: {
-			"MCP-Protocol-Version": MODERN_VERSION,
-			"Mcp-Method": method,
-			...(typeof params.name === "string" ? { "Mcp-Name": params.name } : {}),
-		} as Record<string, string>,
+		headers,
 	};
 }
 
@@ -111,7 +123,7 @@ export function modernFraming(method: string, params: Record<string, unknown> = 
 export async function mcp(
 	token: string | null,
 	method: string,
-	params?: Record<string, unknown>,
+	params?: RpcParams,
 	options: { env?: Partial<Bindings>; headers?: Record<string, string>; era?: McpEra } = {},
 ): Promise<McpResponse> {
 	const framed = options.era === "modern" ? modernFraming(method, params) : { params, headers: {} };
@@ -120,7 +132,7 @@ export async function mcp(
 		headers: {
 			"Content-Type": "application/json",
 			Accept: "application/json, text/event-stream",
-			...(token ? { Authorization: `Bearer ${token}` } : {}),
+			...(token && { Authorization: `Bearer ${token}` }),
 			...framed.headers,
 			...options.headers,
 		},
@@ -128,10 +140,11 @@ export async function mcp(
 	});
 	const response = options.env ? await fetchWithEnv(request, options.env) : await SELF.fetch(request);
 	const text = await response.text();
-	return { status: response.status, body: text ? JSON.parse(text) : null, headers: response.headers };
+	const body = text ? mcpResponseSchema.parse(JSON.parse(text)) : null;
+	return { status: response.status, body, headers: response.headers };
 }
 
-export async function callTool(token: string | null, name: string, args: Record<string, unknown> = {}, options?: Parameters<typeof mcp>[3]) {
+export async function callTool(token: string | null, name: string, args: Record<string, z.core.util.JSONType | undefined> = {}, options?: Parameters<typeof mcp>[3]) {
 	return mcp(token, "tools/call", { name, arguments: args }, options);
 }
 

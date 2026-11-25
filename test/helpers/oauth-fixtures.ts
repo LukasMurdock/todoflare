@@ -1,3 +1,4 @@
+import type { z } from "zod";
 import { SELF } from "cloudflare:test";
 import { API_ROUTES } from "../../src/lib/api/routes";
 import { BASE } from "./agent-fixtures";
@@ -9,8 +10,8 @@ export const REDIRECT = "http://127.0.0.1:33418/callback";
 
 export function base64Url(bytes: Uint8Array): string {
 	let binary = "";
-	for (const byte of bytes) binary += String.fromCharCode(byte);
-	return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+	for (const byte of bytes) {binary += String.fromCharCode(byte);}
+	return btoa(binary).replaceAll('+', "-").replaceAll('/', "_").replace(/=+$/, "");
 }
 
 export async function pkce() {
@@ -27,7 +28,7 @@ export function clientIp(): string {
 }
 
 export async function register(
-	body: Record<string, unknown> = { client_name: "Claude Code", redirect_uris: [REDIRECT], token_endpoint_auth_method: "none" },
+	body: Record<string, z.core.util.JSONType | undefined> = { client_name: "Claude Code", redirect_uris: [REDIRECT], token_endpoint_auth_method: "none" },
 	ip = clientIp(),
 ) {
 	const response = await SELF.fetch(`${BASE}${API_ROUTES.oauthRegister.path}`, {
@@ -35,7 +36,7 @@ export async function register(
 		headers: { "Content-Type": "application/json", Origin: "https://other.example", "CF-Connecting-IP": ip },
 		body: JSON.stringify(body),
 	});
-	return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+	return { status: response.status, body: (await response.json<Record<string, z.core.util.JSONType | undefined>>()) };
 }
 
 export function authorizeParams(clientId: string, challenge: string, extra: Record<string, string> = {}) {

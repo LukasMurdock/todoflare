@@ -1,5 +1,5 @@
-import * as React from "react"
-import * as CheckboxPrimitive from "@radix-ui/react-checkbox"
+import React from "react"
+import { Indicator as CheckboxPrimitiveIndicator, Root as CheckboxPrimitiveRoot } from "@radix-ui/react-checkbox"
 
 import { cn } from "./cn"
 
@@ -47,21 +47,21 @@ function Checkmark({ className }: { className?: string }) {
 function Checkbox({
   className,
   ...props
-}: React.ComponentProps<typeof CheckboxPrimitive.Root>) {
+}: React.ComponentProps<typeof CheckboxPrimitiveRoot>) {
   return (
-    <CheckboxPrimitive.Root
+    <CheckboxPrimitiveRoot
       data-slot="checkbox"
       className={cn("group/check", checkboxClassName, className)}
       {...props}
     >
-      <CheckboxPrimitive.Indicator
+      <CheckboxPrimitiveIndicator
         data-slot="checkbox-indicator"
         forceMount
         className="grid place-content-center text-current"
       >
         <Checkmark />
-      </CheckboxPrimitive.Indicator>
-    </CheckboxPrimitive.Root>
+      </CheckboxPrimitiveIndicator>
+    </CheckboxPrimitiveRoot>
   )
 }
 

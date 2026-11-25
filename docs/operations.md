@@ -134,6 +134,8 @@ Rehearse on staging, never on production: `pnpm test:staging` freezes
 staging, deletes a test account, restores it, signs in with its passkey and
 compares everything ([staging.md](staging.md#remote-recovery-drill)).
 
+The Recovery drills workflow runs every Monday at 06:17 UTC and supports manual dispatch. It runs the same lifecycle and backup tests as the pull request gate against fresh local Workers bindings. The backup drill copies the R2 objects, resets the environment, restores the synthetic account, authenticates with the surviving passkey, and verifies its board contents and order. See [the test commands](development.md#test).
+
 ## Self-serve export and import
 
 Signed-in users can export and import from the account menu. Export

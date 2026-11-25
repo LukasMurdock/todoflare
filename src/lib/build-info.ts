@@ -11,7 +11,7 @@ export interface BuildInfo {
 declare const __TODOFLARE_BUILD__: BuildInfo;
 
 export const BUILD_INFO: BuildInfo =
-	typeof __TODOFLARE_BUILD__ !== "undefined"
+	typeof __TODOFLARE_BUILD__ === "object"
 		? __TODOFLARE_BUILD__
 		: { commit: "unknown", committedAt: null, dirty: false };
 

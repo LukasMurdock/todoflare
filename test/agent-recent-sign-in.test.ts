@@ -1,3 +1,4 @@
+import type { z } from "zod";
 // Agent connections and grants outlive the session that makes them, so making
 // or widening one needs a recent sign-in (decision 0017). These use real
 // passkey sessions: the test fixture account has no session age to check.
@@ -50,7 +51,7 @@ describe("agent credentials need a recent sign-in", () => {
 		const { body: client } = await register();
 		const { challenge } = await pkce();
 		const params = authorizeParams(String(client.client_id), challenge, { resource: `${ORIGIN}/api/mcp` });
-		const decide = (decision: Record<string, unknown>) =>
+		const decide = (decision: Record<string, z.core.util.JSONType | undefined>) =>
 			browser.json<{ redirectTo?: string }>(API_ROUTES.decideAuthorization.path, { method: "POST", body: JSON.stringify({ params, ...decision }) });
 		const approve = { decision: "approve", name: "Claude Code", expiresInDays: 30, grants: [] };
 

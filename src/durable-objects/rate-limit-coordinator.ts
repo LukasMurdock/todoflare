@@ -36,7 +36,7 @@ export class RateLimitCoordinatorSql extends DurableObject<unknown> {
 			return new Response("Not Found", { status: 404 });
 		}
 
-		const input = (await request.json().catch(() => null)) as RateLimitRequest | null;
+		const input = await request.json<RateLimitRequest | null>().catch(() => null);
 		if (
 			!input ||
 			!Number.isInteger(input.limit) ||
@@ -88,7 +88,7 @@ export class RateLimitCoordinatorSql extends DurableObject<unknown> {
 					"SELECT window_start, count, expires_at FROM rate_limit_window WHERE id = 1",
 				)
 				.toArray()[0] ?? null;
-		if (!row) return;
+		if (!row) {return;}
 		if (row.expires_at <= Math.floor(Date.now() / 1000)) {
 			this.ctx.storage.sql.exec("DELETE FROM rate_limit_window WHERE id = 1");
 			return;

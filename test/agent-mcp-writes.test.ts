@@ -1,12 +1,16 @@
+import { restartColumnRoom } from "./helpers/restart-column-room";
+import { z } from "zod";
+import { plateBlocks } from "./helpers/plate-doc";
 // Agent writes end to end: MCP tool → Worker decision → the column's Durable
 // Object → persisted, logged, and broadcast to people connected to the column.
-import { env, runInDurableObject } from "cloudflare:test";
+import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import * as Y from "yjs";
+import type { XmlText as YXmlText} from "yjs";
+import { Doc as YDoc, applyUpdate } from "yjs";
 import { listAgentChangesResponseSchema, undoAgentChangeResponseSchema } from "../src/lib/api/agent-contract";
 import { API_ROUTES, routePath } from "../src/lib/api/routes";
 import { decodeWsMessage, encodeDurableSyncSubmission, WS_PROTOCOL_V1 } from "../src/lib/collaboration/websocket-protocol";
-import { columnBlocksToMarkdown, columnContentRoot, readColumnContent } from "../src/server/agent-access/column-content";
+import { columnBlocksToMarkdown, readColumnContent } from "../src/server/agent-access/column-content";
 import { call, callTool, commandRoute, createAgent, MCP_ERAS, routeForRevoke, seedColumn, setGrant } from "./helpers/agent-fixtures";
 import { createAccount, createColumn } from "./helpers/metadata-fixtures";
 
@@ -31,8 +35,8 @@ function result(response: Awaited<ReturnType<typeof callTool>>) {
 
 async function markdownOf(columnId: string): Promise<string> {
 	const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
-	const doc = new Y.Doc();
-	Y.applyUpdate(doc, new Uint8Array(await (await stub.fetch("http://do/yjs-state")).arrayBuffer()));
+	const doc = new YDoc();
+	applyUpdate(doc, new Uint8Array(await (await stub.fetch("http://do/yjs-state")).arrayBuffer()));
 	return columnBlocksToMarkdown(readColumnContent(doc).blocks);
 }
 
@@ -43,25 +47,27 @@ async function versionOf(token: string, columnId: string): Promise<string> {
 /** A person's editor, connected to the column like the app's. */
 async function connectPerson(columnId: string, accountId: string) {
 	const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
-	const ticket = await stub.fetch("http://do/ws-ticket", { method: "POST", headers: { "X-Authenticated-Account-ID": accountId.replace(/\s/g, "") } });
-	const { ticket: value } = (await ticket.json()) as { ticket: string };
+	const ticket = await stub.fetch("http://do/ws-ticket", { method: "POST", headers: { "X-Authenticated-Account-ID": accountId.replaceAll(/\s/g, "") } });
+	const { ticket: value } = (await ticket.json<{ ticket: string }>());
 	const response = await stub.fetch(new Request(`http://do/?ticket=${encodeURIComponent(value)}`, { headers: { Upgrade: "websocket", "Sec-WebSocket-Protocol": WS_PROTOCOL_V1 } }));
-	const ws = (response as unknown as { webSocket: WebSocket }).webSocket;
-	(ws as unknown as { accept(): void }).accept();
-	const doc = new Y.Doc();
+	const ws = response.webSocket;
+	if (!ws) { throw new Error("Expected WebSocket upgrade"); }
+	ws.accept();
+	const doc = new YDoc();
 	const synced: Array<() => void> = [];
 	ws.addEventListener("message", (event) => {
-		const message = decodeWsMessage(event.data as ArrayBuffer);
+		if (typeof event.data === "string") { throw new Error("Expected a binary frame"); }
+		const message = decodeWsMessage(event.data);
 		if (message?.type === "sync") {
-			Y.applyUpdate(doc, message.data, "server");
+			applyUpdate(doc, message.data, "server");
 			synced.splice(0).forEach((resolve) => resolve());
 		}
 	});
 	let outbox = 0;
 	doc.on("update", (update: Uint8Array, origin: unknown) => {
-		if (origin !== "server") ws.send(encodeDurableSyncSubmission(`person-${++outbox}`, update));
+		if (origin !== "server") {ws.send(encodeDurableSyncSubmission(`person-${++outbox}`, update));}
 	});
-	const nextSync = () => new Promise<void>((resolve) => synced.push(resolve));
+	const nextSync = () => new Promise<void>((resolve) => { synced.push(resolve); });
 	await nextSync(); // Initial state.
 	return { doc, ws, nextSync, markdown: () => columnBlocksToMarkdown(readColumnContent(doc).blocks) };
 }
@@ -72,15 +78,15 @@ async function connectPerson(columnId: string, accountId: string) {
  */
 async function settled(columnId: string, person: { markdown(): string }, text: string) {
 	for (let attempt = 0; attempt < 200; attempt++) {
-		if ((await markdownOf(columnId)).includes(text) && person.markdown().includes(text)) return;
-		await new Promise((resolve) => setTimeout(resolve, 5));
+		if ((await markdownOf(columnId)).includes(text) && person.markdown().includes(text)) {return;}
+		await Promise.resolve();
 	}
 	throw new Error(`Never settled on ${JSON.stringify(text)}: server ${JSON.stringify(await markdownOf(columnId))}, person ${JSON.stringify(person.markdown())}`);
 }
 
-function blockXml(doc: Y.Doc, id: string): Y.XmlText {
-	for (const op of columnContentRoot(doc).toDelta() as Array<{ insert: unknown }>) {
-		if (op.insert instanceof Y.XmlText && op.insert.getAttribute("id") === id) return op.insert;
+function blockXml(doc: YDoc, id: string): YXmlText {
+	for (const block of plateBlocks(doc)) {
+		if (block.getAttribute("id") === id) { return block; }
 	}
 	throw new Error(`no block ${id}`);
 }
@@ -113,13 +119,7 @@ describe.each(MCP_ERAS)("agent writes (%s protocol)", (era) => {
 	it("persists agent edits across a Durable Object restart", async () => {
 		const { columnId, token } = await setup();
 		result(await callTool(token, "set_checked", { columnId, itemId: "milkaaaaaa", checked: true }, opts));
-		const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
-		await runInDurableObject(stub, (instance) => {
-			// Reload from storage exactly as a fresh activation would.
-			const room = instance as unknown as { doc: Y.Doc; loadStateFromSql(): void };
-			room.doc = new Y.Doc();
-			room.loadStateFromSql();
-		});
+		await restartColumnRoom(columnId);
 		expect(await markdownOf(columnId)).toContain("- [x] Milk ^milkaaaaaa");
 	});
 
@@ -175,7 +175,7 @@ describe.each(MCP_ERAS)("agent writes (%s protocol)", (era) => {
 		expect(await markdownOf(columnId)).toBe("## Errands ^titleaaaaa\n- [x] Milk ^milkaaaaaa");
 		expect((await personUndo(owner.id, columnId, String(added.structuredContent!.changeId))).status).toBe(409);
 		const [, logged] = await listChanges(owner.id, columnId);
-		expect(logged).toMatchObject({ undoneBy: owner.id.replace(/\s/g, ""), undoResult: { restored: 1, kept: 0 } });
+		expect(logged).toMatchObject({ undoneBy: owner.id.replaceAll(/\s/g, ""), undoResult: { restored: 1, kept: 0 } });
 	});
 
 	it("shows each change as the items it added, changed and removed", async () => {
@@ -184,14 +184,13 @@ describe.each(MCP_ERAS)("agent writes (%s protocol)", (era) => {
 		result(await callTool(token, "set_checked", { columnId, itemId: "milkaaaaaa", checked: true }));
 		result(await callTool(token, "update_item", { columnId, itemId: "milkaaaaaa", find: "Milk", replaceWith: "Oat milk" }));
 		const version = String(result(await callTool(token, "read_column", { columnId })).structuredContent!.version);
-		result(await callTool(token, "delete_items", { columnId, itemIds: [String((added.structuredContent!.itemIds as string[])[0])], expectedVersion: version }));
+		result(await callTool(token, "delete_items", { columnId, itemIds: [z.array(z.string()).parse(added.structuredContent?.itemIds)[0]], expectedVersion: version }));
 		const [deleted, edited, checked, appended] = await listChanges(owner.id, columnId);
-		const milk = (text: string, isChecked: boolean) => ({ text, style: "todo", checked: isChecked, depth: 0 });
-		expect(appended!.diff).toEqual({ entries: [{ kind: "added", item: milk("Bread", false) }], omitted: 0 });
-		expect(checked!.diff.entries).toEqual([{ kind: "changed", before: milk("Milk", false), after: milk("Milk", true) }]);
+		expect(appended.diff).toEqual({ entries: [{ kind: "added", item: milk("Bread", false) }], omitted: 0 });
+		expect(checked.diff.entries).toEqual([{ kind: "changed", before: milk("Milk", false), after: milk("Milk", true) }]);
 		// The checkbox the earlier change ticked stays in view, unchanged.
-		expect(edited!.diff.entries).toEqual([{ kind: "changed", before: milk("Milk", true), after: milk("Oat milk", true) }]);
-		expect(deleted!.diff.entries).toEqual([{ kind: "removed", item: milk("Bread", false) }]);
+		expect(edited.diff.entries).toEqual([{ kind: "changed", before: milk("Milk", true), after: milk("Oat milk", true) }]);
+		expect(deleted.diff.entries).toEqual([{ kind: "removed", item: milk("Bread", false) }]);
 	});
 
 	it("does not log a no-op", async () => {
@@ -206,8 +205,8 @@ describe.each(MCP_ERAS)("agent writes (%s protocol)", (era) => {
 		const other = await createAgent(owner.id, "Other agent");
 		await setGrant(owner.id, other.agent.id, columnId, { level: "edit" });
 		const mine = result(await callTool(token, "append_items", { columnId, items: [{ text: "Mine" }] }, opts));
-		const changeId = String(mine.structuredContent!.changeId);
 
+		const changeId = String(mine.structuredContent!.changeId);
 		const foreign = result(await callTool(other.token, "undo_change", { columnId, changeId }, opts));
 		expect(foreign).toMatchObject({ isError: true, content: [{ text: "No change with that ID from this agent in this column." }] });
 		const own = result(await callTool(token, "undo_change", { columnId, changeId }, opts));
@@ -261,6 +260,11 @@ describe.each(MCP_ERAS)("agent writes (%s protocol)", (era) => {
 	});
 });
 
+const milk = (text: string, isChecked: boolean) => ({ text, style: "todo", checked: isChecked, depth: 0 });
+
+
+const changeId = (name: string) => `chg_${name.padEnd(22, "x")}`;
+
 describe("agent changes and column lifecycle", () => {
 	it("hides a column's agent changes from non-members", async () => {
 		const { columnId, token } = await setup();
@@ -284,20 +288,19 @@ describe("agent changes and column lifecycle", () => {
 	it("keeps the change log to 30 days and 1000 entries", async () => {
 		const { owner, columnId, token } = await setup();
 		const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
-		type Sql = { ctx: { storage: { sql: SqlStorage } } };
+
 		const count = () =>
-			runInDurableObject(stub, (instance) => (instance as unknown as Sql).ctx.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM agent_changes").one().n);
+			runInDurableObject(stub, (_instance, state) => state.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM agent_changes").one().n);
 		const seed = (rows: Array<{ id: string; createdAt: number }>) =>
-			runInDurableObject(stub, (instance) => {
+			runInDurableObject(stub, (_instance, state) => {
 				for (const row of rows)
-					(instance as unknown as Sql).ctx.storage.sql.exec(
+					{state.storage.sql.exec(
 						`INSERT INTO agent_changes (id, connection_id, account_id, agent_name, tool, required_level, summary, item_ids, undo, created_at)
 						 VALUES (?, ?, ?, 'Seed', 'append_items', 'append', 'seeded', '[]', '{}', ?)`,
-						row.id, `agt_${"seed".padEnd(22, "x")}`, owner.id.replace(/\s/g, ""), row.createdAt,
-					);
+						row.id, `agt_${"seed".padEnd(22, "x")}`, owner.id.replaceAll(/\s/g, ""), row.createdAt,
+					);}
 			});
 		// Seeded rows use well-formed IDs, since listing validates them.
-		const changeId = (name: string) => `chg_${name.padEnd(22, "x")}`;
 		const now = Date.now();
 		const day = 24 * 60 * 60 * 1000;
 		await seed([
@@ -309,9 +312,9 @@ describe("agent changes and column lifecycle", () => {
 		const added = result(await callTool(token, "append_items", { columnId, items: [{ text: "Bread" }] }));
 		expect(await count()).toBe(1000);
 		const newest = await listChanges(owner.id, columnId);
-		expect(newest[0]!.id).toBe(added.structuredContent!.changeId);
-		const ids = await runInDurableObject(stub, (instance) =>
-			(instance as unknown as Sql).ctx.storage.sql.exec<{ id: string }>("SELECT id FROM agent_changes").toArray().map((row) => row.id),
+		expect(newest[0].id).toBe(added.structuredContent!.changeId);
+		const ids = await runInDurableObject(stub, (_instance, state) =>
+			state.storage.sql.exec<{ id: string }>("SELECT id FROM agent_changes").toArray().map((row) => row.id),
 		);
 		expect(ids).not.toContain(changeId("expired"));
 		expect(ids).not.toContain(changeId("seed_0_"));
@@ -319,11 +322,11 @@ describe("agent changes and column lifecycle", () => {
 
 		// Compaction prunes expired entries even when no agent writes again, and
 		// below the row cap, so only the age rule can remove this one.
-		await runInDurableObject(stub, (instance) => (instance as unknown as Sql).ctx.storage.sql.exec("DELETE FROM agent_changes WHERE id LIKE 'chg_seed_1%'"));
+		await runInDurableObject(stub, (_instance, state) => state.storage.sql.exec("DELETE FROM agent_changes WHERE id LIKE 'chg_seed_1%'"));
 		const belowCap = await count();
 		expect(belowCap).toBeLessThan(1000);
 		await seed([{ id: changeId("expired_again"), createdAt: now - 31 * day }]);
-		await runInDurableObject(stub, (instance) => (instance as unknown as { alarm(): Promise<void> }).alarm());
+		await runDurableObjectAlarm(stub);
 		expect(await count()).toBe(belowCap);
 	});
 

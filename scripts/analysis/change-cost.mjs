@@ -17,9 +17,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const root = path.resolve(import.meta.dirname, "../..");
 const args = process.argv.slice(2);
 const asJson = args.includes("--json");
 const only = args.includes("--only") ? args[args.indexOf("--only") + 1] : null;
@@ -45,7 +44,7 @@ function inventory(family) {
 
 function siblingFiles(family, member) {
 	const entry = inventory(family).members.find((m) => m.member === member);
-	if (!entry) throw new Error(`Sibling ${family}:${member} not found in inventory`);
+	if (!entry) {throw new Error(`Sibling ${family}:${member} not found in inventory`);}
 	return entry.sites.map((site) => site.file);
 }
 
@@ -58,7 +57,7 @@ function applicableSeed(worktree, alternatives) {
 	return alternatives.find((seed) =>
 		Object.entries(seed).every(([file, edits]) => {
 			const absolute = path.join(worktree, file);
-			if (!existsSync(absolute)) return false;
+			if (!existsSync(absolute)) {return false;}
 			const text = readFileSync(absolute, "utf8");
 			return edits.every(([anchor]) => text.includes(anchor));
 		}),
@@ -171,7 +170,7 @@ function typecheck(worktree) {
 		});
 		for (const line of result.stdout.split("\n")) {
 			const match = /^(.+?)\((\d+),\d+\): error (TS\d+)/.exec(line);
-			if (!match) continue;
+			if (!match) {continue;}
 			const file = path.relative(worktree, path.resolve(worktree, match[1]));
 			const entries = flagged.get(file) ?? new Set();
 			entries.add(`${match[2]}:${match[3]}`);
@@ -183,24 +182,26 @@ function typecheck(worktree) {
 
 const area = (file) => (file.startsWith("src/") ? "src" : "other");
 
+const count = (set, where) => [...set].filter((file) => area(file) === where).length;
+
 function measure(worktree, scenario) {
 	execFileSync("git", ["checkout", "--quiet", "--", "."], { cwd: worktree });
 	// Footprint of the existing sibling, measured before the seed changes anything.
 	const siblings = scenario.siblings();
 	const seed = applicableSeed(worktree, scenario.seed);
-	if (!seed) throw new Error(`No seed for ${scenario.id} applies to this revision`);
+	if (!seed) {throw new Error(`No seed for ${scenario.id} applies to this revision`);}
 	const seedFiles = Object.keys(seed);
 	for (const [file, edits] of Object.entries(seed)) {
 		const absolute = path.join(worktree, file);
 		let text = readFileSync(absolute, "utf8");
-		for (const [anchor, addition] of edits) text = text.replace(anchor, anchor + addition);
+		for (const [anchor, addition] of edits) {text = text.replace(anchor, anchor + addition);}
 		writeFileSync(absolute, text);
 	}
 	const flagged = seedFiles.length ? typecheck(worktree) : new Map();
 	const guided = new Set([...flagged.keys()].filter((file) => !seedFiles.includes(file)));
 	const required = new Set([...siblings, ...guided].filter((file) => !seedFiles.includes(file)));
-	const silent = [...required].filter((file) => !guided.has(file)).sort();
-	const count = (set, where) => [...set].filter((file) => area(file) === where).length;
+	const silent = [...required].filter((file) => !guided.has(file)).sort((a, b) => a.localeCompare(b));
+
 	return {
 		id: scenario.id,
 		description: scenario.description,
@@ -210,7 +211,7 @@ function measure(worktree, scenario) {
 		silentSrc: silent.filter((file) => area(file) === "src").length,
 		requiredOther: count(required, "other"),
 		silentOther: silent.filter((file) => area(file) === "other").length,
-		guided: [...guided].sort().map((file) => ({ file, errors: flagged.get(file)?.size ?? 0 })),
+		guided: [...guided].sort((a, b) => a.localeCompare(b)).map((file) => ({ file, errors: flagged.get(file)?.size ?? 0 })),
 		silent,
 	};
 }
@@ -222,7 +223,7 @@ measuredRoot = worktree;
 
 let results;
 try {
-	results = scenarios.filter((s) => !only || s.id === only).map((scenario) => measure(worktree, scenario));
+	results = scenarios.values().filter((s) => !only || s.id === only).map((scenario) => measure(worktree, scenario)).toArray();
 } finally {
 	execFileSync("git", ["worktree", "remove", "--force", worktree], { cwd: root });
 	rmSync(worktree, { recursive: true, force: true });
@@ -241,7 +242,7 @@ if (asJson) {
 	for (const r of results) {
 		console.log(`\n## ${r.id}: ${r.description}`);
 		console.log(`   seed:   ${r.seedFiles.join(", ") || "(none: no single declaration to start from)"}`);
-		for (const g of r.guided) console.log(`   guided: ${g.file} (${g.errors} errors)`);
-		for (const s of r.silent) console.log(`   SILENT: ${s}`);
+		for (const g of r.guided) {console.log(`   guided: ${g.file} (${g.errors} errors)`);}
+		for (const s of r.silent) {console.log(`   SILENT: ${s}`);}
 	}
 }

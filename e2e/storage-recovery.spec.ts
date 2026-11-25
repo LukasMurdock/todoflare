@@ -1,3 +1,5 @@
+import { exhaustLocalStorage } from "./helpers/storage-quota";
+import { text } from "node:stream/consumers";
 import { expect, test } from "@playwright/test";
 import { createAccount, createColumn } from "./helpers/account-api";
 import { bootstrapAuthenticatedPage, ensureColumnExists } from "./helpers/ui-session";
@@ -18,7 +20,7 @@ test("preserves edits from two offline tabs after both close", async ({ browser,
 	await expect(editor(second)).toContainText("Baseline ");
 	await expect.poll(() => getYjsOutboxCountForColumn(first, accountId, columnId)).toBe(0);
 	await context.setOffline(true);
-	for (const page of [first, second]) await page.evaluate(() => window.dispatchEvent(new Event("offline")));
+	for (const page of [first, second]) {await page.evaluate(() => window.dispatchEvent(new Event("offline")));}
 	await editor(first).click(); await first.keyboard.type("First offline tab");
 	await editor(second).click(); await second.keyboard.type("Second offline tab");
 	await expect(editor(first)).toContainText("First offline tab");
@@ -28,7 +30,7 @@ test("preserves edits from two offline tabs after both close", async ({ browser,
 	await context.setOffline(false);
 	const reopened = await context.newPage();
 	await bootstrapAuthenticatedPage(reopened, accountId); await ensureColumnExists(reopened);
-	await expect(editor(reopened)).toContainText("First offline tab", { timeout: 20000 });
+	await expect(editor(reopened)).toContainText("First offline tab", { timeout: 20_000 });
 	await expect(editor(reopened)).toContainText("Second offline tab");
 	await context.close();
 });
@@ -44,14 +46,7 @@ test("pauses guest editing on quota failure and exports the unsaved content", as
 	// the unsaved text rather than an id-only normalization.
 	await editor.click(); await page.keyboard.insertText("Retain ");
 	await expect.poll(() => page.evaluate(() => localStorage.getItem("todoflare-columns") ?? "")).toContain("Retain ");
-	await page.evaluate(() => {
-		const original = Storage.prototype.setItem;
-		(window as unknown as { restoreStorage: () => void }).restoreStorage = () => { Storage.prototype.setItem = original; };
-		Storage.prototype.setItem = function (key, value) {
-			if (key === "todoflare-columns") throw new DOMException("Quota full", "QuotaExceededError");
-			original.call(this, key, value);
-		};
-	});
+	await page.evaluate(exhaustLocalStorage);
 	await page.keyboard.insertText("unsaved guest content");
 	await expect(page.getByRole("alert")).toContainText("Editing paused");
 	await expect(editor).toHaveAttribute("contenteditable", "false");
@@ -59,10 +54,13 @@ test("pauses guest editing on quota failure and exports the unsaved content", as
 	await page.getByRole("button", { name: "Download recovery copy" }).click();
 	const download = await downloadPromise;
 	const stream = await download.createReadStream();
-	let contents = "";
-	for await (const chunk of stream!) contents += chunk.toString();
+	const contents = await text(stream);
 	expect(contents).toContain("Retain unsaved guest content");
-	await page.evaluate(() => (window as unknown as { restoreStorage: () => void }).restoreStorage());
+	await page.evaluate(() => {
+		for (const key of Object.keys(localStorage)) {
+			if (key.startsWith("quota-fixture-")) {localStorage.removeItem(key);}
+		}
+	});
 	await page.getByRole("button", { name: "Retry saving" }).click();
 	await expect(page.getByRole("alert")).toHaveCount(0);
 	await expect(editor).toHaveAttribute("contenteditable", "true");

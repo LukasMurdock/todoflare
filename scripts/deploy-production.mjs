@@ -8,7 +8,7 @@ const configPath = 'dist/todoflare_prod/wrangler.json';
 const c = JSON.parse(await readFile(configPath, 'utf8'));
 assert.equal(c.name, 'todoflare-prod');
 assert.equal(c.account_id, '8818a1fbe40a0fdc63ec6ab52cb62e3b');
-for (const binding of ['kv_namespaces', 'd1_databases', 'r2_buckets']) assert.equal(c[binding].length, 1);
+for (const binding of ['kv_namespaces', 'd1_databases', 'r2_buckets']) {assert.equal(c[binding].length, 1);}
 assert.equal(c.vars.ENVIRONMENT, 'production');
 assert.equal(c.vars.AUTH_ORIGIN, 'https://todo.tamesystems.org');
 assert.equal(c.vars.AUTH_RP_ID, 'todo.tamesystems.org');

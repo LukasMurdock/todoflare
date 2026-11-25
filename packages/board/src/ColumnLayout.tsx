@@ -1,6 +1,6 @@
 "use client";
 
-import * as React from "react";
+import React from "react";
 import type { Value } from "platejs";
 import type { BoardColumn } from "./types";
 import { TodoColumn } from "./TodoColumn";
@@ -10,7 +10,7 @@ interface ColumnLayoutProps {
 	/** "loading" renders no columns and no add button until the host knows which columns exist. */
 	status?: "loading" | "ready";
 	layout?: "fill" | "page";
-	columns: readonly BoardColumn[];
+	columns: ReadonlyArray<BoardColumn>;
 	onAdd?: () => void;
 	onRemove?: (column: BoardColumn) => void;
 	onToggleCollapse?: (column: BoardColumn) => void;

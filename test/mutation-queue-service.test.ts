@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-	createAccountEditCommand,
-	type AccountCommandPayloadMap,
-	type AccountCommandType,
-	type AccountEditCommand,
-} from "../src/lib/sync/contracts";
+import { createAccountEditCommand } from '../src/lib/sync/contracts';
+import type { AccountCommandPayloadMap, AccountCommandType, AccountEditCommand } from '../src/lib/sync/contracts';
 import {
 	createLocalFirstMutationQueueStorage,
 	LocalMutationQueueService,
@@ -34,7 +30,7 @@ describe("LocalMutationQueueService", () => {
 			calls++;
 			return calls === 1 ? { kind: "ack" } : { kind: "authentication_required" };
 		} });
-		for (let index = 0; index < 3; index++) await queue.enqueue(makeCommand("column.create", { columnId: crypto.randomUUID() }, index));
+		for (let index = 0; index < 3; index++) {await queue.enqueue(makeCommand("column.create", { columnId: crypto.randomUUID() }, index));}
 		const before = storage.read();
 		const report = await queue.replay({ accountId: "1111111111111111" });
 		expect(report).toMatchObject({ attempted: 2, acked: 1, dropped: 0, authenticationRequired: true });
@@ -45,7 +41,7 @@ describe("LocalMutationQueueService", () => {
 	});
 
 	it("replays commands in FIFO order by createdAt", async () => {
-		const order: string[] = [];
+		const order: Array<string> = [];
 		const queue = new LocalMutationQueueService({
 			executor: async (mutation) => {
 				if (mutation.opType === "column.reorder") {
@@ -215,7 +211,7 @@ describe("LocalMutationQueueService", () => {
 		};
 		const swappedStorage = createMemoryMutationQueueStorage([persistedMutation]);
 
-		let latestQueueIds: string[] = [];
+		let latestQueueIds: Array<string> = [];
 		const subscription = queue.pending$().subscribe((pending) => {
 			latestQueueIds = pending.map((mutation) => mutation.queueId);
 		});
@@ -250,7 +246,7 @@ describe("LocalMutationQueueService", () => {
 				syncState: new Map(),
 				quarantine: new Map(),
 			},
-			getStorageHealth: () => ({ state: "durable", lastError: null }),
+			getStorageHealth: () => ({ state: "durable" as const, lastError: null }),
 			subscribeStorageHealth() {
 				return () => {};
 			},
@@ -258,7 +254,7 @@ describe("LocalMutationQueueService", () => {
 			async close() {
 				return;
 			},
-		} as unknown as LocalFirstDatabase;
+		} satisfies LocalFirstDatabase;
 
 		const storage = createLocalFirstMutationQueueStorage(db);
 		const queuedMutation = {

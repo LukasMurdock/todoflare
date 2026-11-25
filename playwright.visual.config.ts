@@ -33,7 +33,7 @@ export default defineConfig({
 		command: "pnpm e2e:serve",
 		url: "http://127.0.0.1:4173",
 		reuseExistingServer: false,
-		timeout: 120000,
+		timeout: 120_000,
 	},
 	projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 } }],
 });

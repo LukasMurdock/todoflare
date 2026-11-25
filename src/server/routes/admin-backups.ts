@@ -1,7 +1,7 @@
 import { restoreAccountBackup } from "../workflows/restore-account-backup";
 import { createAccountBackup, readAccountBackup } from "../account-backup";
 import { latestColumnBackupKey, listColumnBackups } from "../backup-catalog";
-import { type Context } from "hono";
+import type { Context } from 'hono';
 import { z } from "zod";
 import type { ColumnMeta } from "../../types/account";
 import { normalizeAccountId, displayAccountId } from "../../lib/account";
@@ -11,7 +11,7 @@ import { cloneColumnSnapshot } from "../workflows/clone-column-snapshot";
 import { restoreColumnBackup } from "../workflows/restore-column-backup";
 import { accountRecordStore } from "../account-record-store";
 import { isReadOnlyMode } from "../read-only-mode";
-import { type Bindings } from "../bindings";
+import type { Bindings } from '../bindings';
 import { apiErrorResponse, schemaErrorResponse } from "../http/responses";
 import { columnPathSchema, validateJsonBody, validateRequestInput } from "../http/request-validation";
 import {
@@ -26,13 +26,13 @@ import {
 } from "../column-backups";
 import type { App } from "../bindings";
 
-export function requireBackupAdmin(c: Context<{ Bindings: Bindings }>): Response | null {
+export function requireBackupAdmin(c: Context<{ Bindings: Bindings }>): { bucket: R2Bucket } | { error: Response } {
 	if (!c.env.BACKUPS) {
-		return c.json({ error: "backup_not_configured" }, 503);
+		return { error: c.json({ error: "backup_not_configured" }, 503) };
 	}
 
 	if (!c.env.BACKUP_ADMIN_TOKEN) {
-		return c.json({ error: "backup_auth_not_configured" }, 503);
+		return { error: c.json({ error: "backup_auth_not_configured" }, 503) };
 	}
 
 	const parsedAuthHeader = z
@@ -44,10 +44,10 @@ export function requireBackupAdmin(c: Context<{ Bindings: Bindings }>): Response
 		: null;
 
 	if (!token || token !== c.env.BACKUP_ADMIN_TOKEN) {
-		return c.json({ error: "unauthorized" }, 401);
+		return { error: c.json({ error: "unauthorized" }, 401) };
 	}
 
-	return null;
+	return { bucket: c.env.BACKUPS };
 }
 
 export const backupListQuerySchema = z
@@ -65,59 +65,59 @@ export const accountAdminBodySchema = z.object({ accountId: accountIdContractSch
 
 export function registerAdminBackupRoutes(app: App) {
 	app.get("/api/admin/backups/status", async (c) => {
-		const authError = requireBackupAdmin(c);
-		if (authError) return authError;
-		const state = await c.env.BACKUPS!.get("backup-state.json");
+		const admin = requireBackupAdmin(c);
+		if ("error" in admin) {return admin.error;}
+		const state = await admin.bucket.get("backup-state.json");
 		return c.json({ automaticBackupsEnabled: isAutoBackupEnabled(c.env), lastRun: state ? await state.json() : null });
 	});
 
 	// Private export endpoints let an independent machine retain verified copies
 	// without relying on continued access to the Cloudflare account.
 	app.get("/api/admin/backups/objects", async (c) => {
-		const authError = requireBackupAdmin(c);
-		if (authError) return authError;
-		const page = await c.env.BACKUPS!.list({ limit: 1000, cursor: c.req.query("cursor") });
+		const admin = requireBackupAdmin(c);
+		if ("error" in admin) {return admin.error;}
+		const page = await admin.bucket.list({ limit: 1000, cursor: c.req.query("cursor") });
 		return c.json({ objects: page.objects.map(object => ({ key: object.key, size: object.size })), truncated: page.truncated, cursor: page.truncated ? page.cursor : null }, 200, { "Cache-Control": "private, no-store" });
 	});
 
 	app.get("/api/admin/backups/download", async (c) => {
-		const authError = requireBackupAdmin(c);
-		if (authError) return authError;
+		const admin = requireBackupAdmin(c);
+		if ("error" in admin) {return admin.error;}
 		const key = c.req.query("key");
-		if (!key) return c.json({ error: "missing_key" }, 400);
-		const object = await c.env.BACKUPS!.get(key);
-		if (!object) return c.json({ error: "not_found" }, 404);
+		if (!key) {return c.json({ error: "missing_key" }, 400);}
+		const object = await admin.bucket.get(key);
+		if (!object) {return c.json({ error: "not_found" }, 404);}
 		return new Response(object.body, { headers: { "Content-Type": "application/json", "Cache-Control": "private, no-store" } });
 	});
 
 	// Authenticated manual execution provides a verifiable first backup immediately
 	// after a release. It copies data only; scheduled maintenance remains frozen.
 	app.post("/api/admin/backups/run", async (c) => {
-		const authError = requireBackupAdmin(c);
-		if (authError) return authError;
+		const admin = requireBackupAdmin(c);
+		if ("error" in admin) {return admin.error;}
 		return c.json(await runScheduledBackups(c.env));
 	});
 
 	app.post("/api/admin/backups/account", async (c) => {
-		const authError = requireBackupAdmin(c);
-		if (authError) return authError;
+		const admin = requireBackupAdmin(c);
+		if ("error" in admin) {return admin.error;}
 		const body = await validateJsonBody(c, accountAdminBodySchema);
-		if (!body.ok) return body.response;
+		if (!body.ok) {return body.response;}
 		const accountId = normalizeAccountId(body.data.accountId);
 		// Only this account's registered columns: scanning every account made one
 		// account's backup cost grow with the whole system.
 		const registered = await collectRegisteredColumns(c.env);
 		const record = await accountRecordStore(c.env).get(`account:${accountId}`);
-		if (!record) return c.json({ error: "account_not_found" }, 404);
+		if (!record) {return c.json({ error: "account_not_found" }, 404);}
 		const parsed = parseAccountRecord(record);
 		const trash = parseDeletedColumnRecords(await accountRecordStore(c.env).get(`trash:${accountId}`));
-		if (!parsed.ok || !trash.ok) return c.json({ error: "account_invalid" }, 400);
+		if (!parsed.ok || !trash.ok) {return c.json({ error: "account_invalid" }, 400);}
 		for (const columnId of new Set([...parsed.value.columnOrder, ...trash.value.map(row => row.columnId), ...(registered.columnsByOwner.get(accountId) ?? [])])) {
 			const column = await createColumnBackupSnapshot(c.env, columnId);
-			if (column.checksum === "raw-recovery-source") return c.json({ error: "column_corrupt", columnId }, 503);
+			if (column.checksum === "raw-recovery-source") {return c.json({ error: "column_corrupt", columnId }, 503);}
 		}
 		const snapshot = await createAccountBackup(c.env, accountId, registered.columnsByOwner.get(accountId));
-		if (!snapshot) return c.json({ error: "account_not_found" }, 404);
+		if (!snapshot) {return c.json({ error: "account_not_found" }, 404);}
 		return c.json({ success: true, key: snapshot.key, columnIds: snapshot.payload.columnIds });
 	});
 
@@ -125,18 +125,18 @@ export function registerAdminBackupRoutes(app: App) {
 	 * Restore all owned columns for an account from latest backups
 	 */
 	app.post("/api/admin/backups/account/restore", async (c) => {
-		const authError = requireBackupAdmin(c);
-		if (authError) return authError;
-		if (!isReadOnlyMode(c.env)) return c.json({ error: "maintenance_mode_required" }, 409);
+		const admin = requireBackupAdmin(c);
+		if ("error" in admin) {return admin.error;}
+		if (!isReadOnlyMode(c.env)) {return c.json({ error: "maintenance_mode_required" }, 409);}
 		const body = await validateJsonBody(c, accountAdminBodySchema);
-		if (!body.ok) return body.response;
+		if (!body.ok) {return body.response;}
 		const accountId = body.data.accountId;
 
 		const normalizedId = normalizeAccountId(accountId);
 		try {
 			const backup = await readAccountBackup(c.env, normalizedId, body.data.key);
-			if (backup) return c.json(await restoreAccountBackup(c.env, backup,
-				columnId => createPreRestoreColumnBackup(c.env, columnId)));
+			if (backup) {return c.json(await restoreAccountBackup(c.env, backup,
+				columnId => createPreRestoreColumnBackup(c.env, columnId)));}
 		} catch (error) {
 			return c.json({ error: "account_recovery_failed", detail: error instanceof Error ? error.message : "unknown" }, 500);
 		}
@@ -151,23 +151,23 @@ export function registerAdminBackupRoutes(app: App) {
 		}
 
 		const account = parsedAccount.value;
-		const restoredColumns: string[] = [];
-		const missingBackups: string[] = [];
-		const failedColumns: string[] = [];
-		const restoredMetas: ColumnMeta[] = [];
+		const restoredColumns: Array<string> = [];
+		const missingBackups: Array<string> = [];
+		const failedColumns: Array<string> = [];
+		const restoredMetas: Array<ColumnMeta> = [];
 		const failures: Array<{ columnId: string; key: string; code: string }> = [];
 
 		for (const columnId of account.columnOrder) {
 			let latestKey = "";
 			try {
-				latestKey = (await latestColumnBackupKey(c.env.BACKUPS!, columnId)) ?? "";
+				latestKey = (await latestColumnBackupKey(admin.bucket, columnId)) ?? "";
 
 				if (!latestKey) {
 					missingBackups.push(columnId);
 					continue;
 				}
 
-				const object = await c.env.BACKUPS!.get(latestKey);
+				const object = await admin.bucket.get(latestKey);
 				if (!object) {
 					missingBackups.push(columnId);
 					continue;
@@ -220,16 +220,16 @@ export function registerAdminBackupRoutes(app: App) {
 	 */
 	app.get("/api/admin/backups/column/:id", async (c) => {
 		const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
-		if (!path.ok) return path.response;
+		if (!path.ok) {return path.response;}
 		const query = validateRequestInput(c, backupListQuerySchema, {
 			limit: c.req.query("limit"),
 		});
-		if (!query.ok) return query.response;
-		const authError = requireBackupAdmin(c);
-		if (authError) return authError;
+		if (!query.ok) {return query.response;}
+		const admin = requireBackupAdmin(c);
+		if ("error" in admin) {return admin.error;}
 		const columnId = path.data.id;
 		const limit = query.data.limit;
-		const listed = await listColumnBackups(c.env.BACKUPS!, columnId);
+		const listed = await listColumnBackups(admin.bucket, columnId);
 
 		const objects = listed.slice(0, limit)
 			.map((obj) => ({
@@ -253,9 +253,9 @@ export function registerAdminBackupRoutes(app: App) {
 		const request = validateRequestInput(c, columnPathSchema, {
 			id: c.req.param("id"),
 		});
-		if (!request.ok) return request.response;
-		const authError = requireBackupAdmin(c);
-		if (authError) return authError;
+		if (!request.ok) {return request.response;}
+		const admin = requireBackupAdmin(c);
+		if ("error" in admin) {return admin.error;}
 		const columnId = request.data.id;
 		try {
 			const { key, snapshotAt, checksum } = await createColumnBackupSnapshot(
@@ -278,27 +278,27 @@ export function registerAdminBackupRoutes(app: App) {
 	 */
 	app.post("/api/admin/backups/column/:id/restore", async (c) => {
 		const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
-		if (!path.ok) return path.response;
+		if (!path.ok) {return path.response;}
 		const body = await validateJsonBody(c, backupRestoreBodySchema, {
 			optional: true,
 		});
-		if (!body.ok) return body.response;
-		const authError = requireBackupAdmin(c);
-		if (authError) return authError;
+		if (!body.ok) {return body.response;}
+		const admin = requireBackupAdmin(c);
+		if ("error" in admin) {return admin.error;}
 		const columnId = path.data.id;
 		const mode = body.data.mode ?? "clone";
-		if (mode === "in_place" && !isReadOnlyMode(c.env)) return c.json({ error: "maintenance_mode_required" }, 409);
+		if (mode === "in_place" && !isReadOnlyMode(c.env)) {return c.json({ error: "maintenance_mode_required" }, 409);}
 
 		let key = body.data.key;
 		if (!key) {
-			const latest = await latestColumnBackupKey(c.env.BACKUPS!, columnId);
+			const latest = await latestColumnBackupKey(admin.bucket, columnId);
 			if (!latest) {
 				return c.json({ error: "backup_not_found" }, 404);
 			}
 			key = latest;
 		}
 
-		const object = await c.env.BACKUPS!.get(key);
+		const object = await admin.bucket.get(key);
 		if (!object) {
 			return c.json({ error: "backup_not_found" }, 404);
 		}

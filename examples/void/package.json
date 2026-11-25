@@ -4,7 +4,7 @@
 	"type": "module",
 	"scripts": {
 		"prepare-board": "node ../../packages/board/build-css.mjs && pnpm install --prefer-offline",
-		"dev": "pnpm prepare-board && vite dev --port 4280 --strictPort",
+		"dev": "pnpm prepare-board && vite dev --force --port 4280 --strictPort",
 		"build": "pnpm prepare-board && vite build"
 	},
 	"dependencies": {

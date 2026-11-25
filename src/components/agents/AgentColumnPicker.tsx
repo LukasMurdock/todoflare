@@ -1,4 +1,5 @@
-import { AGENT_GRANT_LEVELS, type AgentGrantLevel, type GrantableColumn } from "@/lib/api/agent-contract";
+import { AGENT_GRANT_LEVELS } from '@/lib/api/agent-contract';
+import type { AgentGrantLevel, GrantableColumn } from '@/lib/api/agent-contract';
 import { AGENT_LEVEL_LABELS } from "@/lib/agents/agents-api";
 import { Columns3 } from "lucide-react";
 import { NativeSelect } from "@/components/ui/native-select";
@@ -6,15 +7,15 @@ import { cn } from "@/lib/utils";
 import { AgentLevelSelect, levelDot } from "./AgentLevelSelect";
 
 interface AgentColumnPickerProps {
-	columns: GrantableColumn[] | null;
+	columns: Array<GrantableColumn> | null;
 	levels: Record<string, AgentGrantLevel>;
-	onChange(levels: Record<string, AgentGrantLevel>): void;
+	onChange: (levels: Record<string, AgentGrantLevel>) => void;
 	disabled?: boolean;
 }
 
 /** The level every column shares, "none" when none has access, or null when they differ. */
-function sharedLevel(columns: GrantableColumn[], levels: Record<string, AgentGrantLevel>): AgentGrantLevel | "none" | null {
-	const first = levels[columns[0]!.columnId] ?? "none";
+function sharedLevel(columns: Array<GrantableColumn>, levels: Record<string, AgentGrantLevel>): AgentGrantLevel | "none" | null {
+	const first = levels[columns[0].columnId] ?? "none";
 	return columns.every((column) => (levels[column.columnId] ?? "none") === first) ? first : null;
 }
 
@@ -58,9 +59,9 @@ export function AgentColumnPicker({ columns, levels, onChange, disabled }: Agent
 							className="w-full bg-background"
 							disabled={disabled}
 							onChange={(event) => {
-								const level = event.target.value;
-								if (level === "mixed") return;
-								onChange(level === "none" ? {} : Object.fromEntries(columns.map((column) => [column.columnId, level as AgentGrantLevel])));
+								if (event.target.value === "none") { onChange({}); return; }
+								const level = AGENT_GRANT_LEVELS.find((item) => item === event.target.value);
+								if (level) { onChange(Object.fromEntries(columns.map((column) => [column.columnId, level]))); }
 							}}
 						>
 							<option value="mixed" disabled>
@@ -91,8 +92,8 @@ export function AgentColumnPicker({ columns, levels, onChange, disabled }: Agent
 									disabled={disabled}
 									onChange={(level) => {
 										const next = { ...levels };
-										if (level) next[column.columnId] = level;
-										else delete next[column.columnId];
+										if (level) {next[column.columnId] = level;}
+										else {delete next[column.columnId];}
 										onChange(next);
 									}}
 								/>

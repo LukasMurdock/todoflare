@@ -1,37 +1,27 @@
+import { accountContractSchema } from "../src/lib/api/account-contract";
+import { z } from "zod";
 import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import {
-	deleteColumn,
-	type DeleteColumnWriteBoundary,
-} from "../src/server/workflows/delete-column";
-import {
-	restoreColumn,
-	type RestoreColumnWriteBoundary,
-} from "../src/server/workflows/restore-column";
-import {
-	shareColumn as shareColumnWorkflow,
-	type ShareColumnWriteBoundary,
-} from "../src/server/workflows/share-column";
-import {
-	enablePublicColumn,
-	type EnablePublicColumnWriteBoundary,
-} from "../src/server/workflows/enable-public-column";
-import {
-	revokeColumnShare,
-	type RevokeColumnShareWriteBoundary,
-} from "../src/server/workflows/revoke-column-share";
-import {
-	disablePublicColumn,
-	type DisablePublicColumnWriteBoundary,
-} from "../src/server/workflows/disable-public-column";
+import { deleteColumn } from '../src/server/workflows/delete-column';
+import type { DeleteColumnWriteBoundary } from '../src/server/workflows/delete-column';
+import { restoreColumn } from '../src/server/workflows/restore-column';
+import type { RestoreColumnWriteBoundary } from '../src/server/workflows/restore-column';
+import { shareColumn as shareColumnWorkflow } from '../src/server/workflows/share-column';
+import type { ShareColumnWriteBoundary } from '../src/server/workflows/share-column';
+import { enablePublicColumn } from '../src/server/workflows/enable-public-column';
+import type { EnablePublicColumnWriteBoundary } from '../src/server/workflows/enable-public-column';
+import { revokeColumnShare } from '../src/server/workflows/revoke-column-share';
+import type { RevokeColumnShareWriteBoundary } from '../src/server/workflows/revoke-column-share';
+import { disablePublicColumn } from '../src/server/workflows/disable-public-column';
+import type { DisablePublicColumnWriteBoundary } from '../src/server/workflows/disable-public-column';
 import type { Account, ColumnMeta } from "../src/types/account";
 
-function accountHeaders(accountId: string): Record<string, string> {
-	return { "X-Todoflare-Test-Account": accountId.replace(/\D/g, "") };
+function accountHeaders(accountId: string) {
+	return { "X-Todoflare-Test-Account": accountId.replaceAll(/\D/g, "") };
 }
 
 function normalizeAccountId(id: string): string {
-	return id.replace(/\D/g, "");
+	return id.replaceAll(/\D/g, "");
 }
 
 async function createAccount(): Promise<string> {
@@ -41,7 +31,7 @@ async function createAccount(): Promise<string> {
 		headers: { "X-Forwarded-For": syntheticIp },
 	});
 	expect(response.ok).toBe(true);
-	return ((await response.json()) as { account: Account }).account.id;
+	return ((await response.json<{ account: Account }>())).account.id;
 }
 
 async function createColumn(accountId: string): Promise<string> {
@@ -49,12 +39,12 @@ async function createColumn(accountId: string): Promise<string> {
 		method: "POST",
 		headers: {
 			"Content-Type": "application/json",
-			"X-Todoflare-Test-Account": accountId.replace(/\D/g, ""),
+			"X-Todoflare-Test-Account": accountId.replaceAll(/\D/g, ""),
 		},
 		body: JSON.stringify({}),
 	});
 	expect(response.ok).toBe(true);
-	return ((await response.json()) as { column: ColumnMeta }).column.id;
+	return ((await response.json<{ column: ColumnMeta }>())).column.id;
 }
 
 async function shareColumn(
@@ -82,7 +72,7 @@ async function enablePublic(ownerId: string, columnId: string): Promise<string> 
 		{ method: "POST", headers: accountHeaders(ownerId) },
 	);
 	expect(response.ok).toBe(true);
-	return ((await response.json()) as { publicId: string }).publicId;
+	return ((await response.json<{ publicId: string }>())).publicId;
 }
 
 async function routeDelete(ownerId: string, columnId: string): Promise<void> {
@@ -96,14 +86,14 @@ async function routeDelete(ownerId: string, columnId: string): Promise<void> {
 async function loadAccount(accountId: string): Promise<Account> {
 	const raw = await env.ACCOUNTS.get(`account:${normalizeAccountId(accountId)}`);
 	expect(raw).not.toBeNull();
-	return JSON.parse(raw as string) as Account;
+	return accountContractSchema.parse(JSON.parse(raw ?? "null"));
 }
 
 async function loadMeta(columnId: string): Promise<ColumnMeta> {
 	const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
 	const response = await stub.fetch(new Request("http://do/meta"));
 	expect(response.ok).toBe(true);
-	return (await response.json()) as ColumnMeta;
+	return (await response.json<ColumnMeta>());
 }
 
 describe("deleteColumn lifecycle workflow", () => {
@@ -181,15 +171,15 @@ describe("deleteColumn lifecycle workflow", () => {
 			const sharedRaw = await env.ACCOUNTS.get(
 				`shared:${normalizeAccountId(collaboratorId)}`,
 			);
-			expect(JSON.parse(sharedRaw ?? "[]") as string[]).not.toContain(columnId);
+			expect(z.array(z.string()).parse(JSON.parse(sharedRaw ?? "[]"))).not.toContain(columnId);
 			expect(await env.ACCOUNTS.get(`public:${publicId}`)).toBeNull();
 
 			const meta = await loadMeta(columnId);
 			expect(meta.sharedWith).toEqual([]);
 			expect(meta.publicId).toBeNull();
-			const trash = JSON.parse(
+			const trash = z.array(z.object({ columnId: z.string(), deletedAt: z.number() })).parse(JSON.parse(
 				(await env.ACCOUNTS.get(`trash:${normalizeAccountId(ownerId)}`)) ?? "[]",
-			) as Array<{ columnId: string; deletedAt: number }>;
+			));
 			expect(trash).toContainEqual({ columnId, deletedAt: fixedNow });
 		});
 	}
@@ -227,13 +217,13 @@ describe("restoreColumn lifecycle workflow", () => {
 				body: JSON.stringify({ key: trashKey }),
 			}),
 		);
-		expect(((await rawResponse.json()) as { value: string }).value).toBe("{");
+		expect(((await rawResponse.json<{ value: string }>())).value).toBe("{");
 	});
 
 	for (const boundary of [
 		"owner-account",
 		"trash",
-	] satisfies RestoreColumnWriteBoundary[]) {
+	] satisfies Array<RestoreColumnWriteBoundary>) {
 		it(`repairs a failure after the ${boundary} write`, async () => {
 			const ownerId = await createAccount();
 			const columnId = await createColumn(ownerId);
@@ -264,9 +254,9 @@ describe("restoreColumn lifecycle workflow", () => {
 
 			const owner = await loadAccount(ownerId);
 			expect(owner.columnOrder.filter((id) => id === columnId)).toHaveLength(1);
-			const trash = JSON.parse(
+			const trash = z.array(z.object({ columnId: z.string() })).parse(JSON.parse(
 				(await env.ACCOUNTS.get(`trash:${normalizeAccountId(ownerId)}`)) ?? "[]",
-			) as Array<{ columnId: string }>;
+			));
 			expect(trash.some((entry) => entry.columnId === columnId)).toBe(false);
 		});
 	}
@@ -276,7 +266,7 @@ describe("shareColumn lifecycle workflow", () => {
 	for (const boundary of [
 		"column-shares",
 		"shared-account",
-	] satisfies ShareColumnWriteBoundary[]) {
+	] satisfies Array<ShareColumnWriteBoundary>) {
 		it(`repairs a failure after the ${boundary} write`, async () => {
 			const ownerId = await createAccount();
 			const collaboratorId = await createAccount();
@@ -310,11 +300,11 @@ describe("shareColumn lifecycle workflow", () => {
 					(id) => normalizeAccountId(id) === normalizeAccountId(collaboratorId),
 				),
 			).toHaveLength(1);
-			const shared = JSON.parse(
+			const shared = z.array(z.string()).parse(JSON.parse(
 				(await env.ACCOUNTS.get(
 					`shared:${normalizeAccountId(collaboratorId)}`,
 				)) ?? "[]",
-			) as string[];
+			));
 			expect(shared.filter((id) => id === columnId)).toHaveLength(1);
 		});
 	}
@@ -331,7 +321,11 @@ describe("enablePublicColumn lifecycle workflow", () => {
 			env,
 			columnId,
 			accountId: ownerId,
-			createPublicId: () => candidates.shift() as string,
+			createPublicId: () => {
+				const next = candidates.shift();
+				if (!next) { throw new Error("Candidate list exhausted"); }
+				return next;
+			},
 		});
 
 		expect(result).toEqual({ ok: true, value: { publicId: "Available" } });
@@ -361,7 +355,7 @@ describe("enablePublicColumn lifecycle workflow", () => {
 	for (const boundary of [
 		"column-public",
 		"public-mapping",
-	] satisfies EnablePublicColumnWriteBoundary[]) {
+	] satisfies Array<EnablePublicColumnWriteBoundary>) {
 		it(`repairs a failure after the ${boundary} write without rotating the link`, async () => {
 			const ownerId = await createAccount();
 			const columnId = await createColumn(ownerId);
@@ -401,7 +395,7 @@ describe("revokeColumnShare lifecycle workflow", () => {
 	for (const boundary of [
 		"column-shares",
 		"shared-account",
-	] satisfies RevokeColumnShareWriteBoundary[]) {
+	] satisfies Array<RevokeColumnShareWriteBoundary>) {
 		it(`repairs a failure after the ${boundary} write`, async () => {
 			const ownerId = await createAccount();
 			const collaboratorId = await createAccount();
@@ -433,11 +427,11 @@ describe("revokeColumnShare lifecycle workflow", () => {
 				value: { success: true, sharedWith: [] },
 			});
 			expect((await loadMeta(columnId)).sharedWith).toEqual([]);
-			const shared = JSON.parse(
+			const shared = z.array(z.string()).parse(JSON.parse(
 				(await env.ACCOUNTS.get(
 					`shared:${normalizeAccountId(collaboratorId)}`,
 				)) ?? "[]",
-			) as string[];
+			));
 			expect(shared).not.toContain(columnId);
 		});
 	}
@@ -447,7 +441,7 @@ describe("disablePublicColumn lifecycle workflow", () => {
 	for (const boundary of [
 		"public-mapping",
 		"column-public",
-	] satisfies DisablePublicColumnWriteBoundary[]) {
+	] satisfies Array<DisablePublicColumnWriteBoundary>) {
 		it(`repairs a failure after the ${boundary} write`, async () => {
 			const ownerId = await createAccount();
 			const columnId = await createColumn(ownerId);

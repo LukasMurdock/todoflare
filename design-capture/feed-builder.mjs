@@ -60,12 +60,13 @@ export async function computeHillClimbDiffs(browser, { runDir, compareDir, shots
 			}
 			const baseImgAbs = path.join(compareDir, base.image);
 			const curImgAbs = path.join(runDir, shot.image);
-			if (!fs.existsSync(baseImgAbs) || !fs.existsSync(curImgAbs)) continue;
+			if (!fs.existsSync(baseImgAbs) || !fs.existsSync(curImgAbs)) {continue;}
 
 			const baseDataUrl = `data:image/png;base64,${fs.readFileSync(baseImgAbs).toString("base64")}`;
 			const curDataUrl = `data:image/png;base64,${fs.readFileSync(curImgAbs).toString("base64")}`;
 
 			const result = await page.evaluate(async ([bUrl, cUrl]) => {
+				// oxlint-disable-next-line unicorn/consistent-function-scoping -- Playwright serializes this callback into the browser.
 				const load = (src) =>
 					new Promise((res, rej) => {
 						const img = new Image();
@@ -127,7 +128,7 @@ export async function computeHillClimbDiffs(browser, { runDir, compareDir, shots
 			const relBaseline = path.relative(runDir, baseImgAbs).split(path.sep).join("/");
 			let relDiff = null;
 			if (result.diffPngBase64) {
-				const diffFile = `${shot.key.replace(/[^a-zA-Z0-9._-]/g, "_")}.diff.png`;
+				const diffFile = `${shot.key.replaceAll(/[^a-zA-Z0-9._-]/g, "_")}.diff.png`;
 				fs.writeFileSync(path.join(diffDir, diffFile), Buffer.from(result.diffPngBase64, "base64"));
 				relDiff = `diffs/${diffFile}`;
 			}
@@ -161,7 +162,7 @@ export async function buildContactSheets(browser, { runDir, shots }) {
 	}
 
 	const groups = [];
-	for (const [cat, list] of byCategory) groups.push({ name: cat, list });
+	for (const [cat, list] of byCategory) {groups.push({ name: cat, list });}
 	if (shots.length > 1 && byCategory.size > 1) {
 		// Also produce an "all" overview (capped cleanly per sheet if huge)
 		groups.push({ name: "all", list: shots.slice(0, 36) });
@@ -172,7 +173,7 @@ export async function buildContactSheets(browser, { runDir, shots }) {
 	try {
 		await page.setContent("<!doctype html><html><body></body></html>");
 		for (const { name, list } of groups) {
-			if (list.length === 0) continue;
+			if (list.length === 0) {continue;}
 			const cols = list.length <= 2 ? list.length : list.length <= 6 ? 3 : 4;
 			const tileW = 540;
 			const tileH = 338;
@@ -252,7 +253,7 @@ export async function buildContactSheets(browser, { runDir, shots }) {
 
 /** Writes the self-contained interactive UI Review Feed HTML for a run. */
 export function writeReviewFeedHtml(runDir, manifest) {
-	const jsonSafe = JSON.stringify(manifest).replace(/<\//g, "<\\/");
+	const jsonSafe = JSON.stringify(manifest).replaceAll('</', String.raw`<\/`);
 	const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -686,9 +687,9 @@ export function writeRunsIndexHtml(outRoot) {
 	const runs = [];
 	if (fs.existsSync(outRoot)) {
 		for (const entry of fs.readdirSync(outRoot, { withFileTypes: true })) {
-			if (!entry.isDirectory()) continue;
+			if (!entry.isDirectory()) {continue;}
 			const mpath = path.join(outRoot, entry.name, "manifest.json");
-			if (!fs.existsSync(mpath)) continue;
+			if (!fs.existsSync(mpath)) {continue;}
 			try {
 				const m = JSON.parse(fs.readFileSync(mpath, "utf8"));
 				runs.push({
@@ -754,5 +755,5 @@ export function writeRunsIndexHtml(outRoot) {
 }
 
 function escapeHtml(s) {
-	return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+	return String(s ?? "").replaceAll(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }

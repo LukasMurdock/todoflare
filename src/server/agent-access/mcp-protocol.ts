@@ -1,3 +1,4 @@
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
 /**
@@ -21,22 +22,26 @@ export const MCP_LATEST_LEGACY_PROTOCOL_VERSION = MCP_LEGACY_PROTOCOL_VERSIONS[0
 const META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion";
 const META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities";
 export const META_SERVER_INFO = "io.modelcontextprotocol/serverInfo";
+const modernMetadataSchema = z.object({
+	[META_PROTOCOL_VERSION]: z.unknown().optional(),
+	[META_CLIENT_CAPABILITIES]: z.unknown().optional(),
+});
 
 /** Picks the legacy version an `initialize` request will get. */
 export function negotiateLegacyProtocolVersion(requested: unknown): string {
-	return MCP_LEGACY_PROTOCOL_VERSIONS.includes(requested as never) ? (requested as string) : MCP_LATEST_LEGACY_PROTOCOL_VERSION;
+	return MCP_LEGACY_PROTOCOL_VERSIONS.find(version => version === requested) ?? MCP_LATEST_LEGACY_PROTOCOL_VERSION;
 }
 
 export const JSON_RPC_ERRORS = {
-	parseError: -32700,
-	invalidRequest: -32600,
-	methodNotFound: -32601,
-	invalidParams: -32602,
-	internalError: -32603,
+	parseError: -32_700,
+	invalidRequest: -32_600,
+	methodNotFound: -32_601,
+	invalidParams: -32_602,
+	internalError: -32_603,
 	/** Modern: headers missing, malformed, or disagreeing with the body. */
-	headerMismatch: -32020,
+	headerMismatch: -32_020,
 	/** Modern: the requested protocol version is not served here. */
-	unsupportedProtocolVersion: -32022,
+	unsupportedProtocolVersion: -32_022,
 } as const;
 
 const requestIdSchema = z.union([z.string(), z.number().int()]);
@@ -62,11 +67,11 @@ export function jsonRpcError(id: JsonRpcId | null, code: number, message: string
 
 export interface ToolResult {
 	content: Array<{ type: "text"; text: string }>;
-	structuredContent?: Record<string, unknown>;
+	structuredContent?: CallToolResult["structuredContent"];
 	isError?: boolean;
 }
 
-export function toolText(text: string, structuredContent?: Record<string, unknown>): ToolResult {
+export function toolText(text: string, structuredContent?: CallToolResult["structuredContent"]): ToolResult {
 	return structuredContent ? { content: [{ type: "text", text }], structuredContent } : { content: [{ type: "text", text }] };
 }
 
@@ -76,7 +81,7 @@ export function toolError(text: string): ToolResult {
 
 /** True when the message is framed for the modern, per-request-metadata era. */
 export function isModernMessage(message: JsonRpcMessage): boolean {
-	if (message.method === "initialize") return false;
+	if (message.method === "initialize") {return false;}
 	const meta = message.params?._meta;
 	return !!meta && typeof meta === "object" && META_PROTOCOL_VERSION in meta;
 }
@@ -84,9 +89,9 @@ export function isModernMessage(message: JsonRpcMessage): boolean {
 /** Undoes the `=?base64?…?=` sentinel clients use for header-unsafe values. */
 export function decodeHeaderValue(value: string): string | null {
 	const match = /^=\?base64\?([A-Za-z0-9+/]*={0,2})\?=$/.exec(value);
-	if (!match) return value;
+	if (!match) {return value;}
 	try {
-		const bytes = Uint8Array.from(atob(match[1]!), (char) => char.charCodeAt(0));
+		const bytes = Uint8Array.from(atob(match[1]), (char) => char.charCodeAt(0));
 		return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 	} catch {
 		return null;
@@ -106,16 +111,16 @@ export function validateModernRequest(
 	message: JsonRpcMessage & { id: JsonRpcId; method: string },
 	headers: { get(name: string): string | null },
 ): ModernValidation {
-	const meta = message.params?._meta as Record<string, unknown>;
+	const parsedMeta = modernMetadataSchema.safeParse(message.params?._meta);
+	if (!parsedMeta.success) {return invalidParams("Expected per-request metadata");}
+	const meta = parsedMeta.data;
 	const protocolVersion = meta[META_PROTOCOL_VERSION];
-	const invalidParams = (detail: string): ModernValidation => ({ ok: false, status: 400, code: JSON_RPC_ERRORS.invalidParams, message: detail });
-	const mismatch = (detail: string): ModernValidation => ({ ok: false, status: 400, code: JSON_RPC_ERRORS.headerMismatch, message: `Header mismatch: ${detail}` });
-	if (typeof protocolVersion !== "string") return invalidParams(`${META_PROTOCOL_VERSION} must be a string`);
+	if (typeof protocolVersion !== "string") {return invalidParams(`${META_PROTOCOL_VERSION} must be a string`);}
 
 	const versionHeader = headers.get("MCP-Protocol-Version");
-	if (versionHeader === null) return mismatch("MCP-Protocol-Version header is required");
-	if (versionHeader !== protocolVersion) return mismatch(`MCP-Protocol-Version header '${versionHeader}' does not match body value '${protocolVersion}'`);
-	if (!MCP_PROTOCOL_VERSIONS.includes(protocolVersion as never)) {
+	if (versionHeader === null) {return mismatch("MCP-Protocol-Version header is required");}
+	if (versionHeader !== protocolVersion) {return mismatch(`MCP-Protocol-Version header '${versionHeader}' does not match body value '${protocolVersion}'`);}
+	if (!MCP_PROTOCOL_VERSIONS.some(version => version === protocolVersion)) {
 		return {
 			ok: false,
 			status: 400,
@@ -131,14 +136,18 @@ export function validateModernRequest(
 	}
 
 	const methodHeader = headers.get("Mcp-Method");
-	if (methodHeader === null) return mismatch("Mcp-Method header is required");
-	if (methodHeader !== message.method) return mismatch(`Mcp-Method header '${methodHeader}' does not match body value '${message.method}'`);
+	if (methodHeader === null) {return mismatch("Mcp-Method header is required");}
+	if (methodHeader !== message.method) {return mismatch(`Mcp-Method header '${methodHeader}' does not match body value '${message.method}'`);}
 	if (message.method === "tools/call") {
 		const rawName = headers.get("Mcp-Name");
-		if (rawName === null) return mismatch("Mcp-Name header is required for tools/call");
+		if (rawName === null) {return mismatch("Mcp-Name header is required for tools/call");}
 		const name = decodeHeaderValue(rawName);
-		if (name === null) return mismatch("Mcp-Name header is not valid base64 UTF-8");
-		if (name !== message.params?.name) return mismatch(`Mcp-Name header '${name}' does not match body value '${String(message.params?.name)}'`);
+		if (name === null) {return mismatch("Mcp-Name header is not valid base64 UTF-8");}
+		if (name !== message.params?.name) {return mismatch(`Mcp-Name header '${name}' does not match body value '${String(message.params?.name)}'`);}
 	}
 	return { ok: true, protocolVersion };
 }
+
+const invalidParams = (detail: string): ModernValidation => ({ ok: false, status: 400, code: JSON_RPC_ERRORS.invalidParams, message: detail });
+
+const mismatch = (detail: string): ModernValidation => ({ ok: false, status: 400, code: JSON_RPC_ERRORS.headerMismatch, message: `Header mismatch: ${detail}` });

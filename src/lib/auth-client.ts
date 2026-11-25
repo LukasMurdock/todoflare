@@ -24,8 +24,8 @@ export async function fetchAuthStatus(signal?: AbortSignal): Promise<AuthStatus>
 		credentials: "same-origin",
 		headers: { Accept: "application/json" },
 	});
-	if (!response.ok) return { accountId: null, state: "signed_out" };
-	return (await response.json()) as AuthStatus;
+	if (!response.ok) {return { accountId: null, state: "signed_out" };}
+	return response.json<AuthStatus>();
 }
 
 export async function recoverAccount(
@@ -36,10 +36,10 @@ export async function recoverAccount(
 		AUTH_ROUTES.recoverAccount.path,
 		{
 			method: AUTH_ROUTES.recoverAccount.method,
-			body: { accountId: accountId.replace(/\D/g, ""), recoveryCode },
+			body: { accountId: accountId.replaceAll(/\D/g, ""), recoveryCode },
 		},
 	);
-	if (error || !data?.accountId || !data.recoveryCode) throw authFailure(error, "Recovery failed");
+	if (error || !data?.accountId || !data.recoveryCode) {throw authFailure(error, "Recovery failed");}
 	return data;
 }
 
@@ -75,17 +75,17 @@ export function authFailure(
  * AUTH_RP_ID is its hostname).
  */
 function signal(send: (credentials: typeof PublicKeyCredential, rpId: string) => Promise<void>) {
-	if (typeof PublicKeyCredential === "undefined") return;
+	if (typeof PublicKeyCredential === "undefined") {return;}
 	void Promise.resolve()
 		.then(() => send(PublicKeyCredential, window.location.hostname))
-		.catch(() => undefined);
+		.catch((error: unknown) => console.warn("Could not update the passkey provider", error));
 }
 
 /** Names the account on its passkeys, including ones registered under an older name. */
 export function signalPasskeyAccount(accountId: string): void {
 	const { id: userId, name, displayName } = passkeyUser(accountId);
 	signal(async (credentials, rpId) => {
-		if ("signalCurrentUserDetails" in credentials) await credentials.signalCurrentUserDetails({ rpId, userId, name, displayName });
+		if ("signalCurrentUserDetails" in credentials) {await credentials.signalCurrentUserDetails({ rpId, userId, name, displayName });}
 	});
 }
 
@@ -98,7 +98,7 @@ export function signalPasskeyAccount(accountId: string): void {
  */
 function signalDeletedPasskey(credentialId: string): void {
 	signal(async (credentials, rpId) => {
-		if ("signalUnknownCredential" in credentials) await credentials.signalUnknownCredential({ rpId, credentialId });
+		if ("signalUnknownCredential" in credentials) {await credentials.signalUnknownCredential({ rpId, credentialId });}
 	});
 }
 
@@ -109,7 +109,7 @@ interface AuthResult<T> {
 
 async function settled<T>(call: Promise<AuthResult<T>>): Promise<T> {
 	const { data, error } = await call;
-	if (error || data === null) throw authFailure(error);
+	if (error || data === null) {throw authFailure(error);}
 	return data;
 }
 
@@ -134,7 +134,7 @@ export function accountCredentials(accountId: string) {
 	const fetchOptions = { headers };
 	return {
 		accountId,
-		listPasskeys: () => settled(authClient.passkey.listUserPasskeys({ fetchOptions })) as Promise<ListedPasskey[]>,
+		listPasskeys: () => settled(authClient.passkey.listUserPasskeys({ fetchOptions })) as Promise<Array<ListedPasskey>>,
 		addPasskey: (name: string) => settled(authClient.passkey.addPasskey({ name, fetchOptions })),
 		deletePasskey: async (passkey: ListedPasskey) => {
 			await settled(authClient.passkey.deletePasskey({ id: passkey.id, fetchOptions }));
@@ -148,7 +148,7 @@ export function accountCredentials(accountId: string) {
 				// better-auth refuses a POST without a JSON body (415).
 				{ method: AUTH_ROUTES.generateRecoveryCode.method, headers, body: {} },
 			));
-			if (!recoveryCode) throw new Error("");
+			if (!recoveryCode) {throw new Error("");}
 			return recoveryCode;
 		},
 		/**

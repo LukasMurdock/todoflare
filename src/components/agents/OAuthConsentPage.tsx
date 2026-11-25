@@ -62,10 +62,15 @@ export function OAuthConsentPage() {
 	const { accountId, authenticationStatus, isLoading, loginWithPasskey, error: syncError } = useSyncContext();
 	const params = useMemo(() => {
 		const search = new URLSearchParams(window.location.search);
-		return Object.fromEntries(AUTHORIZATION_PARAMS.flatMap((key) => (search.has(key) ? [[key, search.get(key)!]] : []))) as Record<string, string>;
+		const values: Record<string, string> = {};
+		for (const key of AUTHORIZATION_PARAMS) {
+			const value = search.get(key);
+			if (value !== null) { values[key] = value; }
+		}
+		return values;
 	}, []);
 	const [page, setPage] = useState<PageState>(() => (window.top !== window.self ? { kind: "framed" } : { kind: "loading" }));
-	const [columns, setColumns] = useState<GrantableColumn[] | null>(null);
+	const [columns, setColumns] = useState<Array<GrantableColumn> | null>(null);
 	const [levels, setLevels] = useState<Record<string, AgentGrantLevel>>({});
 	const [name, setName] = useState("");
 	const [expiresInDays, setExpiresInDays] = useState(30);
@@ -77,10 +82,10 @@ export function OAuthConsentPage() {
 	const locked = busy || recent.pending;
 
 	useEffect(() => {
-		if (page.kind !== "loading") return;
+		if (page.kind !== "loading") {return;}
 		void (async () => {
 			const response = await fetch(`${API_ROUTES.describeAuthorization.path}?${new URLSearchParams(params)}`, { credentials: "same-origin" });
-			const body = (await response.json().catch(() => null)) as ({ ok: true } & DescribedClient) | { ok: false; display: string; redirectTo?: string } | null;
+			const body = await response.json<({ ok: true } & DescribedClient) | { ok: false; display: string; redirectTo?: string }>().catch(() => null);
 			if (!body || !body.ok) {
 				setPage({ kind: "invalid", message: body?.display ?? "This sign-in link is not valid.", redirectTo: body && !body.ok ? body.redirectTo : undefined });
 				return;
@@ -106,20 +111,20 @@ export function OAuthConsentPage() {
 		setError(null);
 		try {
 			await action();
-		} catch (cause) {
-			setError(cause instanceof Error && cause.message ? cause.message : "Could not complete the request");
+		} catch (error_) {
+			setError(error_ instanceof Error && error_.message ? error_.message : "Could not complete the request");
 		} finally {
 			setBusy(false);
 		}
 	};
 
 	const decide = (decision: "approve" | "deny") => {
-		if (!accountId) return;
+		if (!accountId) {return;}
 		if (decision === "deny") {
 			return run(async () => leave(await agentsApi.decideAuthorization(accountId, { decision, params })));
 		}
 		const grants = Object.entries(levels).map(([columnId, level]) => ({ columnId, level }));
-		const body = { decision, params, name: name.trim() || "Agent", expiresInDays, grants };
+		const body = { decision, params, name: name.trim() || "Agent", expiresInDays, grants } as const;
 		// Approving mints a connection that outlives the session, so it may need a recent sign-in.
 		return run(() => recent.attempt(async () => leave(await agentsApi.decideAuthorization(accountId, body)), "Could not complete the request"));
 	};
@@ -146,13 +151,14 @@ export function OAuthConsentPage() {
 		);
 	}
 	if (page.kind === "invalid") {
+		const { redirectTo } = page;
 		return (
 			<Card>
 				<Notice icon={<span className="flex size-10 items-center justify-center rounded-[10px] bg-red-500/10 text-red-600 dark:text-red-400"><ShieldAlert className="size-5 stroke-[1.75]" /></span>}>
 					<h1 className="text-[17px] font-semibold tracking-[-0.01em]">This connection can’t continue</h1>
 					<p className="text-[13px] leading-5 text-muted-foreground">{page.message}</p>
-					{page.redirectTo && (
-						<Button variant="outline" className="mt-1" onClick={() => window.location.assign(page.redirectTo!)}>
+					{redirectTo && (
+						<Button variant="outline" className="mt-1" onClick={() => window.location.assign(redirectTo)}>
 							Return to the app
 						</Button>
 					)}
@@ -255,13 +261,13 @@ export function OAuthConsentPage() {
 							))}
 						</NativeSelect>
 					</section>
-					{recent.pending && <ConfirmSignIn busy={busy} onConfirm={() => run(recent.confirm)} onCancel={recent.cancel} />}
+					{recent.pending && <ConfirmSignIn busy={busy} onConfirm={() => void run(recent.confirm)} onCancel={recent.cancel} />}
 					{error && <p className="text-[13px] text-red-600 dark:text-red-400">{error}</p>}
 					<div className="flex flex-col-reverse gap-2 border-t border-border/60 pt-3.5 max-sm:sticky max-sm:bottom-0 max-sm:-mx-4 max-sm:-mb-4 max-sm:rounded-b-2xl max-sm:bg-card/95 max-sm:px-4 max-sm:py-2.5 max-sm:backdrop-blur-md sm:flex-row sm:justify-end sm:pt-4">
-						<Button variant="ghost" disabled={locked} onClick={() => decide("deny")}>
+						<Button variant="ghost" disabled={locked} onClick={() => void decide("deny")}>
 							Cancel
 						</Button>
-						<Button disabled={locked} className="sm:min-w-32" onClick={() => decide("approve")}>
+						<Button disabled={locked} className="sm:min-w-32" onClick={() => void decide("approve")}>
 							{chosen === 0 ? "Connect without columns" : `Allow ${chosen} column${chosen === 1 ? "" : "s"}`}
 						</Button>
 					</div>

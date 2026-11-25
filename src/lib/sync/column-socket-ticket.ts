@@ -10,18 +10,17 @@ interface ColumnSocketUrlRequest {
 	columnId: string;
 	signal?: AbortSignal;
 	/**
-	 * Whether a column.create for this column is still queued. Checked after the
-	 * response arrives, since the create may be acknowledged meanwhile.
+	 * Whether this account still has an unacknowledged create for the column.
 	 */
-	hasPendingCreate(): boolean;
+	hasPendingCreate: () => boolean;
 	fetch?: typeof globalThis.fetch;
 	location?: Pick<Location, "protocol" | "host">;
 }
 
 /**
  * Exchanges the account session for a single-use WebSocket ticket and returns
- * the socket URL. A 403/404 for a column whose creation is still queued means
- * "not provisioned yet" rather than "access lost".
+ * the socket URL. A 403/404 can describe the room before its concurrent create
+ * committed, even if the create has already been acknowledged locally.
  */
 export async function fetchColumnSocketUrl({
 	accountId,
@@ -31,6 +30,7 @@ export async function fetchColumnSocketUrl({
 	fetch: fetchRequest = globalThis.fetch.bind(globalThis),
 	location = window.location,
 }: ColumnSocketUrlRequest): Promise<string> {
+	const createPendingAtRequest = hasPendingCreate();
 	const response = await fetchRequest(
 		routePath(API_ROUTES.columnWsTicket.path, { id: columnId }),
 		{
@@ -39,14 +39,14 @@ export async function fetchColumnSocketUrl({
 			headers: accountRequestHeaders(accountId),
 		},
 	);
-	if ([403, 404].includes(response.status) && hasPendingCreate()) {
+	if ([403, 404].includes(response.status) && (createPendingAtRequest || hasPendingCreate())) {
 		throw new ColumnSocketProvisioningError(response.status);
 	}
 	if ([401, 403, 404].includes(response.status)) {
 		throw new ColumnSocketAuthorizationError(response.status);
 	}
-	if (!response.ok) throw new Error(`WebSocket ticket failed: ${response.status}`);
-	const payload = (await response.json()) as { ticket?: unknown };
+	if (!response.ok) {throw new Error(`WebSocket ticket failed: ${response.status}`);}
+	const payload = await response.json<{ ticket?: unknown }>();
 	if (typeof payload.ticket !== "string") {
 		throw new Error("WebSocket ticket response is invalid");
 	}

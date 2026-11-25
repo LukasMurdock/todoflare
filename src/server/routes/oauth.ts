@@ -46,7 +46,7 @@ function oauthError(error: string, description: string, status = 400): Response 
 }
 
 async function rateLimited(c: AppContext, action: "oauth-register" | "oauth-token", config: { limit: number; windowSeconds: number }) {
-	if (shouldSkipRateLimit(c)) return null;
+	if (shouldSkipRateLimit(c)) {return null;}
 	const result = await checkRateLimit(c.env.RATE_LIMIT_COORDINATOR, ipRateLimitKey(action, getClientIP(c.req.raw)), config);
 	return result.allowed ? null : oauthError("slow_down", "Too many requests", 429);
 }
@@ -65,7 +65,6 @@ const decisionSchema = z.discriminatedUnion("decision", [
 ]);
 
 export function registerOAuthRoutes(app: App) {
-	const disabled = () => Response.json({ error: "Not found", code: "not_found" }, { status: 404 });
 
 	for (const path of [API_ROUTES.oauthProtectedResource.path, API_ROUTES.oauthProtectedResourceMcp.path]) {
 		app.on("GET", path, (c) => (isAgentAccessEnabled(c.env) ? c.json(protectedResourceMetadata(origin(c)), 200, CORS) : disabled()));
@@ -86,9 +85,9 @@ export function registerOAuthRoutes(app: App) {
 	// Dynamic Client Registration (RFC 7591). Deprecated in MCP 2026-07-28 in
 	// favour of Client ID Metadata Documents, and kept because clients use it.
 	app.on(API_ROUTES.oauthRegister.method, API_ROUTES.oauthRegister.path, async (c) => {
-		if (!isAgentAccessEnabled(c.env)) return disabled();
+		if (!isAgentAccessEnabled(c.env)) {return disabled();}
 		const limited = await rateLimited(c, "oauth-register", RATE_LIMITS.oauthRegister);
-		if (limited) return limited;
+		if (limited) {return limited;}
 		let body: unknown;
 		try {
 			body = await c.req.json();
@@ -101,7 +100,7 @@ export function registerOAuthRoutes(app: App) {
 			return oauthError(redirect ? "invalid_redirect_uri" : "invalid_client_metadata", parsed.error.issues.map((issue) => issue.message).join("; "));
 		}
 		const registered = await clients(c).register(parsed.data, Date.now());
-		if (!registered.ok) return oauthError(registered.error, registered.description);
+		if (!registered.ok) {return oauthError(registered.error, registered.description);}
 		const { client } = registered;
 		return Response.json(
 			{
@@ -119,11 +118,11 @@ export function registerOAuthRoutes(app: App) {
 
 	// What the consent page shows: who is asking and where it will send you.
 	app.on(API_ROUTES.describeAuthorization.method, API_ROUTES.describeAuthorization.path, async (c) => {
-		if (!isAgentAccessEnabled(c.env)) return disabled();
+		if (!isAgentAccessEnabled(c.env)) {return disabled();}
 		const params = authorizationParamsSchema.safeParse(c.req.query());
-		if (!params.success) return c.json({ ok: false, display: "This authorization request is malformed." }, 400, NO_STORE);
+		if (!params.success) {return c.json({ ok: false, display: "This authorization request is malformed." }, 400, NO_STORE);}
 		const validation = await validateAuthorizationRequest(params.data, origin(c), clients(c), Date.now());
-		if (!validation.ok) return c.json(validation, 400, NO_STORE);
+		if (!validation.ok) {return c.json(validation, 400, NO_STORE);}
 		const { client, redirectUri } = validation.request;
 		return c.json(
 			{
@@ -145,14 +144,14 @@ export function registerOAuthRoutes(app: App) {
 	// The person's decision. Approval creates the connection and its grants,
 	// then a single-use code bound to this client, redirect, PKCE challenge and resource.
 	app.on(API_ROUTES.decideAuthorization.method, API_ROUTES.decideAuthorization.path, async (c) => {
-		if (!isAgentAccessEnabled(c.env)) return disabled();
+		if (!isAgentAccessEnabled(c.env)) {return disabled();}
 		const auth = await requireAccountCredential(c.req.raw, c.env);
-		if (!auth.ok) return auth.response;
+		if (!auth.ok) {return auth.response;}
 		const body = await validateJsonBody(c, decisionSchema);
-		if (!body.ok) return body.response;
+		if (!body.ok) {return body.response;}
 		const now = Date.now();
 		const validation = await validateAuthorizationRequest(body.data.params, origin(c), clients(c), now);
-		if (!validation.ok) return c.json(validation, 400, NO_STORE);
+		if (!validation.ok) {return c.json(validation, 400, NO_STORE);}
 		const { request } = validation;
 		if (body.data.decision === "deny") {
 			return c.json(
@@ -162,10 +161,10 @@ export function registerOAuthRoutes(app: App) {
 			);
 		}
 		const readOnly = blockWritesIfReadOnly(c);
-		if (readOnly) return readOnly;
+		if (readOnly) {return readOnly;}
 		// Approval mints a connection that outlives this session; declining does not.
 		const stale = await requireRecentSignIn(c.req.raw, c.env);
-		if (stale) return stale;
+		if (stale) {return stale;}
 		const { name, expiresInDays, grants } = body.data;
 		// An account can delegate only what it can reach itself, right now.
 		for (const grant of grants) {
@@ -192,21 +191,21 @@ export function registerOAuthRoutes(app: App) {
 	});
 
 	app.on(API_ROUTES.oauthToken.method, API_ROUTES.oauthToken.path, async (c) => {
-		if (!isAgentAccessEnabled(c.env)) return disabled();
+		if (!isAgentAccessEnabled(c.env)) {return disabled();}
 		const limited = await rateLimited(c, "oauth-token", RATE_LIMITS.oauthToken);
-		if (limited) return limited;
+		if (limited) {return limited;}
 		const contentType = c.req.header("Content-Type") ?? "";
 		let form: Record<string, string>;
 		try {
 			form = contentType.includes("application/json")
-				? ((await c.req.json()) as Record<string, string>)
+				? await c.req.json<Record<string, string>>()
 				: Object.fromEntries(new URLSearchParams(new TextDecoder().decode(await c.req.arrayBuffer())));
 		} catch {
 			return oauthError("invalid_request", "Unreadable token request");
 		}
 		const field = (key: string) => (typeof form[key] === "string" ? form[key] : undefined);
 		const clientId = field("client_id");
-		if (!clientId) return oauthError("invalid_client", "client_id is required", 401);
+		if (!clientId) {return oauthError("invalid_client", "client_id is required", 401);}
 		const now = Date.now();
 		const store = agentStore(c.env.AUTH_DB);
 		const tokens = (issued: Awaited<ReturnType<typeof store.issueTokens>>) =>
@@ -219,7 +218,7 @@ export function registerOAuthRoutes(app: App) {
 			case "authorization_code": {
 				const code = field("code");
 				const verifier = field("code_verifier");
-				if (!code || !verifier) return oauthError("invalid_request", "code and code_verifier are required");
+				if (!code || !verifier) {return oauthError("invalid_request", "code and code_verifier are required");}
 				const redeemed = await authorizationCodes(c.env.AUTH_DB).redeem({
 					code,
 					clientId,
@@ -231,24 +230,24 @@ export function registerOAuthRoutes(app: App) {
 				});
 				if (!redeemed.ok) {
 					// A replayed code may have been stolen: revoke everything issued from it.
-					if (redeemed.replayedConnectionId) await store.revokeById(redeemed.replayedConnectionId, now);
+					if (redeemed.replayedConnectionId) {await store.revokeById(redeemed.replayedConnectionId, now);}
 					return oauthError(redeemed.description.includes("MCP endpoint") ? "invalid_target" : "invalid_grant", redeemed.description);
 				}
 				const connection = await c.env.AUTH_DB.prepare(`SELECT "expiresAt" FROM "agent_connection" WHERE "id" = ? AND "revokedAt" IS NULL`)
 					.bind(redeemed.connectionId)
 					.first<{ expiresAt: number }>();
-				if (!connection || connection.expiresAt <= now) return oauthError("invalid_grant", "This authorization was revoked");
+				if (!connection || connection.expiresAt <= now) {return oauthError("invalid_grant", "This authorization was revoked");}
 				return tokens(await store.issueTokens(redeemed.connectionId, connection.expiresAt, now));
 			}
 			case "refresh_token": {
 				const refresh = field("refresh_token");
-				if (!refresh) return oauthError("invalid_request", "refresh_token is required");
+				if (!refresh) {return oauthError("invalid_request", "refresh_token is required");}
 				const resource = field("resource");
 				if (resource !== undefined && !isOwnResource(resource, origin(c))) {
 					return oauthError("invalid_target", "Tokens can only be issued for this server's MCP endpoint");
 				}
 				const connection = await store.redeemRefreshToken(refresh, clientId, now);
-				if (!connection) return oauthError("invalid_grant", "Refresh token is invalid, expired, revoked or already used");
+				if (!connection) {return oauthError("invalid_grant", "Refresh token is invalid, expired, revoked or already used");}
 				return tokens(await store.issueTokens(connection.id, connection.expiresAt, now));
 			}
 			default:
@@ -256,3 +255,5 @@ export function registerOAuthRoutes(app: App) {
 		}
 	});
 }
+
+const disabled = () => Response.json({ error: "Not found", code: "not_found" }, { status: 404 });

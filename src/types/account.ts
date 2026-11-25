@@ -32,7 +32,7 @@ export type SyncMessage =
 	| { type: "sync"; data: Uint8Array } // Yjs sync message
 	| { type: "sync-ack"; outboxId: string } // Durable receipt for a submitted Yjs update
 	| { type: "awareness"; data: Uint8Array } // Yjs awareness update
-	| { type: "presence"; users: PresenceUser[] } // Presence list update
+	| { type: "presence"; users: Array<PresenceUser> } // Presence list update
 	| { type: "error"; message: string }
 	| { type: "column-deleted" }
 	| { type: "access-revoked" };
@@ -51,23 +51,23 @@ export type PublicLinkResponse = z.output<typeof publicLinkContractSchema>;
 
 export interface AccountExportColumn {
 	meta: ColumnMeta;
-	yjs: number[] | null;
+	yjs: Array<number> | null;
 }
 
 export interface AccountExportPayloadV1 {
 	schemaVersion: 1;
 	exportedAt: number;
 	account: Account;
-	ownedColumns: AccountExportColumn[];
+	ownedColumns: Array<AccountExportColumn>;
 }
 
 export interface AccountExportPayload {
 	schemaVersion: 2;
 	exportedAt: number;
 	complete: true;
-	expectedColumnIds: string[];
+	expectedColumnIds: Array<string>;
 	account: Account;
-	ownedColumns: AccountExportColumn[];
+	ownedColumns: Array<AccountExportColumn>;
 }
 
 export type AccountImportPayload = AccountExportPayloadV1 | AccountExportPayload;

@@ -12,7 +12,7 @@ export interface Column {
 	collapsed?: boolean;
 	// Metadata from server (populated after fetch)
 	ownerId?: string;
-	sharedWith?: string[];
+	sharedWith?: Array<string>;
 	publicId?: string | null;
 }
 

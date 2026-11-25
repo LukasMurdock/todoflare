@@ -1,11 +1,7 @@
-import { createActor, waitFor, type Actor } from "xstate";
-import {
-	columnSessionConnectionStatus,
-	createColumnSessionMachine,
-	type ColumnSessionDependencies,
-	type ColumnSessionInput,
-	type ColumnTerminationReason,
-} from "./column-session-machine";
+import { createActor, waitFor } from 'xstate';
+import type { Actor } from 'xstate';
+import { columnSessionConnectionStatus, createColumnSessionMachine } from './column-session-machine';
+import type { ColumnSessionDependencies, ColumnSessionInput, ColumnTerminationReason } from './column-session-machine';
 import type { ConnectionStatus, PresenceUser } from "../../types/account";
 
 /**
@@ -53,7 +49,7 @@ export class ColumnSessionManager {
 		actor.send({ type: "SUBSCRIBE", leaseId });
 		let active = true;
 		return () => {
-			if (!active) return;
+			if (!active) {return;}
 			active = false;
 			actor.send({ type: "UNSUBSCRIBE", leaseId });
 		};
@@ -77,7 +73,7 @@ export class ColumnSessionManager {
 
 	detachColumn(columnId: string) {
 		const record = this.sessions.get(columnId);
-		if (!record) return;
+		if (!record) {return;}
 		record.unsubscribeSnapshot();
 		record.actor.stop();
 		this.sessions.delete(columnId);
@@ -85,7 +81,7 @@ export class ColumnSessionManager {
 	}
 
 	setNetworkOnline(online: boolean) {
-		if (this.networkOnline === online) return;
+		if (this.networkOnline === online) {return;}
 		this.networkOnline = online;
 		for (const { actor } of this.sessions.values()) {
 			actor.send({ type: online ? "NETWORK_ONLINE" : "NETWORK_OFFLINE" });
@@ -93,7 +89,7 @@ export class ColumnSessionManager {
 	}
 
 	setRealtimeEnabled(enabled: boolean) {
-		if (this.realtimeEnabled === enabled) return;
+		if (this.realtimeEnabled === enabled) {return;}
 		this.realtimeEnabled = enabled;
 		for (const { actor } of this.sessions.values()) {
 			actor.send({
@@ -107,7 +103,7 @@ export class ColumnSessionManager {
 		return actor ? columnSessionConnectionStatus(actor.getSnapshot()) : "offline";
 	}
 
-	getColumnPresence(columnId: string): PresenceUser[] {
+	getColumnPresence(columnId: string): Array<PresenceUser> {
 		return this.sessions.get(columnId)?.actor.getSnapshot().context.presence ?? [];
 	}
 
@@ -115,10 +111,10 @@ export class ColumnSessionManager {
 		let connecting = false;
 		for (const { actor } of this.sessions.values()) {
 			const snapshot = actor.getSnapshot();
-			if (snapshot.context.leases.size === 0) continue;
+			if (snapshot.context.leases.size === 0) {continue;}
 			const status = columnSessionConnectionStatus(snapshot);
-			if (status === "connected") return "connected";
-			if (status === "connecting") connecting = true;
+			if (status === "connected") {return "connected";}
+			if (status === "connecting") {connecting = true;}
 		}
 		return connecting ? "connecting" : "offline";
 	}
@@ -132,7 +128,7 @@ export class ColumnSessionManager {
 
 	private ensureSession(columnId: string): ColumnSessionActor {
 		const existing = this.sessions.get(columnId);
-		if (existing) return existing.actor;
+		if (existing) {return existing.actor;}
 
 		const input: ColumnSessionInput = {
 			accountId: this.accountId,

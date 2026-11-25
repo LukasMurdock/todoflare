@@ -1,4 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { SELF } from "cloudflare:test";
+import { createAccountEditCommand } from "../src/lib/sync/contracts";
+import { describe, expect, it } from "vitest";
 import {
 	applyAccountCommand,
 	applyCommandEffects,
@@ -26,15 +28,11 @@ function command<T extends AccountCommandType>(
 	createdAt = 10,
 ): QueuedMutation<T> {
 	return {
-		opType,
-		payload,
+		...createAccountEditCommand(opType, payload, {
+			idempotencyKey: `key:${opType}`, entityId: ACCOUNT_ID, createdAt, attemptCount: 0, nextRetryAt: 0,
+		}),
 		queueId: `queue:${opType}`,
-		idempotencyKey: `key:${opType}`,
-		entityId: ACCOUNT_ID,
-		createdAt,
-		attemptCount: 0,
-		nextRetryAt: 0,
-	} as unknown as QueuedMutation<T>;
+	};
 }
 
 function baseProjection() {
@@ -51,6 +49,8 @@ function baseProjection() {
 		deletedColumns: [],
 	});
 }
+
+const limited = async () => Response.json({ retryAfter: 7 }, { status: 429 });
 
 describe("account projection", () => {
 	it("rejects a server response that omits authoritative owned metadata", () => {
@@ -87,38 +87,21 @@ describe("account projection", () => {
 	});
 
 	it("preserves retry-after from a rate-limited account response", async () => {
-		const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-			new Response(JSON.stringify({ retryAfter: 7 }), {
-				status: 429,
-				headers: { "Content-Type": "application/json" },
-			}),
-		);
-		try {
-			await expect(
-				fetchAccountProjection(ACCOUNT_ID, new AbortController().signal, "hydrate"),
-			).rejects.toMatchObject({ retryAfterMs: 7_000 });
-		} finally {
-			fetchMock.mockRestore();
-		}
+		await expect(fetchAccountProjection(ACCOUNT_ID, new AbortController().signal, "hydrate", limited))
+			.rejects.toMatchObject({ retryAfterMs: 7000 });
 	});
 
 	it("keeps the public account ID out of credentials and URLs", async () => {
-		const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-			new Response(null, { status: 401 }),
-		);
-		try {
-			await expect(fetchAccountProjection(
-				ACCOUNT_ID,
-				new AbortController().signal,
-				"hydrate",
-			)).rejects.toBeDefined();
-			const [url, init] = fetchMock.mock.calls[0] ?? [];
-			expect(url).toBe("/api/account");
-			expect(String(url)).not.toContain("1111111111111111");
-			expect(new Headers(init?.headers).get("Authorization")).toBeNull();
-		} finally {
-			fetchMock.mockRestore();
-		}
+		const requests: Array<{ url: RequestInfo | URL; init?: RequestInit }> = [];
+		const unauthorized: typeof fetch = async (url, init) => {
+			requests.push({ url, init });
+			return SELF.fetch(new URL(String(url), "http://example.com"), init);
+		};
+		await expect(fetchAccountProjection(ACCOUNT_ID, new AbortController().signal, "hydrate", unauthorized))
+			.rejects.toBeDefined();
+		expect(requests).toHaveLength(1);
+		expect(requests[0].url).toBe("/api/account");
+		expect(new Headers(requests[0].init?.headers).get("Authorization")).toBeNull();
 	});
 
 	it("builds owned metadata only from the authoritative server response", () => {

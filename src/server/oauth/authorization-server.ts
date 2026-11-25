@@ -15,7 +15,7 @@ import { API_ROUTES, OAUTH_AUTHORIZE_PAGE_PATH } from "../../lib/api/routes";
 const CODE_TTL_MS = 2 * 60 * 1000;
 const METADATA_CACHE_MS = 10 * 60 * 1000;
 const METADATA_MAX_BYTES = 5 * 1024;
-const METADATA_TIMEOUT_MS = 5_000;
+const METADATA_TIMEOUT_MS = 5000;
 const MAX_REDIRECT_URIS = 10;
 
 export function mcpResourceUrl(origin: string): string {
@@ -61,8 +61,8 @@ export function isAllowedRedirectUri(value: string): boolean {
 	} catch {
 		return false;
 	}
-	if (url.hash || url.username || url.password) return false;
-	if (url.protocol === "https:") return true;
+	if (url.hash || url.username || url.password) {return false;}
+	if (url.protocol === "https:") {return true;}
 	return url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname);
 }
 
@@ -79,7 +79,7 @@ export function isLoopbackRedirect(value: string): boolean {
  * §7.3): native apps bind an ephemeral port each time they sign in.
  */
 export function redirectUriMatches(registered: string, presented: string): boolean {
-	if (registered === presented) return true;
+	if (registered === presented) {return true;}
 	try {
 		const left = new URL(registered);
 		const right = new URL(presented);
@@ -99,7 +99,7 @@ export function redirectUriMatches(registered: string, presented: string): boole
 function canonicalResource(value: string): string | null {
 	try {
 		const url = new URL(value);
-		if (url.hash) return null;
+		if (url.hash) {return null;}
 		return `${url.protocol}//${url.host}${url.pathname.replace(/\/$/, "")}`.toLowerCase();
 	} catch {
 		return null;
@@ -117,7 +117,7 @@ export interface OAuthClient {
 	kind: "registered" | "metadata";
 	name: string;
 	clientUri: string | null;
-	redirectUris: string[];
+	redirectUris: Array<string>;
 }
 
 interface ClientRow {
@@ -131,7 +131,7 @@ interface ClientRow {
 }
 
 function toClient(row: ClientRow): OAuthClient {
-	return { clientId: row.clientId, kind: row.kind, name: row.name, clientUri: row.clientUri, redirectUris: JSON.parse(row.redirectUris) as string[] };
+	return { clientId: row.clientId, kind: row.kind, name: row.name, clientUri: row.clientUri, redirectUris: z.array(z.string()).parse(JSON.parse(row.redirectUris)) };
 }
 
 const clientNameSchema = z.string().trim().min(1).max(100);
@@ -170,8 +170,8 @@ const metadataDocumentSchema = z
  * its intersection with ours; the singular field is only its preference.
  * ChatGPT, for example, prefers private_key_jwt but also lists none.
  */
-export function supportsPublicClientAuth(document: { token_endpoint_auth_method?: string; token_endpoint_auth_methods_supported?: string[] }): boolean {
-	if (document.token_endpoint_auth_methods_supported) return document.token_endpoint_auth_methods_supported.includes("none");
+export function supportsPublicClientAuth(document: { token_endpoint_auth_method?: string; token_endpoint_auth_methods_supported?: Array<string> }): boolean {
+	if (document.token_endpoint_auth_methods_supported) {return document.token_endpoint_auth_methods_supported.includes("none");}
 	return !document.token_endpoint_auth_method || document.token_endpoint_auth_method === "none";
 }
 
@@ -192,9 +192,9 @@ export function isMetadataClientId(clientId: string): boolean {
  * local development and under any future network configuration.
  */
 function isForbiddenMetadataHost(hostname: string): boolean {
-	const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
-	if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) return true;
-	if (!host.includes(".") && !host.includes(":")) return true;
+	const host = hostname.toLowerCase().replaceAll(/^\[|\]$/g, "");
+	if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) {return true;}
+	if (!host.includes(".") && !host.includes(":")) {return true;}
 	const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
 	if (v4) {
 		const [a, b] = [Number(v4[1]), Number(v4[2])];
@@ -209,7 +209,7 @@ export type ClientLookup = { ok: true; client: OAuthClient } | { ok: false; desc
 export type MetadataFetcher = (url: string, init: RequestInit) => Promise<Response>;
 
 async function fetchMetadataDocument(clientId: string, fetcher: MetadataFetcher): Promise<ClientLookup> {
-	if (isForbiddenMetadataHost(new URL(clientId).hostname)) return { ok: false, description: "Client metadata host is not allowed" };
+	if (isForbiddenMetadataHost(new URL(clientId).hostname)) {return { ok: false, description: "Client metadata host is not allowed" };}
 	let response: Response;
 	try {
 		response = await fetcher(clientId, {
@@ -220,16 +220,17 @@ async function fetchMetadataDocument(clientId: string, fetcher: MetadataFetcher)
 	} catch {
 		return { ok: false, description: "Client metadata could not be fetched" };
 	}
-	if (response.status !== 200) return { ok: false, description: `Client metadata request returned ${response.status}` };
+	if (response.status !== 200) {return { ok: false, description: `Client metadata request returned ${response.status}` };}
 	const declared = Number(response.headers.get("Content-Length") ?? "0");
-	if (declared > METADATA_MAX_BYTES) return { ok: false, description: "Client metadata is too large" };
-	const reader = response.body?.getReader();
-	if (!reader) return { ok: false, description: "Client metadata is empty" };
-	const chunks: Uint8Array[] = [];
+	if (declared > METADATA_MAX_BYTES) {return { ok: false, description: "Client metadata is too large" };}
+	const stream: ReadableStream<Uint8Array> | null = response.body;
+	const reader = stream?.getReader();
+	if (!reader) {return { ok: false, description: "Client metadata is empty" };}
+	const chunks: Array<Uint8Array> = [];
 	let size = 0;
 	for (;;) {
 		const { done, value } = await reader.read();
-		if (done) break;
+		if (done) {break;}
 		size += value.byteLength;
 		if (size > METADATA_MAX_BYTES) {
 			await reader.cancel();
@@ -244,8 +245,8 @@ async function fetchMetadataDocument(clientId: string, fetcher: MetadataFetcher)
 		return { ok: false, description: "Client metadata is not valid JSON" };
 	}
 	const parsed = metadataDocumentSchema.safeParse(json);
-	if (!parsed.success) return { ok: false, description: "Client metadata is missing client_id, client_name or valid redirect_uris" };
-	if (parsed.data.client_id !== clientId) return { ok: false, description: "Client metadata client_id does not match its URL" };
+	if (!parsed.success) {return { ok: false, description: "Client metadata is missing client_id, client_name or valid redirect_uris" };}
+	if (parsed.data.client_id !== clientId) {return { ok: false, description: "Client metadata client_id does not match its URL" };}
 	if (!supportsPublicClientAuth(parsed.data)) {
 		return { ok: false, description: "This app needs a sign-in method Todoflare does not support (only public clients, token_endpoint_auth_method none)" };
 	}
@@ -268,11 +269,11 @@ export function oauthClients(db: D1Database, fetcher: MetadataFetcher) {
 				return { ok: false, error: "invalid_client_metadata", description: "Only the code response type is supported" };
 			}
 			const bytes = crypto.getRandomValues(new Uint8Array(16));
-			const clientId = `tfc_${btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
+			const clientId = `tfc_${btoa(String.fromCharCode(...bytes)).replaceAll('+', "-").replaceAll('/', "_").replace(/=+$/, "")}`;
 			const client: OAuthClient = {
 				clientId,
 				kind: "registered",
-				name: input.client_name ?? new URL(input.redirect_uris[0]!).host,
+				name: input.client_name ?? new URL(input.redirect_uris[0]).host,
 				clientUri: input.client_uri ?? null,
 				redirectUris: input.redirect_uris,
 			};
@@ -286,11 +287,11 @@ export function oauthClients(db: D1Database, fetcher: MetadataFetcher) {
 		/** A registered client, or a metadata-document client fetched (and cached) from its URL. */
 		async resolve(clientId: string, now: number): Promise<ClientLookup> {
 			const row = await db.prepare(`SELECT * FROM "oauth_client" WHERE "clientId" = ?`).bind(clientId).first<ClientRow>();
-			if (row?.kind === "registered") return { ok: true, client: toClient(row) };
-			if (!isMetadataClientId(clientId)) return { ok: false, description: "Unknown client_id" };
-			if (row && row.fetchedAt !== null && now - row.fetchedAt < METADATA_CACHE_MS) return { ok: true, client: toClient(row) };
+			if (row?.kind === "registered") {return { ok: true, client: toClient(row) };}
+			if (!isMetadataClientId(clientId)) {return { ok: false, description: "Unknown client_id" };}
+			if (row && row.fetchedAt !== null && now - row.fetchedAt < METADATA_CACHE_MS) {return { ok: true, client: toClient(row) };}
 			const fetched = await fetchMetadataDocument(clientId, fetcher);
-			if (!fetched.ok) return fetched;
+			if (!fetched.ok) {return fetched;}
 			await db
 				.prepare(
 					`INSERT INTO "oauth_client" ("clientId", "kind", "name", "clientUri", "redirectUris", "createdAt", "fetchedAt")
@@ -341,7 +342,7 @@ export function authorizationRedirect(
 	params: Record<string, string | null | undefined>,
 ): string {
 	const url = new URL(redirectUri);
-	for (const [key, value] of Object.entries(params)) if (value !== null && value !== undefined) url.searchParams.set(key, value);
+	for (const [key, value] of Object.entries(params)) {if (value !== null && value !== undefined) {url.searchParams.set(key, value);}}
 	url.searchParams.set("iss", origin);
 	return url.toString();
 }
@@ -352,12 +353,12 @@ export async function validateAuthorizationRequest(
 	clients: ReturnType<typeof oauthClients>,
 	now: number,
 ): Promise<AuthorizationValidation> {
-	if (!params.client_id) return { ok: false, display: "The app did not identify itself (client_id is missing)." };
+	if (!params.client_id) {return { ok: false, display: "The app did not identify itself (client_id is missing)." };}
 	const lookup = await clients.resolve(params.client_id, now);
-	if (!lookup.ok) return { ok: false, display: `This app could not be verified: ${lookup.description}.` };
+	if (!lookup.ok) {return { ok: false, display: `This app could not be verified: ${lookup.description}.` };}
 	const { client } = lookup;
 	// With one registered redirect URI, an omitted redirect_uri means that one.
-	const redirectUri = params.redirect_uri ?? (client.redirectUris.length === 1 ? client.redirectUris[0]! : undefined);
+	const redirectUri = params.redirect_uri ?? (client.redirectUris.length === 1 ? client.redirectUris[0] : undefined);
 	if (!redirectUri || !client.redirectUris.some((registered) => redirectUriMatches(registered, redirectUri))) {
 		return { ok: false, display: "This app asked to return to an address it has not registered." };
 	}
@@ -366,11 +367,11 @@ export async function validateAuthorizationRequest(
 		display: description,
 		redirectTo: authorizationRedirect(redirectUri, origin, { error, error_description: description, state: params.state }),
 	});
-	if (params.response_type !== "code") return fail("unsupported_response_type", "Only response_type=code is supported");
+	if (params.response_type !== "code") {return fail("unsupported_response_type", "Only response_type=code is supported");}
 	if (!params.code_challenge || params.code_challenge_method !== "S256") {
 		return fail("invalid_request", "PKCE with code_challenge_method=S256 is required");
 	}
-	if (!/^[A-Za-z0-9_-]{43,128}$/.test(params.code_challenge)) return fail("invalid_request", "Malformed code_challenge");
+	if (!/^[A-Za-z0-9_-]{43,128}$/.test(params.code_challenge)) {return fail("invalid_request", "Malformed code_challenge");}
 	if (params.resource !== undefined && !isOwnResource(params.resource, origin)) {
 		return fail("invalid_target", "Tokens can only be issued for this server's MCP endpoint");
 	}
@@ -382,8 +383,8 @@ export async function validateAuthorizationRequest(
 
 function base64Url(bytes: Uint8Array): string {
 	let binary = "";
-	for (const byte of bytes) binary += String.fromCharCode(byte);
-	return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+	for (const byte of bytes) {binary += String.fromCharCode(byte);}
+	return btoa(binary).replaceAll('+', "-").replaceAll('/', "_").replace(/=+$/, "");
 }
 
 async function sha256(text: string): Promise<string> {
@@ -432,17 +433,17 @@ export function authorizationCodes(db: D1Database) {
 				.prepare(`SELECT * FROM "oauth_code" WHERE "codeHash" = ?`)
 				.bind(hash)
 				.first<{ clientId: string; redirectUri: string; codeChallenge: string; resource: string; connectionId: string; expiresAt: number; usedAt: number | null }>();
-			if (!row) return { ok: false, description: "Unknown authorization code" };
-			if (row.usedAt !== null) return { ok: false, replayedConnectionId: row.connectionId, description: "Authorization code already used" };
+			if (!row) {return { ok: false, description: "Unknown authorization code" };}
+			if (row.usedAt !== null) {return { ok: false, replayedConnectionId: row.connectionId, description: "Authorization code already used" };}
 			const claimed = await db
 				.prepare(`UPDATE "oauth_code" SET "usedAt" = ? WHERE "codeHash" = ? AND "usedAt" IS NULL`)
 				.bind(input.now, hash)
 				.run();
-			if (claimed.meta.changes !== 1) return { ok: false, replayedConnectionId: row.connectionId, description: "Authorization code already used" };
-			if (row.expiresAt <= input.now) return { ok: false, description: "Authorization code expired" };
-			if (row.clientId !== input.clientId) return { ok: false, description: "Authorization code was issued to another client" };
-			if (input.redirectUri !== undefined && input.redirectUri !== row.redirectUri) return { ok: false, description: "redirect_uri does not match the authorization request" };
-			if (input.resource !== undefined && !isOwnResource(input.resource, input.origin)) return { ok: false, description: "Tokens can only be issued for this server's MCP endpoint" };
+			if (claimed.meta.changes !== 1) {return { ok: false, replayedConnectionId: row.connectionId, description: "Authorization code already used" };}
+			if (row.expiresAt <= input.now) {return { ok: false, description: "Authorization code expired" };}
+			if (row.clientId !== input.clientId) {return { ok: false, description: "Authorization code was issued to another client" };}
+			if (input.redirectUri !== undefined && input.redirectUri !== row.redirectUri) {return { ok: false, description: "redirect_uri does not match the authorization request" };}
+			if (input.resource !== undefined && !isOwnResource(input.resource, input.origin)) {return { ok: false, description: "Tokens can only be issued for this server's MCP endpoint" };}
 			if (!/^[A-Za-z0-9._~-]{43,128}$/.test(input.codeVerifier) || (await sha256(input.codeVerifier)) !== row.codeChallenge) {
 				return { ok: false, description: "PKCE verification failed" };
 			}

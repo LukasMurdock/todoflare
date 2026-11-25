@@ -9,16 +9,8 @@ import {
 import { parseQueuedMutation } from "../sync/account-command-parser";
 import { ACCOUNT_COMMAND_TYPES, TERMINAL_REPLAY_REASONS } from "../sync/contracts";
 import { SYNC_MODES } from "../sync/mode-machine";
-import {
-	YJS_OUTBOX_KINDS,
-	type AccountSnapshotDoc,
-	type ColumnDocumentDoc,
-	type DurableCollectionName,
-	type MutationOutboxDoc,
-	type QuarantinedRecord,
-	type SyncStateDoc,
-	type YjsUpdateOutboxDoc,
-} from "./collections";
+import { YJS_OUTBOX_KINDS } from './collections';
+import type { AccountSnapshotDoc, ColumnDocumentDoc, DurableCollectionName, MutationOutboxDoc, QuarantinedRecord, StoredQuarantineRecord, SyncStateDoc, YjsUpdateOutboxDoc } from './collections';
 
 /** Rejected commands kept in the sync state for diagnosis. */
 export const MAX_RECENT_SYNC_FAILURES = 20;
@@ -121,21 +113,29 @@ const currentSchemas = {
 	syncState: z.ZodType<SyncStateDoc>;
 };
 
-type PersistedDoc =
-	| ColumnDocumentDoc
-	| AccountSnapshotDoc
-	| MutationOutboxDoc
-	| YjsUpdateOutboxDoc
-	| SyncStateDoc;
+interface CollectionDoc {
+	accountSnapshot: AccountSnapshotDoc;
+	columnDocument: ColumnDocumentDoc;
+	mutationOutbox: MutationOutboxDoc;
+	yjsUpdateOutbox: YjsUpdateOutboxDoc;
+	syncState: SyncStateDoc;
+}
 
-export interface MigratedCollection {
-	entries: Array<[string, PersistedDoc]>;
-	quarantined: QuarantinedRecord[];
+type PersistedDoc = CollectionDoc[DurableCollectionName];
+
+export interface MigratedCollection<K extends DurableCollectionName = DurableCollectionName> {
+	entries: Array<[string, CollectionDoc[K]]>;
+	quarantined: Array<QuarantinedRecord>;
 	changed: boolean;
 	writeBlocked: boolean;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isStoredQuarantineRecord(value: unknown): value is StoredQuarantineRecord {
+	return isRecord(value) && value.schemaVersion === 1 && typeof value.id === "string";
+}
+
+// oxlint-disable-next-line quality/no-unsafe-dictionary-type -- Stored rows can predate every current schema. Each reader narrows its fields before use.
+export function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
@@ -147,14 +147,14 @@ function issueMessage(error: z.ZodError): string {
 }
 
 function foundVersion(raw: unknown): number | null {
-	if (!isRecord(raw) || typeof raw.schemaVersion !== "number") return null;
+	if (!isRecord(raw) || typeof raw.schemaVersion !== "number") {return null;}
 	return raw.schemaVersion;
 }
 
 function migrateLegacy(
 	collection: DurableCollectionName,
-	raw: Record<string, unknown>,
-): Record<string, unknown> {
+	raw: { sharedWithByColumn?: unknown; publicLinksByColumn?: unknown },
+) {
 	switch (collection) {
 		case "accountSnapshot":
 			return {
@@ -172,17 +172,16 @@ function migrateLegacy(
 }
 
 function parseMutationOutbox(raw: unknown): MutationOutboxDoc | null {
-	if (!isRecord(raw) || raw.schemaVersion !== 1) return null;
+	if (!isRecord(raw) || raw.schemaVersion !== 1) {return null;}
 	const queued = parseQueuedMutation(raw);
-	if (!queued) return null;
-	if (raw.id !== queued.queueId) return null;
-	if (raw.ackedAt !== null) return null;
-	if (raw.lastError !== null && typeof raw.lastError !== "string") return null;
-	if (terminalReasonSchema.safeParse(raw.terminalReason).success === false) return null;
-	if (raw.lastAttemptAt !== null && !finiteNumber.safeParse(raw.lastAttemptAt).success) {
-		return null;
-	}
-	if (!finiteNumber.safeParse(raw.insertedAt).success) return null;
+	if (!queued) {return null;}
+	if (raw.id !== queued.queueId) {return null;}
+	if (raw.ackedAt !== null) {return null;}
+	if (raw.lastError !== null && typeof raw.lastError !== "string") {return null;}
+	const terminalReason = terminalReasonSchema.safeParse(raw.terminalReason);
+	const lastAttemptAt = finiteNumber.nullable().safeParse(raw.lastAttemptAt);
+	const insertedAt = finiteNumber.safeParse(raw.insertedAt);
+	if (!terminalReason.success || !lastAttemptAt.success || !insertedAt.success) {return null;}
 
 	return {
 		schemaVersion: 1,
@@ -197,16 +196,16 @@ function parseMutationOutbox(raw: unknown): MutationOutboxDoc | null {
 		nextRetryAt: queued.nextRetryAt,
 		ackedAt: null,
 		lastError: typeof raw.lastError === "string" ? raw.lastError : null,
-		terminalReason: raw.terminalReason as MutationOutboxDoc["terminalReason"],
-		lastAttemptAt: raw.lastAttemptAt as number | null,
-		insertedAt: raw.insertedAt as number,
+		terminalReason: terminalReason.data,
+		lastAttemptAt: lastAttemptAt.data,
+		insertedAt: insertedAt.data,
 	};
 }
 
 function parseCurrent(
 	collection: DurableCollectionName,
 	raw: unknown,
-): { value: PersistedDoc | null; reason: string } {
+) {
 	if (collection === "mutationOutbox") {
 		const value = parseMutationOutbox(raw);
 		return { value, reason: value ? "" : "record: invalid queued mutation" };
@@ -215,7 +214,7 @@ function parseCurrent(
 	const schema = currentSchemas[collection];
 	const parsed = schema.safeParse(raw);
 	return parsed.success
-		? { value: parsed.data as PersistedDoc, reason: "" }
+		? { value: parsed.data, reason: "" }
 		: { value: null, reason: issueMessage(parsed.error) };
 }
 
@@ -243,13 +242,18 @@ function quarantine(
 }
 
 /** Validates and upgrades one collection before application code can observe it. */
+export function migrateCollectionEntries<K extends DurableCollectionName>(
+	collection: K,
+	rawEntries: Array<[string, unknown]>,
+	now?: number,
+): MigratedCollection<K>;
 export function migrateCollectionEntries(
 	collection: DurableCollectionName,
 	rawEntries: Array<[string, unknown]>,
 	now = Date.now(),
 ): MigratedCollection {
 	const entries: Array<[string, PersistedDoc]> = [];
-	const quarantined: QuarantinedRecord[] = [];
+	const quarantined: Array<QuarantinedRecord> = [];
 	let changed = false;
 	let writeBlocked = false;
 

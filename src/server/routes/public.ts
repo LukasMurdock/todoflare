@@ -15,7 +15,7 @@ export function registerPublicRoutes(app: App) {
 		const request = validateRequestInput(c, publicPathSchema, {
 			publicId: c.req.param("publicId"),
 		});
-		if (!request.ok) return request.response;
+		if (!request.ok) {return request.response;}
 		const publicId = request.data.publicId;
 
 		if (!shouldSkipRateLimit(c)) {
@@ -66,7 +66,7 @@ export function registerPublicRoutes(app: App) {
 		const request = validateRequestInput(c, publicPathSchema, {
 			publicId: c.req.param("publicId"),
 		});
-		if (!request.ok) return request.response;
+		if (!request.ok) {return request.response;}
 		const publicId = request.data.publicId;
 
 		const columnId = await resolvePublicId(c.env, publicId);

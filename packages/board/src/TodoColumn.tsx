@@ -1,6 +1,6 @@
 "use client";
 
-import * as React from "react";
+import React from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 
@@ -104,6 +104,7 @@ export function TodoColumn({
 			>
 				{/* Drag handle */}
 				<button
+					type="button"
 					aria-label="Reorder column"
 					className={cn(columnButton, "relative z-10 cursor-grab active:cursor-grabbing")}
 					{...attributes}
@@ -139,6 +140,7 @@ export function TodoColumn({
 				<div className="flex items-center gap-0.5">
 					{/* Drag handle */}
 					<button
+						type="button"
 						aria-label="Reorder column"
 						className={cn(columnButton, "cursor-grab active:cursor-grabbing")}
 						{...attributes}

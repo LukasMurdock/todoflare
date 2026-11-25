@@ -1,6 +1,7 @@
 import { env, SELF } from "cloudflare:test";
 import { expect } from "vitest";
-import { softwareAuthenticator, type SoftwareAuthenticator } from "./software-authenticator";
+import { softwareAuthenticator } from './software-authenticator';
+import type { SoftwareAuthenticator } from './software-authenticator';
 
 /**
  * A browser with real passkey sessions for Worker tests: a cookie jar on the
@@ -17,22 +18,22 @@ export class Browser {
 	async fetch(path: string, init: RequestInit = {}): Promise<Response> {
 		const headers = new Headers(init.headers);
 		headers.set("Origin", ORIGIN);
-		if (init.body) headers.set("Content-Type", "application/json");
-		if (this.cookies.size) headers.set("Cookie", [...this.cookies].map(([name, value]) => `${name}=${value}`).join("; "));
+		if (init.body) {headers.set("Content-Type", "application/json");}
+		if (this.cookies.size) {headers.set("Cookie", [...this.cookies].map(([name, value]) => `${name}=${value}`).join("; "));}
 		const response = await SELF.fetch(`${ORIGIN}${path}`, { ...init, headers });
 		for (const cookie of response.headers.getSetCookie()) {
 			const [pair] = cookie.split(";");
 			const index = pair.indexOf("=");
 			const [name, value] = [pair.slice(0, index), pair.slice(index + 1)];
-			if (value && !/Max-Age=0/i.test(cookie)) this.cookies.set(name, value);
-			else this.cookies.delete(name);
+			if (value && !/Max-Age=0/i.test(cookie)) {this.cookies.set(name, value);}
+			else {this.cookies.delete(name);}
 		}
 		return response;
 	}
 
 	async json<T>(path: string, init: RequestInit = {}): Promise<{ status: number; body: T }> {
 		const response = await this.fetch(path, init);
-		return { status: response.status, body: await response.json() as T };
+		return { status: response.status, body: await response.json<T>() };
 	}
 
 	async accountId(): Promise<string | null> {
@@ -46,7 +47,7 @@ export class Browser {
 
 	async register(authenticator: SoftwareAuthenticator, verified = true) {
 		const options = await this.json<{ challenge: string; error?: string }>("/api/auth/passkey/generate-register-options?name=Laptop");
-		if (options.status !== 200) return options;
+		if (options.status !== 200) {return options;}
 		const response = await authenticator.register(options.body, verified);
 		return this.json<{ error?: string }>("/api/auth/passkey/verify-registration", {
 			method: "POST",

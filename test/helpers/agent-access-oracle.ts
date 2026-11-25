@@ -15,7 +15,7 @@ export type OracleCell = {
 };
 export type OracleOutcome = "allowed" | "unauthorized" | "not_found" | "insufficient_grant" | "read_only_mode";
 
-const RANK: Record<string, number> = { read: 1, append: 2, edit: 3 };
+const RANK = { none: 0, "expired-edit": 0, read: 1, append: 2, edit: 3 };
 
 /** First matching rule wins. Each rule must decide at least one cell. */
 export const ORACLE_RULES: Array<[rule: string, matches: (cell: OracleCell) => boolean, outcome: OracleOutcome]> = [
@@ -31,7 +31,9 @@ export const ORACLE_RULES: Array<[rule: string, matches: (cell: OracleCell) => b
 	["everything else is allowed", () => true, "allowed"],
 ];
 
-export function expectedOutcome(cell: OracleCell): { rule: string; outcome: OracleOutcome } {
-	const [rule, , outcome] = ORACLE_RULES.find(([, matches]) => matches(cell))!;
+export function expectedOutcome(cell: OracleCell) {
+	const match = ORACLE_RULES.find(([, matches]) => matches(cell));
+	if (!match) { throw new Error("Missing permission oracle rule"); }
+	const [rule, , outcome] = match;
 	return { rule, outcome };
 }

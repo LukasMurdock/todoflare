@@ -1,12 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { LocalFirstDatabase } from "../lib/local-first/database";
-import {
-	describeSyncFailure,
-	recordSyncFailure,
-	summarizeReplayReport,
-	type RecordedSyncFailure,
-} from "../lib/sync/account-command-reconciliation";
+import { describeSyncFailure, recordSyncFailure, summarizeReplayReport } from '../lib/sync/account-command-reconciliation';
+import type { RecordedSyncFailure } from '../lib/sync/account-command-reconciliation';
 import { shouldApplyAccessLossPolicy } from "../lib/sync/replay-response";
 import type { ReplayReport } from "../lib/sync/contracts";
 import type { SyncMode } from "../lib/sync/mode-machine";
@@ -27,7 +23,7 @@ export interface SyncStateSummary {
 	quarantinedRecords: number;
 	quarantinedDurableMutations: number;
 	/** Most recent first; persisted with the sync state, so they survive a reload. */
-	recentSyncFailures: RecordedSyncFailure[];
+	recentSyncFailures: Array<RecordedSyncFailure>;
 }
 
 function syncStateDocId(accountId: string | null): string {
@@ -72,14 +68,14 @@ export function useSyncTelemetry(params: {
 	const [storageLastError, setStorageLastError] = useState<string | null>(null);
 	const [quarantinedRecords, setQuarantinedRecords] = useState(0);
 	const [quarantinedDurableMutations, setQuarantinedDurableMutations] = useState(0);
-	const [recentSyncFailures, setRecentSyncFailures] = useState<RecordedSyncFailure[]>([]);
+	const [recentSyncFailures, setRecentSyncFailures] = useState<Array<RecordedSyncFailure>>([]);
 	const handledReplayReportRef = useRef<ReplayReport | null>(null);
 	const handledStorageErrorRef = useRef<string | null>(null);
 	const activeDocId = syncStateDocId(accountId);
 
-	useEffect(() => {
-		let cancelled = false;
-		let unsubscribeStorageHealth: (() => void) | undefined;
+	const [previousDocId, setPreviousDocId] = useState(activeDocId);
+	if (previousDocId !== activeDocId) {
+		setPreviousDocId(activeDocId);
 		setHydratedDocId(null);
 		setLastServerHydrationAt(null);
 		setLastReplayAt(null);
@@ -87,10 +83,15 @@ export function useSyncTelemetry(params: {
 		setRevokeDiscardCount(0);
 		setConvergenceFailureCount(0);
 		setRecentSyncFailures([]);
+	}
+
+	useEffect(() => {
+		let cancelled = false;
+		let unsubscribeStorageHealth: (() => void) | undefined;
 
 		void ensureLocalFirstDb()
 			.then((db) => {
-				if (cancelled) return;
+				if (cancelled) {return;}
 				const quarantined = [
 					...db.collections.quarantine.values(),
 					...readAllLocalStorageQuarantine(),
@@ -100,7 +101,7 @@ export function useSyncTelemetry(params: {
 					quarantined.filter((record) => record.containsDurableMutation).length,
 				);
 				unsubscribeStorageHealth = db.subscribeStorageHealth((health) => {
-					if (cancelled) return;
+					if (cancelled) {return;}
 					setStorageState(health.state);
 					setStorageLastError(health.lastError?.message ?? null);
 					if (health.state !== "durable" && health.lastError) {
@@ -118,12 +119,12 @@ export function useSyncTelemetry(params: {
 				const snapshot = db.collections.syncState.get(activeDocId);
 				setLastServerHydrationAt((current) => {
 					const loaded = snapshot?.lastServerHydrationAt ?? null;
-					if (loaded === null) return current;
+					if (loaded === null) {return current;}
 					return current === null ? loaded : Math.max(current, loaded);
 				});
 				setLastReplayAt((current) => {
 					const loaded = snapshot?.lastReplayAt ?? null;
-					if (loaded === null) return current;
+					if (loaded === null) {return current;}
 					return current === null ? loaded : Math.max(current, loaded);
 				});
 				setLastReplayLatencyMs((current) =>
@@ -144,7 +145,7 @@ export function useSyncTelemetry(params: {
 			})
 			.catch((error: unknown) => {
 				console.error("Failed to load sync state from local store:", error);
-				if (!cancelled) setHydratedDocId(activeDocId);
+				if (!cancelled) {setHydratedDocId(activeDocId);}
 			});
 
 		return () => {
@@ -153,28 +154,19 @@ export function useSyncTelemetry(params: {
 		};
 	}, [accountId, activeDocId, ensureLocalFirstDb]);
 
-	// Apply live actor telemetry after the account-reset effect above. A fast
-	// startup replay can otherwise be written and immediately cleared in the same
-	// effect flush before the local snapshot finishes loading.
-	useEffect(() => {
-		if (replayAt === null) return;
-		setLastReplayAt((current) =>
-			current === null ? replayAt : Math.max(current, replayAt),
-		);
-	}, [replayAt]);
-
-	useEffect(() => {
-		if (convergedAt === null) return;
-		setLastServerHydrationAt((current) =>
-			current === null ? convergedAt : Math.max(current, convergedAt),
-		);
-	}, [convergedAt]);
+	if (replayAt !== null && (lastReplayAt === null || replayAt > lastReplayAt)) {
+		setLastReplayAt(replayAt);
+	}
+	if (convergedAt !== null && (lastServerHydrationAt === null || convergedAt > lastServerHydrationAt)) {
+		setLastServerHydrationAt(convergedAt);
+	}
 
 	useEffect(() => {
 		const report = replayReport;
-		if (!report || handledReplayReportRef.current === report) return;
+		if (!report || handledReplayReportRef.current === report) {return;}
 		handledReplayReportRef.current = report;
 		if (replayDurationMs !== null) {
+			// oxlint-disable-next-line react/set-state-in-effect -- Record each external actor report once, together with its failures, even across local hydration.
 			setLastReplayLatencyMs(replayDurationMs);
 		}
 		if (summarizeReplayReport(report).nonAccessLossFailureCount > 0) {
@@ -189,14 +181,14 @@ export function useSyncTelemetry(params: {
 			);
 			toast.error("Some offline changes could not be synced", {
 				description:
-					describeSyncFailure(failures[0]!) +
+					describeSyncFailure(failures[0]) +
 					(failures.length > 1 ? ` (and ${failures.length - 1} more)` : ""),
 			});
 		}
 	}, [replayDurationMs, replayReport]);
 
 	useEffect(() => {
-		if (hydratedDocId !== activeDocId) return;
+		if (hydratedDocId !== activeDocId) {return;}
 		void ensureLocalFirstDb()
 			.then((db) => {
 				db.collections.syncState.set(activeDocId, {
@@ -235,7 +227,7 @@ export function useSyncTelemetry(params: {
 	]);
 
 	const recordRevokeDiscard = useCallback((count: number) => {
-		if (count > 0) setRevokeDiscardCount((current) => current + count);
+		if (count > 0) {setRevokeDiscardCount((current) => current + count);}
 	}, []);
 
 	const resetSyncTelemetry = useCallback(() => {

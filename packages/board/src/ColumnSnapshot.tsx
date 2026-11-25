@@ -1,4 +1,4 @@
-import * as React from "react";
+import React from "react";
 import type { Value } from "platejs";
 import { createSlateEditor } from "platejs";
 import { EditorStatic } from "./ui/editor-static";

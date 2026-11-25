@@ -46,8 +46,8 @@ export type ColumnMetadataFetchResult =
 
 export async function fetchColumnMetadataBatch(
 	columnRooms: DurableObjectNamespace,
-	columnIds: readonly string[],
-): Promise<ColumnMetadataFetchResult[]> {
+	columnIds: ReadonlyArray<string>,
+): Promise<Array<ColumnMetadataFetchResult>> {
 	return mapWithConcurrency(
 		columnIds,
 		ACCOUNT_METADATA_CONCURRENCY,
@@ -76,7 +76,7 @@ export function validateAccountImportCompleteness(
 	payload: {
 		account: z.output<typeof accountContractSchema>;
 		ownedColumns: Array<z.output<typeof accountExportColumnInputSchema>>;
-		expectedColumnIds?: string[];
+		expectedColumnIds?: Array<string>;
 	},
 	context: z.RefinementCtx,
 ) {
@@ -158,14 +158,14 @@ export function registerAccountRoutes(app: App) {
 	 */
 	app.on(API_ROUTES.createAccount.method, API_ROUTES.createAccount.path, async (c) => {
 		const readOnlyResponse = blockWritesIfReadOnly(c);
-		if (readOnlyResponse) return readOnlyResponse;
+		if (readOnlyResponse) {return readOnlyResponse;}
 		const compiledE2E =
-			typeof __TODOFLARE_E2E__ !== "undefined" && __TODOFLARE_E2E__;
+			typeof __TODOFLARE_E2E__ === "boolean" && __TODOFLARE_E2E__;
 		const allowTestBootstrap =
 			(c.env.AUTH_TEST_BYPASS === "true" || compiledE2E) &&
 			c.req.header("X-Test-Disable-Auth-Bypass") !== "1";
 		const auth = await requireAccountCredential(c.req.raw, c.env);
-		if (!auth.ok && !allowTestBootstrap) return auth.response;
+		if (!auth.ok && !allowTestBootstrap) {return auth.response;}
 
 		if (!shouldSkipRateLimit(c)) {
 			const ip = getClientIP(c.req.raw);
@@ -221,7 +221,7 @@ export function registerAccountRoutes(app: App) {
 	 */
 	app.on(API_ROUTES.getAccount.method, API_ROUTES.getAccount.path, async (c) => {
 		const auth = await requireAccountCredential(c.req.raw, c.env);
-		if (!auth.ok) return auth.response;
+		if (!auth.ok) {return auth.response;}
 		const accountId = auth.accountId;
 
 		if (!shouldSkipRateLimit(c)) {
@@ -267,7 +267,7 @@ export function registerAccountRoutes(app: App) {
 
 		// Fetch authoritative metadata for owned columns so account convergence can
 		// confirm sharing and public-link state rather than retaining client effects.
-		const ownedColumns: ColumnMeta[] = [];
+		const ownedColumns: Array<ColumnMeta> = [];
 		const ownedMetadataResults = await fetchColumnMetadataBatch(
 			c.env.COLUMN_ROOM,
 			account.columnOrder,
@@ -283,7 +283,7 @@ export function registerAccountRoutes(app: App) {
 				}
 				throw result.error;
 			}
-			if (result.response.status === 404) continue;
+			if (result.response.status === 404) {continue;}
 			if (!result.response.ok) {
 				return apiErrorResponse(
 					"durable_object_unavailable",
@@ -309,8 +309,8 @@ export function registerAccountRoutes(app: App) {
 		const sharedColumnIds = parsedSharedColumnIds.value;
 
 		// Fetch metadata for shared columns
-		const sharedColumns: ColumnMeta[] = [];
-		const reconciledSharedColumnIds: string[] = [];
+		const sharedColumns: Array<ColumnMeta> = [];
+		const reconciledSharedColumnIds: Array<string> = [];
 		const sharedMetadataResults = await fetchColumnMetadataBatch(
 			c.env.COLUMN_ROOM,
 			sharedColumnIds,
@@ -387,7 +387,7 @@ export function registerAccountRoutes(app: App) {
 	 */
 	app.on(API_ROUTES.exportAccount.method, API_ROUTES.exportAccount.path, async (c) => {
 		const auth = await requireAccountCredential(c.req.raw, c.env);
-		if (!auth.ok) return auth.response;
+		if (!auth.ok) {return auth.response;}
 		const accountId = auth.accountId;
 		const normalizedId = normalizeAccountId(accountId);
 		const accountData = await accountRecordStore(c.env).get(`account:${normalizedId}`);
@@ -440,12 +440,12 @@ export function registerAccountRoutes(app: App) {
 	 */
 	app.on(API_ROUTES.importAccount.method, API_ROUTES.importAccount.path, async (c) => {
 		const readOnlyResponse = blockWritesIfReadOnly(c);
-		if (readOnlyResponse) return readOnlyResponse;
+		if (readOnlyResponse) {return readOnlyResponse;}
 
 		const auth = await requireAccountCredential(c.req.raw, c.env);
-		if (!auth.ok) return auth.response;
+		if (!auth.ok) {return auth.response;}
 		const body = await validateJsonBody(c, accountImportBodySchema);
-		if (!body.ok) return body.response;
+		if (!body.ok) {return body.response;}
 		const accountId = auth.accountId;
 
 		return withIdempotentWrite(
@@ -463,7 +463,7 @@ export function registerAccountRoutes(app: App) {
 					return schemaErrorResponse("account", parsedAccount);
 				}
 
-				const importedColumnIds: string[] = [];
+				const importedColumnIds: Array<string> = [];
 
 				for (const column of body.data.ownedColumns) {
 					const cloned = await cloneColumnSnapshot({

@@ -1,34 +1,30 @@
 import { cacheColumnUpdate, readColumnDocument, columnDocumentKey } from "@/lib/collaboration/column-document-cache";
 import type { QueuedMutation } from "@/lib/sync/contracts";
 import type { YjsOutboxEntry } from "@/lib/sync/yjs-update-outbox";
-import { isColumnEmpty, type Column } from "@/types/column";
-import {
-	createContext,
-	useContext,
-	useState,
-	useCallback,
-	useEffect,
-	useMemo,
-	useRef,
-	type ReactNode,
-} from "react";
+import { isColumnEmpty } from '@/types/column';
+import type { Column } from '@/types/column';
+import { createContext, useContext, useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import type { ReactNode } from 'react';
 import { waitFor } from "xstate";
 import { toast } from "sonner";
-import { deriveSyncMode, type SyncMode } from "@/lib/sync/mode-machine";
+import { deriveSyncMode } from '@/lib/sync/mode-machine';
+import type { SyncMode } from '@/lib/sync/mode-machine';
 import { getLocalFirstDb } from "@/lib/local-first/database";
-import type { QuarantinedRecord } from "@/lib/local-first/collections";
+import type { StoredQuarantineRecord } from "@/lib/local-first/collections";
 import { readAllLocalStorageQuarantine } from "@/lib/local-first/local-storage-quarantine";
 import { createLocalFirstMutationQueueStorage, LocalMutationQueueService } from "@/lib/sync/mutation-queue-service";
 import { columnIdForAccountCommand } from "@/lib/sync/account-command-reconciliation";
 import { LOCAL_COLUMNS_STORAGE_KEY, parseLocalColumns } from "@/lib/local-column-storage";
 import { createAccountCommandExecutor } from "@/lib/sync/account-command-executor";
-import { LocalYjsUpdateOutbox, createLocalFirstYjsOutboxStorage, type YjsOutboxKind } from "@/lib/sync/yjs-update-outbox";
+import { LocalYjsUpdateOutbox, createLocalFirstYjsOutboxStorage } from '@/lib/sync/yjs-update-outbox';
+import type { YjsOutboxKind } from '@/lib/sync/yjs-update-outbox';
 import { encodeDurableSyncSubmission, encodeWsFrame, WS_OP_AWARENESS } from "@/lib/collaboration/websocket-protocol";
 import { ColumnSessionManager } from "@/lib/sync/column-session-manager";
-import type { ColumnSocketFrame, ColumnSocketLike } from "@/lib/sync/column-socket-actor";
+import type { ColumnSocketFrame } from "@/lib/sync/column-socket-actor";
 import type { AccountConvergenceDependencies } from "@/lib/sync/account-convergence-machine";
 import { accountConvergenceErrorMessage, useAccountCommandSubmission, useAccountConvergence } from "@/hooks/use-account-convergence";
-import { useSyncTelemetry, type SyncStateSummary } from "@/hooks/use-sync-telemetry";
+import { useSyncTelemetry } from '@/hooks/use-sync-telemetry';
+import type { SyncStateSummary } from '@/hooks/use-sync-telemetry';
 import { projectionFromLocalSnapshot } from "@/lib/sync/account-projection";
 import { createAccountProjection, fetchAccountProjection, signInWithPasskey } from "@/lib/sync/account-api-client";
 import { authClient, recoverAccount } from "@/lib/auth-client";
@@ -47,7 +43,8 @@ import { normalizeAccountId, displayAccountId } from "@/lib/account";
 import { useAccountColumnCommands } from "@/hooks/use-account-column-commands";
 import { useAccountDataTransfer } from "@/hooks/use-account-data-transfer";
 import { fetchColumnSocketUrl } from "@/lib/sync/column-socket-ticket";
-import { classifyYjsOutbox, type YjsOutboxRetentionInput } from "@/lib/sync/yjs-outbox-retention";
+import { classifyYjsOutbox } from '@/lib/sync/yjs-outbox-retention';
+import type { YjsOutboxRetentionInput } from '@/lib/sync/yjs-outbox-retention';
 
 const ACCOUNT_STORAGE_KEY = "todoflare-account";
 const E2E_REPLAY_WAKE_EVENT = "todoflare:e2e:replay-wake";
@@ -83,7 +80,7 @@ function emptyYjsOutboxSummary(): YjsOutboxSummary {
 }
 
 function summarizeYjsOutbox(
-	entries: YjsOutboxEntry[],
+	entries: Array<YjsOutboxEntry>,
 	retention: YjsOutboxRetentionInput | null,
 ): YjsOutboxSummary {
 	const { sendable, heldForTrash } = retention
@@ -122,9 +119,9 @@ interface SyncContextValue {
 	syncStateSummary: SyncStateSummary;
 	yjsOutboxSummary: YjsOutboxSummary;
 	/** Account changes still queued for this account, for the sync debug snapshot. */
-	getPendingAccountCommands(): QueuedMutation[];
+	getPendingAccountCommands: () => Array<QueuedMutation>;
 	browserStorageError: string | null;
-	reportBrowserStorageError: (error: unknown, guestColumns?: Column[]) => void;
+	reportBrowserStorageError: (error: unknown, guestColumns?: Array<Column>) => void;
 	retryBrowserStorage: () => Promise<void>;
 
 	// Account operations
@@ -135,15 +132,15 @@ interface SyncContextValue {
 	resetSyncTelemetry: () => void;
 
 	// Shared columns
-	sharedColumns: ColumnMeta[];
-	deletedColumns: DeletedColumn[];
-	sharedWithByColumn: Record<string, string[] | undefined>;
+	sharedColumns: Array<ColumnMeta>;
+	deletedColumns: Array<DeletedColumn>;
+	sharedWithByColumn: Record<string, Array<string> | undefined>;
 	publicLinksByColumn: Record<string, PublicLinkResponse | null>;
 
 	// Column connections
 	loadColumnDocument: (columnId: string) => Promise<Uint8Array | null>;
 	subscribeToColumn: (columnId: string) => () => void;
-	getColumnPresence: (columnId: string) => PresenceUser[];
+	getColumnPresence: (columnId: string) => Array<PresenceUser>;
 
 	// Column operations (via API)
 	createColumn: () => Promise<ColumnMeta | null>;
@@ -165,17 +162,17 @@ interface SyncContextValue {
 	) => () => void;
 
 	// Account metadata updates
-	updateColumnOrder: (columnOrder: string[]) => Promise<void>;
-	updateHiddenSharedColumns: (hiddenSharedColumns: string[]) => Promise<void>;
+	updateColumnOrder: (columnOrder: Array<string>) => Promise<void>;
+	updateHiddenSharedColumns: (hiddenSharedColumns: Array<string>) => Promise<void>;
 	exportAccountData: () => Promise<AccountExportPayload | null>;
-	importAccountData: (payload: AccountExportPayload) => Promise<boolean>;
+	importAccountData: (payload: unknown) => Promise<boolean>;
 	exportStorageRecoveryData: () => Promise<{
 		schemaVersion: 1;
 		exportedAt: number;
-		records: QuarantinedRecord[];
-		pendingYjs: YjsOutboxEntry[];
-		pendingCommands: QueuedMutation[];
-		guestColumns: Column[] | null;
+		records: Array<StoredQuarantineRecord>;
+		pendingYjs: Array<YjsOutboxEntry>;
+		pendingCommands: Array<QueuedMutation>;
+		guestColumns: Array<Column> | null;
 	}>;
 
 	// Check for existing localStorage data
@@ -193,14 +190,13 @@ export function useSyncContext() {
 }
 
 export function SyncProvider({ children }: { children: ReactNode }) {
-	const restoredAccountIdRef = useRef<string | null | undefined>(undefined);
-	if (restoredAccountIdRef.current === undefined) {
+	const [restoredAccountId] = useState(() => {
 		try {
-			restoredAccountIdRef.current = localStorage.getItem(ACCOUNT_STORAGE_KEY);
+			return localStorage.getItem(ACCOUNT_STORAGE_KEY);
 		} catch {
-			restoredAccountIdRef.current = null;
+			return null;
 		}
-	}
+	});
 	const [operationError, setError] = useState<string | null>(null);
 	const [yjsOutboxSummary, setYjsOutboxSummary] = useState<YjsOutboxSummary>(
 		emptyYjsOutboxSummary,
@@ -208,7 +204,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 	// Column sets from the last server-confirmed projection; null until one arrives.
 	const yjsRetentionRef = useRef<YjsOutboxRetentionInput | null>(null);
 	const [isNetworkOnline, setIsNetworkOnline] = useState(() => {
-		if (typeof navigator === "undefined") return true;
+		if (typeof navigator === "undefined") {return true;}
 		return navigator.onLine;
 	});
 
@@ -231,40 +227,24 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		) => Promise<void>
 	>(async () => {});
 	const [browserStorageError, setBrowserStorageError] = useState<string | null>(null);
-	const guestRecoveryColumnsRef = useRef<Column[] | null>(null);
-	const reportBrowserStorageError = useCallback((error: unknown, guestColumns?: Column[]) => {
-		if (guestColumns) guestRecoveryColumnsRef.current = guestColumns;
+	const [guestRecoveryColumns, setGuestRecoveryColumns] = useState<Array<Column> | null>(null);
+	const reportBrowserStorageError = useCallback((error: unknown, guestColumns?: Array<Column>) => {
+		if (guestColumns) {setGuestRecoveryColumns(guestColumns);}
 		setBrowserStorageError(error instanceof Error ? error.message : "Browser storage could not save changes");
 	}, []);
 	const localFirstDbRef = useRef<LocalFirstDatabase | null>(null);
-	const accountCommandExecutorRef = useRef<ReturnType<
-		typeof createAccountCommandExecutor
-	> | null>(null);
-	const mutationQueueRef = useRef<LocalMutationQueueService | null>(null);
-	const yjsOutboxRef = useRef<LocalYjsUpdateOutbox | null>(null);
 	const durableQueueStoragePromiseRef = useRef<Promise<LocalFirstDatabase> | null>(
 		null,
 	);
 
-	if (!accountCommandExecutorRef.current) {
-		accountCommandExecutorRef.current = createAccountCommandExecutor({});
-	}
-
-	if (!mutationQueueRef.current) {
-		mutationQueueRef.current = new LocalMutationQueueService({
+	const [mutationQueue] = useState(() => {
+		const executor = createAccountCommandExecutor({});
+		return new LocalMutationQueueService({
 			onPersistenceError: reportBrowserStorageError,
-			executor: (mutation, options) =>
-				accountCommandExecutorRef.current!.execute(mutation, options),
+			executor: (mutation, options) => executor.execute(mutation, options),
 		});
-	}
-
-	const mutationQueue = mutationQueueRef.current!;
-
-	if (!yjsOutboxRef.current) {
-		yjsOutboxRef.current = new LocalYjsUpdateOutbox({ onPersistenceError: reportBrowserStorageError });
-	}
-
-	const yjsOutbox = yjsOutboxRef.current;
+	});
+	const [yjsOutbox] = useState(() => new LocalYjsUpdateOutbox({ onPersistenceError: reportBrowserStorageError }));
 
 	const ensureLocalFirstDb = useCallback(async () => {
 		if (localFirstDbRef.current) {
@@ -291,9 +271,9 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		async (
 			id: string,
 			nextAccount: Account,
-			nextSharedColumns: ColumnMeta[],
-			nextDeletedColumns: DeletedColumn[],
-			nextSharedWithByColumn: Record<string, string[] | undefined>,
+			nextSharedColumns: Array<ColumnMeta>,
+			nextDeletedColumns: Array<DeletedColumn>,
+			nextSharedWithByColumn: Record<string, Array<string> | undefined>,
 			nextPublicLinksByColumn: Record<string, PublicLinkResponse | null>,
 			options?: { reconciledAt?: number | null },
 		) => {
@@ -315,8 +295,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 					hydratedAt: previousHydratedAt,
 					reconciledAt: options?.reconciledAt ?? null,
 				});
-			} catch (err) {
-				console.error("Failed to persist local account snapshot:", err);
+			} catch (error_) {
+				console.error("Failed to persist local account snapshot:", error_);
 			}
 		},
 		[ensureLocalFirstDb],
@@ -331,7 +311,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 				const snapshot = db.collections.accountSnapshot.get(
 					accountSnapshotDocId(id),
 				);
-				if (!snapshot) return null;
+				if (!snapshot) {return null;}
 				return projectionFromLocalSnapshot(snapshot);
 			},
 			fetchServer: (id, signal) =>
@@ -344,8 +324,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			getNextRetryAt: (id) => mutationQueue.getNextRetryAt(id),
 			persistCredential: (id) => {
 				try {
-					if (id) localStorage.setItem(ACCOUNT_STORAGE_KEY, id);
-					else localStorage.removeItem(ACCOUNT_STORAGE_KEY);
+					if (id) {localStorage.setItem(ACCOUNT_STORAGE_KEY, id);}
+					else {localStorage.removeItem(ACCOUNT_STORAGE_KEY);}
 				} catch {
 					// Storage may be unavailable in privacy-restricted contexts.
 				}
@@ -370,7 +350,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 	);
 	const accountConvergence = useAccountConvergence(accountConvergenceDependencies, {
 		networkOnline: isNetworkOnline,
-		restoredAccountId: restoredAccountIdRef.current,
+		restoredAccountId,
 	});
 	const accountConvergenceActor = accountConvergence.actor;
 	const accountId = accountConvergence.accountId;
@@ -419,6 +399,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 	useEffect(() => {
 		yjsRetentionRef.current = null;
 		if (!accountId || !projection || lastConvergedAt === null) {
+			// oxlint-disable-next-line react/set-state-in-effect -- Read the external outbox even before the actor has its first server projection.
 			refreshYjsOutboxSummary();
 			return;
 		}
@@ -445,7 +426,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			retention,
 		);
 		const discardIds = new Set(discardable.map((entry) => entry.id));
-		if (discardIds.size > 0) yjsOutbox.dropWhere((entry) => discardIds.has(entry.id));
+		if (discardIds.size > 0) {yjsOutbox.dropWhere((entry) => discardIds.has(entry.id));}
 		refreshYjsOutboxSummary();
 	}, [accountId, lastConvergedAt, mutationQueue, projection, refreshYjsOutboxSummary, yjsOutbox]);
 
@@ -477,9 +458,11 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		ensureLocalFirstDb,
 	});
 
-	useEffect(() => {
+	const [errorAccountId, setErrorAccountId] = useState(accountId);
+	if (errorAccountId !== accountId) {
+		setErrorAccountId(accountId);
 		setError(null);
-	}, [accountId]);
+	}
 
 	useEffect(() => {
 		const onOnline = () => {
@@ -503,7 +486,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 	}, [accountConvergenceActor]);
 
 	useEffect(() => {
-		if (import.meta.env.VITE_E2E_REPLAY_CONTROL !== "true") return;
+		if (import.meta.env.VITE_E2E_REPLAY_CONTROL !== "true") {return;}
 		const wakeReplay = () => {
 			accountConvergenceActor.send({ type: "REPLAY_WAKE" });
 		};
@@ -527,8 +510,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 
 	useEffect(() => {
 		recentAccessLossNoticesRef.current.clear();
-		refreshYjsOutboxSummary();
-	}, [accountId, refreshYjsOutboxSummary]);
+	}, [accountId]);
 
 	const detachColumnSync = useCallback((columnId: string) => {
 		columnSessionManagerRef.current?.manager.detachColumn(columnId);
@@ -541,8 +523,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			reason: "revoked" | "column_deleted",
 			source: "websocket" | "replay",
 		) => {
-			if (!columnId) return;
-			if (accountId) localFirstDbRef.current?.collections.columnDocument.delete(columnDocumentKey(accountId, columnId));
+			if (!columnId) {return;}
+			if (accountId) {localFirstDbRef.current?.collections.columnDocument.delete(columnDocumentKey(accountId, columnId));}
 
 			const droppedMutationCount = await mutationQueue.dropWhere(
 				(mutation) => columnIdForAccountCommand(mutation) === columnId,
@@ -566,7 +548,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			const now = Date.now();
 			const lastNotifiedAt = recentAccessLossNoticesRef.current.get(noticeKey) ?? 0;
 			const shouldNotify = now - lastNotifiedAt >= ACCESS_LOSS_NOTICE_COOLDOWN_MS;
-			if (!shouldNotify) return;
+			if (!shouldNotify) {return;}
 
 			recentAccessLossNoticesRef.current.set(noticeKey, now);
 
@@ -595,12 +577,14 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			yjsOutbox,
 		],
 	);
-	accessLossReconcilerRef.current = applyColumnAccessLossPolicy;
+	useLayoutEffect(() => {
+		accessLossReconcilerRef.current = applyColumnAccessLossPolicy;
+	}, [applyColumnAccessLossPolicy]);
 
 	const ensureColumnSessionManager = useCallback(() => {
-		if (!accountId) return null;
+		if (!accountId) {return null;}
 		const existing = columnSessionManagerRef.current;
-		if (existing?.accountId === accountId) return existing.manager;
+		if (existing?.accountId === accountId) {return existing.manager;}
 
 		existing?.manager.stop();
 		const manager = new ColumnSessionManager({
@@ -611,7 +595,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			dependencies: {
 				onAuthenticationRequired: () => accountConvergenceActor.send({ type: "AUTHENTICATION_REQUIRED" }),
 				createSocket: (url, protocols) =>
-					new WebSocket(url, protocols) as unknown as ColumnSocketLike,
+					new WebSocket(url, protocols),
 				getSocketUrl: (activeAccountId, columnId, signal) =>
 					fetchColumnSocketUrl({
 						accountId: activeAccountId,
@@ -654,7 +638,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 					return frames;
 				},
 				onBestEffortFrameWritten: (frame) => {
-					if (!frame.outboxId) return;
+					if (!frame.outboxId) {return;}
 					yjsOutbox.removeAwarenessAfterSocketWrite([frame.outboxId]);
 					refreshYjsOutboxSummary();
 				},
@@ -701,7 +685,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 	// HTTP traffic refreshes the browser cookie even when editing only uses an
 	// already-open WebSocket. Focus also detects expiry and sign-in in another tab.
 	useEffect(() => {
-		if (!accountId) return;
+		if (!accountId) {return;}
 		const refresh = () => {
 			if (navigator.onLine && document.visibilityState === "visible") {
 				accountConvergenceActor.send({ type: "REFRESH_REQUESTED" });
@@ -734,7 +718,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 	);
 
 	useEffect(() => {
-		if (!accountId || !account) return;
+		if (!accountId || !account) {return;}
 
 		void persistAccountLocalSnapshot(
 			accountId,
@@ -792,7 +776,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 				setError("That passkey belongs to a different account. Use the passkey for the account open here. Your local edits are unchanged.");
 				return false;
 			}
-			if (existingAccountId) accountConvergenceActor.send({ type: "AUTHENTICATION_REQUIRED" });
+			if (existingAccountId) {accountConvergenceActor.send({ type: "AUTHENTICATION_REQUIRED" });}
 			accountConvergenceActor.send({ type: "LOGIN", accountId: formattedId });
 			const snapshot = await waitFor(
 				accountConvergenceActor,
@@ -806,7 +790,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 				snapshot.context.authenticationStatus === "authenticated" && snapshot.context.accountId !== null &&
 				normalizeAccountId(snapshot.context.accountId) ===
 					normalizeAccountId(formattedId);
-			if (success) toast.success("Logged in successfully!");
+			if (success) {toast.success("Logged in successfully!");}
 			return success;
 		},
 		[accountConvergenceActor],
@@ -866,14 +850,14 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 		[ensureColumnSessionManager],
 	);
 
-	const getColumnPresence = useCallback((columnId: string): PresenceUser[] => {
+	const getColumnPresence = useCallback((columnId: string): Array<PresenceUser> => {
 		return (
 			columnSessionManagerRef.current?.manager.getColumnPresence(columnId) ?? []
 		);
 	}, []);
 
 	const loadColumnDocument = useCallback(async (columnId: string) => {
-		if (!accountId) return null;
+		if (!accountId) {return null;}
 		const db = await ensureDurableQueueStorage();
 		const pending = yjsOutbox.getAllEntries()
 			.filter(entry => normalizeAccountId(entry.accountId) === normalizeAccountId(accountId) && entry.columnId === columnId && entry.kind === "sync")
@@ -908,7 +892,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 	useEffect(() => {
 		return () => {
 			const current = columnSessionManagerRef.current;
-			if (!current || current.accountId !== accountId) return;
+			if (!current || current.accountId !== accountId) {return;}
 			current.manager.stop();
 			columnSessionManagerRef.current = null;
 		};
@@ -917,10 +901,12 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 	// Subscribe to column messages
 	const onColumnMessage = useCallback(
 		(columnId: string, callback: (message: SyncMessage) => void) => {
-			if (!messageCallbacks.current.has(columnId)) {
-				messageCallbacks.current.set(columnId, new Set());
+			let callbacks = messageCallbacks.current.get(columnId);
+			if (!callbacks) {
+				callbacks = new Set();
+				messageCallbacks.current.set(columnId, callbacks);
 			}
-			messageCallbacks.current.get(columnId)!.add(callback);
+			callbacks.add(callback);
 
 			return () => {
 				messageCallbacks.current.get(columnId)?.delete(callback);
@@ -970,8 +956,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 	const retryBrowserStorage = useCallback(async () => {
 		const db = await ensureLocalFirstDb();
 		try {
-			if (guestRecoveryColumnsRef.current) {
-				localStorage.setItem(LOCAL_COLUMNS_STORAGE_KEY, JSON.stringify(guestRecoveryColumnsRef.current));
+			if (guestRecoveryColumns) {
+				localStorage.setItem(LOCAL_COLUMNS_STORAGE_KEY, JSON.stringify(guestRecoveryColumns));
 			}
 			await db.retryFailedWrites?.();
 			await mutationQueue.swapStorage(createLocalFirstMutationQueueStorage(db));
@@ -983,7 +969,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 			setBrowserStorageError(null);
 			accountConvergenceActor.send({ type: "COMMAND_PERSISTED" });
 		} catch (error) { reportBrowserStorageError(error); throw error; }
-	}, [ensureLocalFirstDb, yjsOutbox, mutationQueue, accountConvergenceActor, reportBrowserStorageError]);
+	}, [ensureLocalFirstDb, guestRecoveryColumns, yjsOutbox, mutationQueue, accountConvergenceActor, reportBrowserStorageError]);
 
 	const getPendingAccountCommands = useCallback(
 		() => (accountId ? mutationQueue.getPending(accountId) : []),
@@ -992,7 +978,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 
 	const exportStorageRecoveryData = useCallback(async () => {
 		const db = await ensureLocalFirstDb();
-		let guestColumns = guestRecoveryColumnsRef.current;
+		let guestColumns = guestRecoveryColumns;
 		if (!guestColumns) {
 			try { guestColumns = parseLocalColumns(localStorage.getItem(LOCAL_COLUMNS_STORAGE_KEY)); } catch { guestColumns = []; }
 		}
@@ -1008,7 +994,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 				...readAllLocalStorageQuarantine(),
 			],
 		};
-	}, [ensureLocalFirstDb, yjsOutbox, mutationQueue, accountId]);
+	}, [ensureLocalFirstDb, guestRecoveryColumns, yjsOutbox, mutationQueue, accountId]);
 
 	const value: SyncContextValue = {
 		accountId,

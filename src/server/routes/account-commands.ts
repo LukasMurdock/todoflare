@@ -1,8 +1,9 @@
-import { type Context } from "hono";
+import type { Context } from 'hono';
 import type { ColumnMeta } from "../../types/account";
 import { normalizeAccountId, displayAccountId } from "../../lib/account";
 import { requireAccountCredential } from "../../lib/http-account-auth";
-import { ACCOUNT_COMMAND_TYPES, ACCOUNT_COMMANDS, type AccountCommandType } from "../../lib/api/account-commands";
+import { ACCOUNT_COMMAND_TYPES, ACCOUNT_COMMANDS } from '../../lib/api/account-commands';
+import type { AccountCommandType } from '../../lib/api/account-commands';
 import { publicPageUrl } from "../../lib/api/routes";
 import { COLUMN_META_SCHEMA_VERSION, parseAccountRecord, parseColumnMetaRecord } from "../persistence-records";
 import { deleteColumn } from "../workflows/delete-column";
@@ -12,13 +13,9 @@ import { enablePublicColumn } from "../workflows/enable-public-column";
 import { revokeColumnShare } from "../workflows/revoke-column-share";
 import { disablePublicColumn } from "../workflows/disable-public-column";
 import { accountRecordStore, mutateAccountRecord } from "../account-record-store";
-import {
-	beginLifecycleOperation,
-	completeLifecycleOperation,
-	registerColumn,
-	type LifecycleOperation,
-} from "../lifecycle-journal";
-import { type Bindings } from "../bindings";
+import { beginLifecycleOperation, completeLifecycleOperation, registerColumn } from '../lifecycle-journal';
+import type { LifecycleOperation } from '../lifecycle-journal';
+import type { Bindings } from '../bindings';
 import {
 	apiErrorResponse,
 	columnLifecycleFailureResponse,
@@ -58,20 +55,18 @@ export async function runJournaledLifecycle<T extends { ok: boolean }>(
  * a server handler a compile error. Every handler is safe to repeat, so each
  * is a rerunnable idempotent write (decision 0015).
  */
-export const accountCommandHandlers: {
-	[T in AccountCommandType]: (c: Context<{ Bindings: Bindings }>) => Promise<Response>;
-} = {
+export const accountCommandHandlers = {
 	/**
 	 * Update column order for an account
 	 */
 	"column.reorder": async (c) => {
 		const readOnlyResponse = blockWritesIfReadOnly(c);
-		if (readOnlyResponse) return readOnlyResponse;
+		if (readOnlyResponse) {return readOnlyResponse;}
 
 		const auth = await requireAccountCredential(c.req.raw, c.env);
-		if (!auth.ok) return auth.response;
+		if (!auth.ok) {return auth.response;}
 		const body = await validateJsonBody(c, ACCOUNT_COMMANDS["column.reorder"].body);
-		if (!body.ok) return body.response;
+		if (!body.ok) {return body.response;}
 		const accountId = auth.accountId;
 
 		return withIdempotentWrite(
@@ -109,12 +104,12 @@ export const accountCommandHandlers: {
 	 */
 	"column.hide_shared": async (c) => {
 		const readOnlyResponse = blockWritesIfReadOnly(c);
-		if (readOnlyResponse) return readOnlyResponse;
+		if (readOnlyResponse) {return readOnlyResponse;}
 
 		const auth = await requireAccountCredential(c.req.raw, c.env);
-		if (!auth.ok) return auth.response;
+		if (!auth.ok) {return auth.response;}
 		const body = await validateJsonBody(c, ACCOUNT_COMMANDS["column.hide_shared"].body);
-		if (!body.ok) return body.response;
+		if (!body.ok) {return body.response;}
 		const accountId = auth.accountId;
 
 		return withIdempotentWrite(
@@ -152,12 +147,12 @@ export const accountCommandHandlers: {
 	 */
 	"column.create": async (c) => {
 		const readOnlyResponse = blockWritesIfReadOnly(c);
-		if (readOnlyResponse) return readOnlyResponse;
+		if (readOnlyResponse) {return readOnlyResponse;}
 
 		const auth = await requireAccountCredential(c.req.raw, c.env);
-		if (!auth.ok) return auth.response;
+		if (!auth.ok) {return auth.response;}
 		const body = await validateJsonBody(c, ACCOUNT_COMMANDS["column.create"].body);
-		if (!body.ok) return body.response;
+		if (!body.ok) {return body.response;}
 		const accountId = auth.accountId;
 		const requestedColumnId = body.data.columnId;
 
@@ -195,14 +190,14 @@ export const accountCommandHandlers: {
 				let existingMetaResponse: Response;
 				try {
 					existingMetaResponse = await stub.fetch(new Request("http://do/meta"));
-				} catch (err) {
-					if (isDurableObjectDurationError(err)) {
+				} catch (error) {
+					if (isDurableObjectDurationError(error)) {
 						console.error("Durable object unavailable during metadata check", {
 							columnId,
 						});
 						return durableObjectUnavailableResponse();
 					}
-					throw err;
+					throw error;
 				}
 
 				if (!existingMetaResponse.ok && existingMetaResponse.status >= 500) {
@@ -300,14 +295,14 @@ export const accountCommandHandlers: {
 						});
 						return durableObjectUnavailableResponse();
 					}
-				} catch (err) {
-					if (isDurableObjectDurationError(err)) {
+				} catch (error) {
+					if (isDurableObjectDurationError(error)) {
 						console.error("Durable object unavailable during column creation", {
 							columnId,
 						});
 						return durableObjectUnavailableResponse();
 					}
-					throw err;
+					throw error;
 				}
 
 				await completeLifecycleOperation(c.env.ACCOUNTS, createOperation.operationId);
@@ -322,12 +317,12 @@ export const accountCommandHandlers: {
 	 */
 	"column.delete": async (c) => {
 		const readOnlyResponse = blockWritesIfReadOnly(c);
-		if (readOnlyResponse) return readOnlyResponse;
+		if (readOnlyResponse) {return readOnlyResponse;}
 
 		const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
-		if (!path.ok) return path.response;
+		if (!path.ok) {return path.response;}
 		const auth = await requireAccountCredential(c.req.raw, c.env);
-		if (!auth.ok) return auth.response;
+		if (!auth.ok) {return auth.response;}
 		const columnId = path.data.id;
 		const accountId = auth.accountId;
 
@@ -363,12 +358,12 @@ export const accountCommandHandlers: {
 	 */
 	"column.restore": async (c) => {
 		const readOnlyResponse = blockWritesIfReadOnly(c);
-		if (readOnlyResponse) return readOnlyResponse;
+		if (readOnlyResponse) {return readOnlyResponse;}
 
 		const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
-		if (!path.ok) return path.response;
+		if (!path.ok) {return path.response;}
 		const auth = await requireAccountCredential(c.req.raw, c.env);
-		if (!auth.ok) return auth.response;
+		if (!auth.ok) {return auth.response;}
 		const columnId = path.data.id;
 		const accountId = auth.accountId;
 
@@ -404,14 +399,14 @@ export const accountCommandHandlers: {
 	 */
 	"column.share": async (c) => {
 		const readOnlyResponse = blockWritesIfReadOnly(c);
-		if (readOnlyResponse) return readOnlyResponse;
+		if (readOnlyResponse) {return readOnlyResponse;}
 
 		const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
-		if (!path.ok) return path.response;
+		if (!path.ok) {return path.response;}
 		const auth = await requireAccountCredential(c.req.raw, c.env);
-		if (!auth.ok) return auth.response;
+		if (!auth.ok) {return auth.response;}
 		const body = await validateJsonBody(c, ACCOUNT_COMMANDS["column.share"].body);
-		if (!body.ok) return body.response;
+		if (!body.ok) {return body.response;}
 		const columnId = path.data.id;
 		const accountId = auth.accountId;
 		const targetAccountId = body.data.targetAccountId;
@@ -456,14 +451,14 @@ export const accountCommandHandlers: {
 	 */
 	"column.revoke": async (c) => {
 		const readOnlyResponse = blockWritesIfReadOnly(c);
-		if (readOnlyResponse) return readOnlyResponse;
+		if (readOnlyResponse) {return readOnlyResponse;}
 
 		const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
-		if (!path.ok) return path.response;
+		if (!path.ok) {return path.response;}
 		const auth = await requireAccountCredential(c.req.raw, c.env);
-		if (!auth.ok) return auth.response;
+		if (!auth.ok) {return auth.response;}
 		const body = await validateJsonBody(c, ACCOUNT_COMMANDS["column.revoke"].body);
-		if (!body.ok) return body.response;
+		if (!body.ok) {return body.response;}
 		const columnId = path.data.id;
 		const targetAccountId = body.data.targetAccountId;
 		const accountId = auth.accountId;
@@ -507,12 +502,12 @@ export const accountCommandHandlers: {
 	 */
 	"column.public.enable": async (c) => {
 		const readOnlyResponse = blockWritesIfReadOnly(c);
-		if (readOnlyResponse) return readOnlyResponse;
+		if (readOnlyResponse) {return readOnlyResponse;}
 
 		const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
-		if (!path.ok) return path.response;
+		if (!path.ok) {return path.response;}
 		const auth = await requireAccountCredential(c.req.raw, c.env);
-		if (!auth.ok) return auth.response;
+		if (!auth.ok) {return auth.response;}
 		const columnId = path.data.id;
 		const accountId = auth.accountId;
 
@@ -553,12 +548,12 @@ export const accountCommandHandlers: {
 	 */
 	"column.public.disable": async (c) => {
 		const readOnlyResponse = blockWritesIfReadOnly(c);
-		if (readOnlyResponse) return readOnlyResponse;
+		if (readOnlyResponse) {return readOnlyResponse;}
 
 		const path = validateRequestInput(c, columnPathSchema, { id: c.req.param("id") });
-		if (!path.ok) return path.response;
+		if (!path.ok) {return path.response;}
 		const auth = await requireAccountCredential(c.req.raw, c.env);
-		if (!auth.ok) return auth.response;
+		if (!auth.ok) {return auth.response;}
 		const columnId = path.data.id;
 		const accountId = auth.accountId;
 
@@ -588,6 +583,8 @@ export const accountCommandHandlers: {
 			},
 		);
 	},
+} satisfies {
+	[T in AccountCommandType]: (c: Context<{ Bindings: Bindings }>) => Promise<Response>;
 };
 
 export function registerAccountCommandRoutes(app: App) {

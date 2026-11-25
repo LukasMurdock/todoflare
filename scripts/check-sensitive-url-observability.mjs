@@ -1,13 +1,12 @@
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const repositoryRoot = path.resolve(import.meta.dirname, "..");
 const source = await readFile(path.join(repositoryRoot, "wrangler.jsonc"), "utf8");
 const withoutComments = source
-	.replace(/\/\*[\s\S]*?\*\//g, "")
-	.replace(/^\s*\/\/.*$/gm, "")
-	.replace(/,\s*([}\]])/g, "$1");
+	.replaceAll(/\/\*[\s\S]*?\*\//g, "")
+	.replaceAll(/^\s*\/\/.*$/gm, "")
+	.replaceAll(/,\s*([}\]])/g, "$1");
 const config = JSON.parse(withoutComments);
 
 function assertSafeObservability(value, label) {
@@ -43,7 +42,7 @@ const forbiddenCredentialUrlPatterns = [
 	/\/share\/\$\{normalizeAccountId/,
 ];
 for (const entry of sourceEntries) {
-	if (!entry.isFile() || !/\.[cm]?[jt]sx?$/.test(entry.name)) continue;
+	if (!entry.isFile() || !/\.[cm]?[jt]sx?$/.test(entry.name)) {continue;}
 	const filePath = path.join(entry.parentPath, entry.name);
 	const fileSource = await readFile(filePath, "utf8");
 	if (forbiddenCredentialUrlPatterns.some((pattern) => pattern.test(fileSource))) {

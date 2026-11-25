@@ -27,6 +27,7 @@ migrate again). Verification never touches it; tests use `.wrangler/e2e-state`.
 
 | Command | What it runs | Use it for |
 | --- | --- | --- |
+| `pnpm lint` | Type-aware Oxlint with the Cloudflare preset and recommended Landmines rules | Check application, test, and tooling code |
 | `pnpm test` / `pnpm test:run` | Vitest in the Workers runtime (`vitest.config.ts`): real D1/KV/R2/DO bindings, migrations applied, auth bypass header enabled | Pure rules, machines, routes, workflows, Durable Objects, failure injection |
 | `pnpm test:e2e` | Builds the E2E bundle, then Playwright in Chromium against `vite preview` on port 4173 | User journeys: editing, offline replay, outages, sharing, revocation, passkeys, agents |
 | `pnpm test:hosts` | Playwright against `examples/minimal` and `examples/void` | The board works outside Todoflare, including SSR |
@@ -36,6 +37,8 @@ migrate again). Verification never touches it; tests use `.wrangler/e2e-state`.
 
 Run one file or test: `pnpm vitest run test/agent-routes.test.ts -t "revokes"`,
 or, after `pnpm build:e2e`, `pnpm exec playwright test e2e/sharing.spec.ts`.
+
+Run the recovery suites with `pnpm test:recovery`. Each lifecycle test names the delete and restore write boundaries it interrupts. The backup drill starts with a signed-in synthetic account, preserves its R2 archive across a local binding reset, and signs in again to check the restored board. Both run during `pnpm verify`.
 
 Tests authenticate with `X-Todoflare-Test-Account: <accountId>`, honoured only
 when `AUTH_TEST_BYPASS` is set (Vitest) or in the E2E build. Production deploys

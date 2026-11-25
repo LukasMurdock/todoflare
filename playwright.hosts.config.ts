@@ -10,22 +10,22 @@ export default defineConfig({
 	testDir: "./hosts-e2e",
 	fullyParallel: true,
 	forbidOnly: true,
-	retries: process.env.CI ? 2 : 0,
+	retries: 0,
 	workers: 2,
 	reporter: "list",
-	use: { trace: "on-first-retry" },
+	use: { trace: "retain-on-failure" },
 	webServer: [
 		{
 			command: "pnpm --filter @todoflare/example-minimal dev",
 			url: "http://localhost:4180",
 			reuseExistingServer: false,
-			timeout: 120000,
+			timeout: 120_000,
 		},
 		{
 			command: "pnpm --dir examples/void dev",
 			url: "http://localhost:4280",
 			reuseExistingServer: false,
-			timeout: 240000,
+			timeout: 240_000,
 		},
 	],
 	projects: [

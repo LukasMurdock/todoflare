@@ -1,6 +1,6 @@
-import { type Context } from "hono";
+import type { Context } from 'hono';
 import { isReadOnlyMode, readOnlyModeResponse } from "../read-only-mode";
-import { type Bindings } from "../bindings";
+import type { Bindings } from '../bindings';
 
 export function shouldSkipRateLimit(c: Context<{ Bindings: Bindings }>): boolean {
 	if (c.env.RATE_LIMIT_DISABLED === "true" || c.env.RATE_LIMIT_DISABLED === "1") {

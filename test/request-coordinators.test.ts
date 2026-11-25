@@ -20,12 +20,10 @@ describe("request coordinators", () => {
 				}),
 			);
 
-		const responses: Response[] = await Promise.all(
+		const responses: Array<Response> = await Promise.all(
 			Array.from({ length: 50 }, begin),
 		);
-		const outcomes = (await Promise.all(
-			responses.map((response) => response.json()),
-		)) as Array<{ kind: string }>;
+		const outcomes = await Promise.all(responses.map(response => response.json<{ kind: string }>()));
 		expect(outcomes.filter((outcome) => outcome.kind === "acquired")).toHaveLength(1);
 		expect(outcomes.filter((outcome) => outcome.kind === "pending")).toHaveLength(49);
 	});
@@ -46,10 +44,10 @@ describe("request coordinators", () => {
 				}),
 			);
 
-		const claim = (await (await begin("same-request")).json()) as {
+		const claim = (await (await begin("same-request")).json<{
 			kind: string;
 			ownerToken: string;
-		};
+		}>());
 		expect(claim.kind).toBe("acquired");
 
 		const marked = await stub.fetch(
@@ -88,7 +86,7 @@ describe("request coordinators", () => {
 				}),
 			);
 
-		const claim = (await (await begin()).json()) as { kind: string; ownerToken: string };
+		const claim = (await (await begin()).json<{ kind: string; ownerToken: string }>());
 		expect(claim.kind).toBe("acquired");
 		expect(await (await begin()).json()).toEqual({ kind: "pending" });
 		// The owner died mid-request: past the lease, nobody may re-run it.
@@ -127,7 +125,7 @@ describe("request coordinators", () => {
 				body: JSON.stringify(body),
 			}));
 		const begin = async (options: { rerunnable?: boolean; pendingLeaseMs?: number } = {}) =>
-			(await (await post("begin", { fingerprint: "same-request", pendingExpiresAt: Date.now() + 60_000, ...options })).json()) as { kind: string; ownerToken?: string };
+			(await (await post("begin", { fingerprint: "same-request", pendingExpiresAt: Date.now() + 60_000, ...options })).json<{ kind: string; ownerToken?: string }>());
 
 		const first = await begin();
 		expect(first.kind).toBe("acquired");
@@ -159,7 +157,7 @@ describe("request coordinators", () => {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ fingerprint: "same-request", pendingExpiresAt: Date.now() + 60_000, ...options }),
-			}))).json()) as { kind: string; ownerToken: string };
+			}))).json<{ kind: string; ownerToken: string }>());
 		const slow = await begin();
 		const retry = await begin({ rerunnable: true, pendingLeaseMs: 0 });
 		await finishIdempotentRequest(stub, "complete", { ownerToken: retry.ownerToken, status: 200, body: { from: "retry" } });
@@ -182,7 +180,7 @@ describe("request coordinators", () => {
 		expect(results.filter((result) => result.allowed)).toHaveLength(7);
 		expect(results.filter((result) => !result.allowed)).toHaveLength(43);
 		expect(
-			results.filter((result) => result.allowed).map((result) => result.remaining).sort(),
+			results.filter((result) => result.allowed).map((result) => result.remaining).sort((a, b) => a - b),
 		).toEqual([0, 1, 2, 3, 4, 5, 6]);
 		expect(results.filter((result) => !result.allowed).every((result) => result.retryAfter)).toBe(
 			true,

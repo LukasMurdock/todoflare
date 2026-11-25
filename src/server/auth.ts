@@ -30,8 +30,8 @@ const DEVELOPMENT_SECRET = "todoflare-local-development-secret-do-not-use";
 function recoveryCode(): string {
 	const bytes = crypto.getRandomValues(new Uint8Array(32));
 	return btoa(String.fromCharCode(...bytes))
-		.replace(/\+/g, "-")
-		.replace(/\//g, "_")
+		.replaceAll('+', "-")
+		.replaceAll('/', "_")
 		.replace(/=+$/, "");
 }
 
@@ -93,12 +93,12 @@ function recoveryPlugin(env: AuthBindings) {
 						});
 					}
 					const user = await ctx.context.internalAdapter.findUserById(ctx.body.accountId);
-					if (!user) throw APIError.fromStatus("UNAUTHORIZED");
+					if (!user) {throw APIError.fromStatus("UNAUTHORIZED");}
 					// Recovery usually follows a lost or stolen device: end every
 					// session it may still hold before issuing this one.
 					await ctx.context.internalAdapter.deleteUserSessions(user.id);
 					const session = await ctx.context.internalAdapter.createSession(user.id);
-					if (!session) throw APIError.fromStatus("INTERNAL_SERVER_ERROR");
+					if (!session) {throw APIError.fromStatus("INTERNAL_SERVER_ERROR");}
 					const nextCode = recoveryCode();
 					await env.AUTH_DB.prepare(
 						'UPDATE "user" SET "recoveryCodeHash" = ?, "updatedAt" = ? WHERE "id" = ?',
@@ -123,7 +123,7 @@ function trustedOrigin(env: AuthBindings, requestOrigin: string): string {
 
 function relyingPartyId(env: AuthBindings, origin: string): string {
 	const hostname = new URL(origin).hostname;
-	if (hostname === "localhost") return "localhost";
+	if (hostname === "localhost") {return "localhost";}
 	return env.AUTH_RP_ID ?? hostname;
 }
 
@@ -161,7 +161,7 @@ export function createAuth(env: AuthBindings, requestOrigin: string) {
 			useSecureCookies: origin.startsWith("https://"),
 			database: {
 				generateId: ({ model }) =>
-					model === "user" ? generateAccountId().replace(/\D/g, "") : crypto.randomUUID(),
+					model === "user" ? generateAccountId().replaceAll(/\D/g, "") : crypto.randomUUID(),
 			},
 		},
 		plugins: [
@@ -194,7 +194,7 @@ export type TodoflareAuth = ReturnType<typeof createAuth>;
 
 export async function cleanupAbandonedProvisionalUsers(
 	env: AuthBindings,
-	retentionMs = 7 * 24 * 60 * 60 * 1_000,
+	retentionMs = 7 * 24 * 60 * 60 * 1000,
 ): Promise<number> {
 	// isProvisional() in auth-policy.ts, in SQL: no passkey row.
 	const result = await env.AUTH_DB.prepare(
@@ -210,11 +210,11 @@ export async function cleanupAbandonedProvisionalUsers(
 	return result.meta.changes;
 }
 
-export function stripSyntheticEmails(value: unknown): unknown {
-	if (Array.isArray(value)) return value.map(stripSyntheticEmails);
-	if (!value || typeof value !== "object") return value;
+export function stripSyntheticEmails(value: z.core.util.JSONType): z.core.util.JSONType {
+	if (Array.isArray(value)) {return value.map(stripSyntheticEmails);}
+	if (!value || typeof value !== "object") {return value;}
 	return Object.fromEntries(
-		Object.entries(value as Record<string, unknown>)
+		Object.entries(value)
 			.filter(([key]) => key !== "email")
 			.map(([key, child]) => [key, stripSyntheticEmails(child)]),
 	);

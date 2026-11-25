@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { DurableObject } from "cloudflare:workers";
 
 const RECORD_ID = 1;
@@ -24,24 +25,12 @@ interface IdempotencyRow extends Record<string, SqlStorageValue> {
 	claimed_at: number | null;
 }
 
-interface BeginRequest {
-	fingerprint: string;
-	pendingExpiresAt: number;
-	pendingLeaseMs?: number;
-	rerunnable?: boolean;
-}
-
-interface CompleteRequest {
-	ownerToken: string;
-	status: number;
-	body: unknown;
-	expiresAt: number;
-}
-
-interface MarkIndeterminateRequest {
-	ownerToken: string;
-	expiresAt: number;
-}
+const beginSchema = z.object({
+	fingerprint: z.string().min(1), pendingExpiresAt: z.number(),
+	pendingLeaseMs: z.number().nonnegative().optional(), rerunnable: z.boolean().optional(),
+});
+const indeterminateSchema = z.object({ ownerToken: z.string(), expiresAt: z.number() });
+const completeSchema = indeterminateSchema.extend({ status: z.number().int(), body: z.unknown().optional() });
 
 function jsonError(message: string, status = 400): Response {
 	return Response.json({ error: message }, { status });
@@ -80,18 +69,7 @@ export class IdempotencyCoordinatorSql extends DurableObject<unknown> {
 		);
 	}
 
-	private async begin(request: BeginRequest): Promise<Response> {
-		if (
-			typeof request.fingerprint !== "string" ||
-			request.fingerprint.length === 0 ||
-			!Number.isFinite(request.pendingExpiresAt) ||
-			(request.pendingLeaseMs !== undefined &&
-				(!Number.isFinite(request.pendingLeaseMs) || request.pendingLeaseMs < 0)) ||
-			(request.rerunnable !== undefined && typeof request.rerunnable !== "boolean")
-		) {
-			return jsonError("Invalid idempotency begin request");
-		}
-
+	private async begin(request: z.output<typeof beginSchema>): Promise<Response> {
 		const now = Date.now();
 		let row = this.load();
 		if (row && row.expires_at <= now) {
@@ -157,15 +135,7 @@ export class IdempotencyCoordinatorSql extends DurableObject<unknown> {
 		return Response.json({ kind: row.state });
 	}
 
-	private async complete(request: CompleteRequest): Promise<Response> {
-		if (
-			typeof request.ownerToken !== "string" ||
-			!Number.isInteger(request.status) ||
-			!Number.isFinite(request.expiresAt)
-		) {
-			return jsonError("Invalid idempotency completion request");
-		}
-
+	private async complete(request: z.output<typeof completeSchema>): Promise<Response> {
 		// A slow owner may finish after its lease lapsed; its real result still wins.
 		const row = this.load();
 		if (
@@ -189,15 +159,8 @@ export class IdempotencyCoordinatorSql extends DurableObject<unknown> {
 	}
 
 	private async markIndeterminate(
-		request: MarkIndeterminateRequest,
+		request: z.output<typeof indeterminateSchema>,
 	): Promise<Response> {
-		if (
-			typeof request.ownerToken !== "string" ||
-			!Number.isFinite(request.expiresAt)
-		) {
-			return jsonError("Invalid indeterminate request");
-		}
-
 		const row = this.load();
 		if (
 			!row ||
@@ -218,16 +181,23 @@ export class IdempotencyCoordinatorSql extends DurableObject<unknown> {
 	}
 
 	async fetch(request: Request): Promise<Response> {
-		if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
+		if (request.method !== "POST") {return new Response("Method Not Allowed", { status: 405 });}
 
 		const pathname = new URL(request.url).pathname;
-		const body = (await request.json().catch(() => null)) as unknown;
-		if (!body || typeof body !== "object") return jsonError("Expected JSON body");
+		const body = await request.json<unknown>().catch(() => null);
+		if (!body || typeof body !== "object") {return jsonError("Expected JSON body");}
 
-		if (pathname === "/begin") return this.begin(body as BeginRequest);
-		if (pathname === "/complete") return this.complete(body as CompleteRequest);
+		if (pathname === "/begin") {
+			const parsed = beginSchema.safeParse(body);
+			return parsed.success ? this.begin(parsed.data) : jsonError("Invalid idempotency begin request");
+		}
+		if (pathname === "/complete") {
+			const parsed = completeSchema.safeParse(body);
+			return parsed.success ? this.complete(parsed.data) : jsonError("Invalid idempotency completion request");
+		}
 		if (pathname === "/indeterminate") {
-			return this.markIndeterminate(body as MarkIndeterminateRequest);
+			const parsed = indeterminateSchema.safeParse(body);
+			return parsed.success ? this.markIndeterminate(parsed.data) : jsonError("Invalid indeterminate request");
 		}
 
 		return new Response("Not Found", { status: 404 });
@@ -235,7 +205,7 @@ export class IdempotencyCoordinatorSql extends DurableObject<unknown> {
 
 	async alarm(): Promise<void> {
 		const row = this.load();
-		if (!row) return;
+		if (!row) {return;}
 		if (row.expires_at <= Date.now()) {
 			this.ctx.storage.sql.exec(
 				"DELETE FROM idempotency_record WHERE id = ?",

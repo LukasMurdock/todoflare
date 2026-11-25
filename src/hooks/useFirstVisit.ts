@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { LOCAL_COLUMNS_STORAGE_KEY } from "@/lib/local-column-storage";
+import { LOCAL_COLUMNS_STORAGE_KEY, parseLocalColumns } from "@/lib/local-column-storage";
 
 const WELCOME_KEY = "todoflare-welcomed";
 
@@ -13,28 +13,10 @@ function hasBeenWelcomed(): boolean {
 
 function hasExistingData(): boolean {
 	try {
-		const stored = localStorage.getItem(LOCAL_COLUMNS_STORAGE_KEY);
-		if (!stored) return false;
-		
-		const parsed = JSON.parse(stored);
-		if (!Array.isArray(parsed) || parsed.length === 0) return false;
-		
-		// Check if any column has actual content (not just empty default)
-		return parsed.some((column: { value?: unknown[] }) => {
-			if (!column.value || !Array.isArray(column.value)) return false;
-			// Check if value has more than one block or the first block has content
-			if (column.value.length > 1) return true;
-			if (column.value.length === 1) {
-				const firstBlock = column.value[0] as { children?: { text?: string }[] };
-				// Check if the first block has any text content
-				if (firstBlock.children && Array.isArray(firstBlock.children)) {
-					return firstBlock.children.some(
-						(child) => child.text && child.text.trim().length > 0
-					);
-				}
-			}
-			return false;
-		});
+		const columns = parseLocalColumns(localStorage.getItem(LOCAL_COLUMNS_STORAGE_KEY));
+		return columns?.some(({ value }) => value.length > 1 ||
+			value[0]?.children.some((child) => typeof child.text === "string" && child.text.trim().length > 0)
+		) ?? false;
 	} catch {
 		return false;
 	}
@@ -43,8 +25,8 @@ function hasExistingData(): boolean {
 function markAsWelcomed(): void {
 	try {
 		localStorage.setItem(WELCOME_KEY, "true");
-	} catch (e) {
-		console.error("Failed to save welcome state to localStorage:", e);
+	} catch (error) {
+		console.error("Failed to save welcome state to localStorage:", error);
 	}
 }
 

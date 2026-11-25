@@ -71,7 +71,7 @@ function unsupportedVersion(
 	expectedVersion: number,
 	recordName: string,
 ): SchemaParseResult<never> | null {
-	if (!raw || typeof raw !== "object") return null;
+	if (!raw || typeof raw !== "object") {return null;}
 	const foundVersion = (raw as { schemaVersion?: unknown }).schemaVersion;
 	if (typeof foundVersion !== "number" || foundVersion === expectedVersion) {
 		return null;
@@ -87,13 +87,13 @@ function unsupportedVersion(
 
 export function parseAccountRecord(raw: string): SchemaParseResult<Account> {
 	const json = parseJson(raw, "Account record");
-	if (!json.ok) return json;
+	if (!json.ok) {return json;}
 	const versionError = unsupportedVersion(
 		json.value,
 		ACCOUNT_SCHEMA_VERSION,
 		"Account",
 	);
-	if (versionError) return versionError;
+	if (versionError) {return versionError;}
 	const parsed = accountRecordSchema.safeParse(json.value);
 	return parsed.success
 		? { ok: true, value: parsed.data satisfies Account }
@@ -106,7 +106,7 @@ export function parseColumnMetaRecord(raw: unknown): SchemaParseResult<ColumnMet
 		COLUMN_META_SCHEMA_VERSION,
 		"Column metadata",
 	);
-	if (versionError) return versionError;
+	if (versionError) {return versionError;}
 	const parsed = columnMetaRecordSchema.safeParse(raw);
 	return parsed.success
 		? { ok: true, value: parsed.data satisfies ColumnMeta }
@@ -115,10 +115,10 @@ export function parseColumnMetaRecord(raw: unknown): SchemaParseResult<ColumnMet
 
 export function parseDeletedColumnRecords(
 	raw: string | null,
-): SchemaParseResult<DeletedColumnRecord[]> {
-	if (raw === null) return { ok: true, value: [] };
+): SchemaParseResult<Array<DeletedColumnRecord>> {
+	if (raw === null) {return { ok: true, value: [] };}
 	const json = parseJson(raw, "Trash record");
-	if (!json.ok) return json;
+	if (!json.ok) {return json;}
 	const parsed = z.array(deletedColumnRecordSchema).max(100).safeParse(json.value);
 	return parsed.success
 		? { ok: true, value: parsed.data }
@@ -127,10 +127,10 @@ export function parseDeletedColumnRecords(
 
 export function parseSharedColumnIndex(
 	raw: string | null,
-): SchemaParseResult<string[]> {
-	if (raw === null) return { ok: true, value: [] };
+): SchemaParseResult<Array<string>> {
+	if (raw === null) {return { ok: true, value: [] };}
 	const json = parseJson(raw, "Shared column index");
-	if (!json.ok) return json;
+	if (!json.ok) {return json;}
 	const parsed = sharedColumnIndexSchema.safeParse(json.value);
 	return parsed.success
 		? { ok: true, value: parsed.data }

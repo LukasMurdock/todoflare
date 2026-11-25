@@ -1,3 +1,5 @@
+import { z } from "zod";
+import { waitForQueueToDrain } from "./helpers/sync-outage";
 import { expect, test } from "@playwright/test";
 import { createAccount, createColumn } from "./helpers/account-api";
 import { getSyncStateSnapshot } from "./helpers/local-first-readers";
@@ -52,7 +54,7 @@ test("signed-in columns confirm deletion only when they have content", async ({ 
 	const editors = page.getByRole("textbox", { name: "Todo editor" });
 	const deleteButtons = page.getByRole("button", { name: "Delete column" });
 	const confirm = page.getByRole("alertdialog", { name: "Delete column?" });
-	await expect(editors).toHaveCount(3, { timeout: 15000 });
+	await expect(editors).toHaveCount(3, { timeout: 15_000 });
 
 	await editors.first().click();
 	await page.keyboard.type("Keep me");
@@ -119,7 +121,9 @@ test("Mod+/ opens shortcuts once from inside the editor and from the page", asyn
 	await expect(dialog).toBeHidden();
 
 	// Focus outside the board: the app's page-wide shortcut opens it.
-	await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+	await page.evaluate(() => { const el = document.activeElement;
+		// oxlint-disable-next-line @nkzw/no-instanceof -- Only HTML elements implement this focus operation.
+		if (el instanceof HTMLElement) {el.blur();} });
 	await page.keyboard.press("ControlOrMeta+/");
 	await expect(dialog).toBeVisible();
 });
@@ -138,24 +142,22 @@ test("a rejected change is still in the sync debug snapshot after a reload", asy
 	await bootstrapAuthenticatedPage(page, accountId);
 
 	const editors = page.getByRole("textbox", { name: "Todo editor" });
-	await expect(editors).toHaveCount(2, { timeout: 15000 });
+	await expect(editors).toHaveCount(2, { timeout: 15_000 });
 	await page.getByRole("button", { name: "Delete column" }).last().click();
-	await expect(page.getByText("Some offline changes could not be synced")).toBeVisible({ timeout: 15000 });
+	await expect(page.getByText("Some offline changes could not be synced")).toBeVisible({ timeout: 15_000 });
 	// The toast shows before IndexedDB commits the record; reload only once it has.
-	await expect.poll(async () => (await getSyncStateSnapshot(page, accountId))?.recentSyncFailureCount, { timeout: 15000 }).toBe(1);
+	await expect.poll(async () => (await getSyncStateSnapshot(page, accountId))?.recentSyncFailureCount, { timeout: 15_000 }).toBe(1);
 	await page.reload();
-	await expect(editors).toHaveCount(2, { timeout: 15000 });
+	await expect(editors).toHaveCount(2, { timeout: 15_000 });
 
-	const compactAccountId = accountId.replace(/\D/g, "");
+	const compactAccountId = accountId.replaceAll(/\D/g, "");
 	const readSnapshot = async () => {
 		await page.getByRole("button", { name: `${compactAccountId.slice(0, 4)}...${compactAccountId.slice(-4)}` }).click();
 		await page.getByRole("menuitem", { name: /Copy Sync Debug Snapshot/ }).click();
 		await page.keyboard.press("Escape");
-		return JSON.parse(await page.evaluate(() => navigator.clipboard.readText())) as {
-			recentSyncFailures: unknown[];
-		};
+		return z.object({ recentSyncFailures: z.array(z.unknown()) }).parse(JSON.parse(await page.evaluate(() => navigator.clipboard.readText())));
 	};
-	await expect.poll(async () => (await readSnapshot()).recentSyncFailures, { timeout: 15000 }).toEqual([
+	await expect.poll(async () => (await readSnapshot()).recentSyncFailures, { timeout: 15_000 }).toEqual([
 		expect.objectContaining({ opType: "column.delete", reason: "not_found", status: 404, code: "not_found" }),
 	]);
 });
@@ -173,10 +175,10 @@ test("a rejected change says what the server answered", async ({ page, request, 
 	await bootstrapAuthenticatedPage(page, accountId);
 
 	const editors = page.getByRole("textbox", { name: "Todo editor" });
-	await expect(editors).toHaveCount(2, { timeout: 15000 });
+	await expect(editors).toHaveCount(2, { timeout: 15_000 });
 	await page.getByRole("button", { name: "Delete column" }).last().click();
 
-	await expect(page.getByText("Some offline changes could not be synced")).toBeVisible({ timeout: 15000 });
+	await expect(page.getByText("Some offline changes could not be synced")).toBeVisible({ timeout: 15_000 });
 	await expect(page.getByText("column.delete: Column not found (404 not_found)")).toBeVisible();
 });
 
@@ -188,7 +190,7 @@ test("an unknown outcome stops retrying and resyncs from the server", async ({ p
 	let deleteAttempts = 0;
 	// The server answers as it does for a claim whose request died before recording a result.
 	await page.route(`**/api/column/${columnId}`, (route) => {
-		if (route.request().method() !== "DELETE") return route.fallback();
+		if (route.request().method() !== "DELETE") {return route.fallback();}
 		deleteAttempts += 1;
 		return route.fulfill({
 			status: 409,
@@ -202,13 +204,13 @@ test("an unknown outcome stops retrying and resyncs from the server", async ({ p
 	await bootstrapAuthenticatedPage(page, accountId);
 
 	const editors = page.getByRole("textbox", { name: "Todo editor" });
-	await expect(editors).toHaveCount(2, { timeout: 15000 });
+	await expect(editors).toHaveCount(2, { timeout: 15_000 });
 	await page.getByRole("button", { name: "Delete column" }).last().click();
 
-	await expect(page.getByText("column.delete: A previous attempt may have executed")).toBeVisible({ timeout: 15000 });
+	await expect(page.getByText("column.delete: A previous attempt may have executed")).toBeVisible({ timeout: 15_000 });
 	// Fresh server state wins: the column was never deleted there, so it is back, and nothing is left queued.
-	await expect(editors).toHaveCount(2, { timeout: 15000 });
-	await page.waitForTimeout(3000);
+	await expect(editors).toHaveCount(2, { timeout: 15_000 });
+	await waitForQueueToDrain(page, accountId);
 	expect(deleteAttempts).toBe(1);
 });
 
@@ -226,19 +228,17 @@ test("the sync debug snapshot lists changes the server keeps retrying", async ({
 	await bootstrapAuthenticatedPage(page, accountId);
 
 	const editors = page.getByRole("textbox", { name: "Todo editor" });
-	await expect(editors).toHaveCount(2, { timeout: 15000 });
+	await expect(editors).toHaveCount(2, { timeout: 15_000 });
 	await page.getByRole("button", { name: "Delete column" }).last().click();
 
-	const compactAccountId = accountId.replace(/\D/g, "");
+	const compactAccountId = accountId.replaceAll(/\D/g, "");
 	const readSnapshot = async () => {
 		await page.getByRole("button", { name: `${compactAccountId.slice(0, 4)}...${compactAccountId.slice(-4)}` }).click();
 		await page.getByRole("menuitem", { name: /Copy Sync Debug Snapshot/ }).click();
 		await page.keyboard.press("Escape");
-		return JSON.parse(await page.evaluate(() => navigator.clipboard.readText())) as {
-			pendingCommands: Array<{ opType: string; attemptCount: number; lastError: string | null }>;
-		};
+		return z.object({ pendingCommands: z.array(z.unknown()) }).parse(JSON.parse(await page.evaluate(() => navigator.clipboard.readText())));
 	};
-	await expect.poll(async () => (await readSnapshot()).pendingCommands, { timeout: 15000 }).toEqual([
+	await expect.poll(async () => (await readSnapshot()).pendingCommands, { timeout: 15_000 }).toEqual([
 		expect.objectContaining({ opType: "column.delete", lastError: "Column storage is busy" }),
 	]);
 });

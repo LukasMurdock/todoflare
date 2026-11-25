@@ -1,5 +1,6 @@
+import { z } from "zod";
 import { expect, test } from "@playwright/test";
-import { createAccount } from "./helpers/account-api";
+import { createAccount, createColumn } from "./helpers/account-api";
 import {
 	addColumnAndGetId,
 	bootstrapAuthenticatedPage,
@@ -56,7 +57,7 @@ test.describe("collaborative editing", () => {
 		expect((await shareResponsePromise).ok()).toBe(true);
 
 		releaseStaleResponse();
-		const compactId = collaboratorId.replace(/\D/g, "");
+		const compactId = collaboratorId.replaceAll(/\D/g, "");
 		const shortId = `${compactId.slice(0, 4)}...${compactId.slice(-4)}`;
 		await expect(page.getByRole("button", { name: "Collapse column" })).toHaveCount(2);
 		await expect(page.getByText(shortId)).toBeVisible();
@@ -95,7 +96,7 @@ test.describe("collaborative editing", () => {
 		const collaboratorPage = await collaboratorContext.newPage();
 		await bootstrapAuthenticatedPage(collaboratorPage, collaboratorId);
 
-		const compactOwnerId = ownerId.replace(/\s/g, "");
+		const compactOwnerId = ownerId.replaceAll(/\s/g, "");
 		const ownerShort = `${compactOwnerId.slice(0, 4)}...${compactOwnerId.slice(-4)}`;
 
 		await expect(
@@ -135,9 +136,7 @@ test.describe("collaborative editing", () => {
 		const publicLinkResponse = await publicLinkResponsePromise;
 		expect(publicLinkResponse.ok()).toBeTruthy();
 
-		const publicLinkPayload = (await publicLinkResponse.json()) as {
-			url: string;
-		};
+		const publicLinkPayload = z.object({ url: z.string() }).parse(await publicLinkResponse.json());
 		const publicUrl = publicLinkPayload.url;
 		const publicIdMatch = publicUrl.match(/\/p\/([a-zA-Z0-9]+)$/);
 		expect(publicIdMatch).not.toBeNull();
@@ -154,7 +153,7 @@ test.describe("collaborative editing", () => {
 		const ownerEditor = column.getByRole("textbox", { name: "Todo editor" });
 		await ownerEditor.click();
 		await ownerEditor.pressSequentially(publicText);
-		await expect(publicPage.getByText(publicText)).toBeVisible({ timeout: 15000 });
+		await expect(publicPage.getByText(publicText)).toBeVisible({ timeout: 15_000 });
 		await expect(publicPage.getByRole("link", { name: "Create your own" })).toBeVisible();
 		await expect(publicPage.getByRole("button", { name: "Add column" })).toHaveCount(0);
 		await expect(publicPage.getByRole("button", { name: "Share column" })).toHaveCount(0);
@@ -164,7 +163,7 @@ test.describe("collaborative editing", () => {
 	});
 
 	test("owner can revoke collaborator access", async ({
-		browser,
+		page: collaboratorPage,
 		request,
 		baseURL,
 	}) => {
@@ -173,44 +172,22 @@ test.describe("collaborative editing", () => {
 		const ownerId = await createAccount(request, appUrl);
 		const collaboratorId = await createAccount(request, appUrl);
 
-		const ownerContext = await browser.newContext();
-		const ownerPage = await ownerContext.newPage();
-		await bootstrapAuthenticatedPage(ownerPage, ownerId);
-		const columnId = await addColumnAndGetId(ownerPage);
-		const column = ownerPage.locator(`[data-column-id="${columnId}"]`);
-
-		await column.getByRole("button", { name: "Share column" }).click();
-		await ownerPage.getByRole("textbox", { name: "Account ID" }).fill(collaboratorId);
-		const shareResponsePromise = ownerPage.waitForResponse(
-			(response) =>
-				response.request().method() === "POST" &&
-				response.url().includes("/api/column/") &&
-				response.url().includes("/share"),
-		);
-		await ownerPage.getByRole("button", { name: "Share", exact: true }).click();
-		const shareResponse = await shareResponsePromise;
-		expect(shareResponse.ok()).toBeTruthy();
-
-		const collaboratorContext = await browser.newContext();
-		const collaboratorPage = await collaboratorContext.newPage();
+		const columnId = await createColumn(request, appUrl, ownerId);
+		const endpoint = `${appUrl}/api/column/${columnId}/share`;
+		const options = {
+			headers: { "X-Todoflare-Test-Account": ownerId.replaceAll(/\D/g, "") },
+			data: { targetAccountId: collaboratorId },
+		};
+		expect((await request.post(endpoint, options)).ok()).toBe(true);
 		await bootstrapAuthenticatedPage(collaboratorPage, collaboratorId);
 
-		const compactOwnerId = ownerId.replace(/\s/g, "");
+		const compactOwnerId = ownerId.replaceAll(/\s/g, "");
 		const ownerShort = `${compactOwnerId.slice(0, 4)}...${compactOwnerId.slice(-4)}`;
 		await expect(
 			collaboratorPage.getByText(`Shared by ${ownerShort}`),
-		).toBeVisible({ timeout: 15000 });
+		).toBeVisible({ timeout: 15_000 });
 
-		const revokeResponse = await request.delete(
-			`${appUrl}/api/column/${columnId}/share`,
-			{
-				headers: {
-					"Content-Type": "application/json",
-					"X-Todoflare-Test-Account": ownerId.replace(/\D/g, ""),
-				},
-				data: { targetAccountId: collaboratorId },
-			},
-		);
+		const revokeResponse = await request.delete(endpoint, options);
 		expect(revokeResponse.ok()).toBeTruthy();
 
 		await collaboratorPage.reload();
@@ -218,8 +195,6 @@ test.describe("collaborative editing", () => {
 			collaboratorPage.getByText(`Shared by ${ownerShort}`),
 		).toHaveCount(0);
 
-		await ownerContext.close();
-		await collaboratorContext.close();
 	});
 
 	test("revoked collaborator offline edits are discarded on reconnect", async ({
@@ -253,11 +228,11 @@ test.describe("collaborative editing", () => {
 		const collaboratorPage = await collaboratorContext.newPage();
 		await bootstrapAuthenticatedPage(collaboratorPage, collaboratorId);
 
-		const compactOwnerId = ownerId.replace(/\s/g, "");
+		const compactOwnerId = ownerId.replaceAll(/\s/g, "");
 		const ownerShort = `${compactOwnerId.slice(0, 4)}...${compactOwnerId.slice(-4)}`;
 		await expect(
 			collaboratorPage.getByText(`Shared by ${ownerShort}`),
-		).toBeVisible({ timeout: 15000 });
+		).toBeVisible({ timeout: 15_000 });
 
 		const collaboratorEditor = collaboratorPage
 			.getByRole("textbox", { name: "Todo editor" })
@@ -273,7 +248,7 @@ test.describe("collaborative editing", () => {
 				__todoflareOriginalWsSend?: typeof WebSocket.prototype.send;
 				__todoflarePatchedWsSend?: boolean;
 			};
-			if (win.__todoflarePatchedWsSend) return;
+			if (win.__todoflarePatchedWsSend) {return;}
 			win.__todoflareOriginalWsSend = WebSocket.prototype.send;
 			WebSocket.prototype.send = function () {
 				throw new Error("forced-offline-send");
@@ -293,7 +268,7 @@ test.describe("collaborative editing", () => {
 						columnId,
 					),
 				{
-					timeout: 10000,
+					timeout: 10_000,
 				},
 			)
 			.toBeGreaterThan(0);
@@ -303,7 +278,7 @@ test.describe("collaborative editing", () => {
 			{
 				headers: {
 					"Content-Type": "application/json",
-					"X-Todoflare-Test-Account": ownerId.replace(/\D/g, ""),
+					"X-Todoflare-Test-Account": ownerId.replaceAll(/\D/g, ""),
 				},
 				data: { targetAccountId: collaboratorId },
 			},
@@ -335,7 +310,7 @@ test.describe("collaborative editing", () => {
 						columnId,
 					),
 				{
-					timeout: 20000,
+					timeout: 20_000,
 				},
 			)
 			.toBe(0);
@@ -346,12 +321,12 @@ test.describe("collaborative editing", () => {
 					(await getSyncStateSnapshot(collaboratorPage, collaboratorId))
 						?.revokeDiscardCount ?? 0,
 				{
-					timeout: 20000,
+					timeout: 20_000,
 				},
 			)
 			.toBeGreaterThan(0);
 
-		const collaboratorCompactId = collaboratorId.replace(/\s/g, "");
+		const collaboratorCompactId = collaboratorId.replaceAll(/\s/g, "");
 		const collaboratorShort = `${collaboratorCompactId.slice(0, 4)}...${collaboratorCompactId.slice(-4)}`;
 
 		await collaboratorPage.getByRole("button", { name: collaboratorShort }).click();
@@ -365,7 +340,7 @@ test.describe("collaborative editing", () => {
 			.poll(
 				async () => {
 					const snapshot = await getSyncStateSnapshot(collaboratorPage, collaboratorId);
-					if (!snapshot) return null;
+					if (!snapshot) {return null;}
 
 					return {
 						lastReplayLatencyMs: snapshot.lastReplayLatencyMs,
@@ -374,7 +349,7 @@ test.describe("collaborative editing", () => {
 					};
 				},
 				{
-					timeout: 10000,
+					timeout: 10_000,
 				},
 			)
 			.toEqual({
@@ -411,7 +386,7 @@ test.describe("collaborative editing", () => {
 		await addColumnAndGetId(page);
 
 		await page.getByRole("button", { name: "Share column" }).first().click();
-		const collaboratorDigits = collaboratorId.replace(/\s/g, "");
+		const collaboratorDigits = collaboratorId.replaceAll(/\s/g, "");
 		await page.getByRole("textbox", { name: "Account ID" }).click();
 		await page.getByRole("textbox", { name: "Account ID" }).fill(collaboratorDigits);
 		await expect(page.getByRole("button", { name: "Share", exact: true })).toBeEnabled();
@@ -425,7 +400,7 @@ test.describe("collaborative editing", () => {
 		const shareResponse = await shareResponsePromise;
 		expect(shareResponse.ok()).toBeTruthy();
 
-		const compactId = collaboratorId.replace(/\s/g, "");
+		const compactId = collaboratorId.replaceAll(/\s/g, "");
 		const shortId = `${compactId.slice(0, 4)}...${compactId.slice(-4)}`;
 
 		await expect(page.getByText(shortId)).toBeVisible();
@@ -447,11 +422,11 @@ test.describe("collaborative editing", () => {
 		await addColumnAndGetId(page);
 
 		await page.getByRole("button", { name: "Share column" }).first().click();
-		const collaboratorDigits = collaboratorId.replace(/\s/g, "");
+		const collaboratorDigits = collaboratorId.replaceAll(/\s/g, "");
 		await page.getByRole("textbox", { name: "Account ID" }).fill(collaboratorDigits);
 		await expect(page.getByRole("button", { name: "Share", exact: true })).toBeEnabled();
 
-		const compactId = collaboratorId.replace(/\s/g, "");
+		const compactId = collaboratorId.replaceAll(/\s/g, "");
 		const shortId = `${compactId.slice(0, 4)}...${compactId.slice(-4)}`;
 
 		await page.context().setOffline(true);

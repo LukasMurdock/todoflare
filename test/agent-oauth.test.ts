@@ -1,3 +1,4 @@
+import type { z } from "zod";
 // OAuth 2.1 for MCP clients, end to end: discovery, registration, consent,
 // code exchange with PKCE, refresh rotation, and every refusal the
 // MCP 2026-07-28 authorization specification requires.
@@ -5,18 +6,19 @@ import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { API_ROUTES } from "../src/lib/api/routes";
 import { agentStore } from "../src/server/agent-access/store";
-import { isAllowedRedirectUri, oauthClients, redirectUriMatches, validateAuthorizationRequest, type MetadataFetcher } from "../src/server/oauth/authorization-server";
+import { isAllowedRedirectUri, oauthClients, redirectUriMatches, validateAuthorizationRequest } from '../src/server/oauth/authorization-server';
+import type { MetadataFetcher } from '../src/server/oauth/authorization-server';
 import { BASE, callTool, listAgents, MCP_ERAS, withConnectionsAtGrantLimit } from "./helpers/agent-fixtures";
 import { createAccount, createColumn, headers } from "./helpers/metadata-fixtures";
 import { authorizeParams, base64Url, clientIp, ORIGIN, pkce, REDIRECT, register } from "./helpers/oauth-fixtures";
 
-async function decide(accountId: string | null, body: Record<string, unknown>) {
+async function decide(accountId: string | null, body: Record<string, z.core.util.JSONType | undefined>) {
 	const response = await SELF.fetch(`${BASE}${API_ROUTES.decideAuthorization.path}`, {
 		method: "POST",
 		headers: accountId ? headers(accountId) : { "Content-Type": "application/json", "X-Test-Disable-Auth-Bypass": "1" },
 		body: JSON.stringify(body),
 	});
-	return { status: response.status, body: (await response.json()) as { redirectTo?: string; display?: string } };
+	return { status: response.status, body: (await response.json<{ redirectTo?: string; display?: string }>()) };
 }
 
 async function token(form: Record<string, string>) {
@@ -25,7 +27,7 @@ async function token(form: Record<string, string>) {
 		headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: "https://other.example", "CF-Connecting-IP": clientIp() },
 		body: new URLSearchParams(form).toString(),
 	});
-	return { status: response.status, headers: response.headers, body: (await response.json()) as Record<string, string | number> };
+	return { status: response.status, headers: response.headers, body: (await response.json<Record<string, string | number>>()) };
 }
 
 /** Registers a client, has a person approve one column at `level`, and returns the code. */
@@ -53,21 +55,30 @@ async function exchange(flow: Awaited<ReturnType<typeof approved>>, overrides: R
 	});
 }
 
+function fetcher(respond: (url: string) => Response) {
+	const calls: Array<{ url: string; init: RequestInit }> = [];
+	const fetch: MetadataFetcher = async (url, init) => {
+		calls.push({ url, init });
+		return respond(url);
+	};
+	return { fetch, calls };
+}
+
 describe("OAuth discovery", () => {
 	it("starts from the 401 the MCP endpoint returns", async () => {
 		const response = await SELF.fetch(`${BASE}${API_ROUTES.mcp.path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
 		expect(response.status).toBe(401);
 		const challenge = response.headers.get("WWW-Authenticate")!;
-		const metadataUrl = /resource_metadata="([^"]+)"/.exec(challenge)![1]!;
+		const metadataUrl = /resource_metadata="([^"]+)"/.exec(challenge)![1];
 		expect(metadataUrl).toBe(`${ORIGIN}/.well-known/oauth-protected-resource/api/mcp`);
 
-		const resource = (await (await SELF.fetch(metadataUrl)).json()) as { resource: string; authorization_servers: string[] };
+		const resource = (await (await SELF.fetch(metadataUrl)).json<{ resource: string; authorization_servers: Array<string> }>());
 		expect(resource).toMatchObject({ resource: `${ORIGIN}/api/mcp`, authorization_servers: [ORIGIN], bearer_methods_supported: ["header"] });
-		const root = (await (await SELF.fetch(`${BASE}/.well-known/oauth-protected-resource`)).json()) as { resource: string };
+		const root = (await (await SELF.fetch(`${BASE}/.well-known/oauth-protected-resource`)).json<{ resource: string }>());
 		expect(root.resource).toBe(`${ORIGIN}/api/mcp`);
 
-		const issuer = resource.authorization_servers[0]!;
-		const metadata = (await (await SELF.fetch(`${issuer}/.well-known/oauth-authorization-server`)).json()) as Record<string, unknown>;
+		const issuer = resource.authorization_servers[0];
+		const metadata = (await (await SELF.fetch(`${issuer}/.well-known/oauth-authorization-server`)).json<Record<string, z.core.util.JSONType | undefined>>());
 		expect(metadata).toMatchObject({
 			issuer,
 			authorization_endpoint: `${ORIGIN}/oauth/authorize`,
@@ -107,7 +118,7 @@ describe("Dynamic Client Registration", () => {
 
 	it("limits registrations per IP", async () => {
 		const ip = "203.0.113.200";
-		for (let index = 0; index < 20; index++) expect((await register(undefined, ip)).status).toBe(201);
+		for (let index = 0; index < 20; index++) {expect((await register(undefined, ip)).status).toBe(201);}
 		const limited = await register(undefined, ip);
 		expect([limited.status, limited.body.error]).toEqual([429, "slow_down"]);
 	});
@@ -167,7 +178,7 @@ describe("authorization", () => {
 		const { challenge } = await pkce();
 		const query = new URLSearchParams(authorizeParams(String(client.client_id), challenge, override));
 		const response = await SELF.fetch(`${BASE}${API_ROUTES.describeAuthorization.path}?${query}`);
-		const body = (await response.json()) as { redirectTo: string };
+		const body = (await response.json<{ redirectTo: string }>());
 		expect(new URL(body.redirectTo).searchParams.get("error")).toBe(error);
 	});
 
@@ -178,7 +189,7 @@ describe("authorization", () => {
 		const { body: client } = await register();
 		const { challenge } = await pkce();
 		const query = new URLSearchParams(authorizeParams(String(client.client_id), challenge, override));
-		const body = (await (await SELF.fetch(`${BASE}${API_ROUTES.describeAuthorization.path}?${query}`)).json()) as Record<string, unknown>;
+		const body = (await (await SELF.fetch(`${BASE}${API_ROUTES.describeAuthorization.path}?${query}`)).json<Record<string, z.core.util.JSONType | undefined>>());
 		expect(body.ok).toBe(false);
 		expect(body.redirectTo).toBeUndefined();
 	});
@@ -304,7 +315,7 @@ describe("tokens", () => {
 		const flow = await approved();
 		const issued = (await exchange(flow)).body;
 		const [connection] = await listAgents(flow.person.id);
-		await agentStore(env.AUTH_DB).revoke(flow.person.id.replace(/\s/g, ""), connection!.id, Date.now());
+		await agentStore(env.AUTH_DB).revoke(flow.person.id.replaceAll(/\s/g, ""), connection.id, Date.now());
 		expect((await callTool(String(issued.access_token), "list_columns")).status).toBe(401);
 		expect((await token({ grant_type: "refresh_token", refresh_token: String(issued.refresh_token), client_id: flow.clientId })).body.error).toBe("invalid_grant");
 	});
@@ -331,30 +342,24 @@ describe("redirect URI rules", () => {
 	});
 });
 
+async function resolve(clientId: string, respond: (url: string) => Response) {
+	const stub = fetcher(respond);
+	const result = await oauthClients(env.AUTH_DB, stub.fetch).resolve(clientId, Date.now());
+	return { result, calls: stub.calls };
+}
+
 describe("Client ID Metadata Documents", () => {
 	const CLIENT_ID = "https://client.example/oauth/metadata.json";
 	const document = { client_id: CLIENT_ID, client_name: "Example Client", redirect_uris: [REDIRECT], token_endpoint_auth_method: "none" };
 
-	function fetcher(respond: (url: string) => Response) {
-		const calls: Array<{ url: string; init: RequestInit }> = [];
-		const fetch: MetadataFetcher = async (url, init) => {
-			calls.push({ url, init });
-			return respond(url);
-		};
-		return { fetch, calls };
-	}
 
-	async function resolve(clientId: string, respond: (url: string) => Response) {
-		const stub = fetcher(respond);
-		const result = await oauthClients(env.AUTH_DB, stub.fetch).resolve(clientId, Date.now());
-		return { result, calls: stub.calls };
-	}
+
 
 	it("accepts a valid document, fetched without following redirects", async () => {
 		const { result, calls } = await resolve(`${CLIENT_ID}?v=1`.replace("?v=1", ""), () => Response.json(document));
 		expect(result).toMatchObject({ ok: true, client: { kind: "metadata", name: "Example Client", redirectUris: [REDIRECT] } });
-		expect(calls[0]!.init.redirect).toBe("manual");
-		expect(calls[0]!.init.signal).toBeInstanceOf(AbortSignal);
+		expect(calls[0].init.redirect).toBe("manual");
+		expect(calls[0].init.signal).toBeInstanceOf(AbortSignal);
 	});
 
 	it("caches a fetched document", async () => {

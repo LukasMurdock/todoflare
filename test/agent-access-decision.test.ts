@@ -4,16 +4,10 @@
 // state must be added to a dimension here before it can be decided.
 import { describe, expect, it } from "vitest";
 import { AGENT_GRANT_LEVELS } from "../src/lib/api/agent-contract";
-import { decideAgentColumnAccess, type AgentAccessFacts } from "../src/server/agent-access/decision";
-import {
-	COLUMN_STATES,
-	CONNECTION_STATES,
-	GRANT_STATES,
-	ORACLE_RULES,
-	expectedOutcome,
-	type OracleCell,
-	type OracleOutcome,
-} from "./helpers/agent-access-oracle";
+import { decideAgentColumnAccess } from '../src/server/agent-access/decision';
+import type { AgentAccessFacts } from '../src/server/agent-access/decision';
+import { COLUMN_STATES, CONNECTION_STATES, GRANT_STATES, ORACLE_RULES, expectedOutcome } from './helpers/agent-access-oracle';
+import type { OracleCell, OracleOutcome } from './helpers/agent-access-oracle';
 
 const NOW = 1_800_000_000_000;
 const GRANTER = "1111222233334444";
@@ -47,12 +41,11 @@ const COLUMNS = {
 type Cell = OracleCell;
 type Outcome = OracleOutcome;
 
-const cells: Cell[] = [];
-for (const connection of CONNECTION_STATES)
-	for (const grant of GRANT_STATES)
-		for (const column of COLUMN_STATES)
-			for (const required of AGENT_GRANT_LEVELS)
-				for (const readOnlyMode of [false, true]) cells.push({ connection, grant, column, required, readOnlyMode });
+const cells = CONNECTION_STATES.flatMap(connection => GRANT_STATES.flatMap(grant =>
+	COLUMN_STATES.flatMap(column => AGENT_GRANT_LEVELS.flatMap(required =>
+		[false, true].map(readOnlyMode => ({ connection, grant, column, required, readOnlyMode })),
+	)),
+));
 
 function decide(cell: Cell): Outcome {
 	const decision = decideAgentColumnAccess({

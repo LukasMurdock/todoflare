@@ -1,5 +1,5 @@
-import * as React from "react"
-import * as TooltipPrimitive from "@radix-ui/react-tooltip"
+import type { ComponentProps } from "react"
+import { Arrow as TooltipArrowPrimitive, Content as TooltipContentPrimitive, Portal as TooltipPortalPrimitive, Provider as TooltipProviderPrimitive, Root as TooltipRootPrimitive, Trigger as TooltipTriggerPrimitive } from "@radix-ui/react-tooltip"
 
 import { cn } from "@/lib/utils"
 import { usePortalContainer } from "@todoflare/board";
@@ -7,9 +7,9 @@ import { usePortalContainer } from "@todoflare/board";
 function TooltipProvider({
   delayDuration = 0,
   ...props
-}: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
+}: ComponentProps<typeof TooltipProviderPrimitive>) {
   return (
-    <TooltipPrimitive.Provider
+    <TooltipProviderPrimitive
       data-slot="tooltip-provider"
       delayDuration={delayDuration}
       {...props}
@@ -19,18 +19,18 @@ function TooltipProvider({
 
 function Tooltip({
   ...props
-}: React.ComponentProps<typeof TooltipPrimitive.Root>) {
+}: ComponentProps<typeof TooltipRootPrimitive>) {
   return (
     <TooltipProvider>
-      <TooltipPrimitive.Root data-slot="tooltip" {...props} />
+      <TooltipRootPrimitive data-slot="tooltip" {...props} />
     </TooltipProvider>
   )
 }
 
 function TooltipTrigger({
   ...props
-}: React.ComponentProps<typeof TooltipPrimitive.Trigger>) {
-  return <TooltipPrimitive.Trigger data-slot="tooltip-trigger" {...props} />
+}: ComponentProps<typeof TooltipTriggerPrimitive>) {
+  return <TooltipTriggerPrimitive data-slot="tooltip-trigger" {...props} />
 }
 
 function TooltipContent({
@@ -38,10 +38,10 @@ function TooltipContent({
   sideOffset = 6,
   children,
   ...props
-}: React.ComponentProps<typeof TooltipPrimitive.Content>) {
+}: ComponentProps<typeof TooltipContentPrimitive>) {
   return (
-    <TooltipPrimitive.Portal container={usePortalContainer()}>
-      <TooltipPrimitive.Content
+    <TooltipPortalPrimitive container={usePortalContainer()}>
+      <TooltipContentPrimitive
         data-slot="tooltip-content"
         sideOffset={sideOffset}
         className={cn(
@@ -51,9 +51,9 @@ function TooltipContent({
         {...props}
       >
         {children}
-        <TooltipPrimitive.Arrow className="fill-popover z-50 -mt-px h-1.5 w-3 drop-shadow-[0_1px_0_var(--border)]" />
-      </TooltipPrimitive.Content>
-    </TooltipPrimitive.Portal>
+        <TooltipArrowPrimitive className="fill-popover z-50 -mt-px h-1.5 w-3 drop-shadow-[0_1px_0_var(--border)]" />
+      </TooltipContentPrimitive>
+    </TooltipPortalPrimitive>
   )
 }
 

@@ -9,9 +9,8 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const root = path.resolve(import.meta.dirname, "../..");
 const args = process.argv.slice(2);
 const asJson = args.includes("--json");
 const maxFilesIndex = args.indexOf("--max-files");
@@ -50,8 +49,8 @@ const revisions = new Map();
 const pairs = new Map();
 
 for (const { files } of commits) {
-	const unique = [...new Set(files)].sort();
-	for (const file of unique) revisions.set(file, (revisions.get(file) ?? 0) + 1);
+	const unique = [...new Set(files)].sort((a, b) => a.localeCompare(b));
+	for (const file of unique) {revisions.set(file, (revisions.get(file) ?? 0) + 1);}
 	const weight = unique.length > 1 ? 1 / (unique.length - 1) : 0;
 	for (let i = 0; i < unique.length; i++) {
 		for (let j = i + 1; j < unique.length; j++) {
@@ -68,11 +67,11 @@ function directoryDistance(a, b) {
 	const left = path.dirname(a).split("/");
 	const right = path.dirname(b).split("/");
 	let common = 0;
-	while (common < left.length && common < right.length && left[common] === right[common]) common++;
+	while (common < left.length && common < right.length && left[common] === right[common]) {common++;}
 	return left.length - common + (right.length - common);
 }
 
-const coupling = [...pairs.entries()]
+const coupling = pairs.entries()
 	.map(([key, { shared, weighted }]) => {
 		const [a, b] = key.split("\u0000");
 		const union = revisions.get(a) + revisions.get(b) - shared;
@@ -86,15 +85,15 @@ const coupling = [...pairs.entries()]
 		};
 	})
 	.filter((pair) => pair.shared >= 3 && existsSync(path.join(root, pair.a)) && existsSync(path.join(root, pair.b)))
-	.sort((x, y) => y.weighted - x.weighted || y.jaccard - x.jaccard);
+	.toArray().sort((x, y) => y.weighted - x.weighted || y.jaccard - x.jaccard);
 
-const hotspots = [...revisions.entries()]
+const hotspots = revisions.entries()
 	.filter(([file]) => existsSync(path.join(root, file)) && file.startsWith("src/"))
 	.map(([file, revs]) => {
 		const lines = lineCount(file);
 		return { file, revisions: revs, lines, score: revs * lines };
 	})
-	.sort((x, y) => y.score - x.score);
+	.toArray().sort((x, y) => y.score - x.score);
 
 // Distant coupling: src files in different directories that keep changing together.
 const distantCoupling = coupling.filter(

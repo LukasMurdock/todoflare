@@ -1,7 +1,7 @@
 import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import * as awarenessProtocol from "y-protocols/awareness";
-import * as Y from "yjs";
+import { Awareness as awarenessProtocolAwareness, applyAwarenessUpdate as awarenessProtocolapplyAwarenessUpdate, encodeAwarenessUpdate as awarenessProtocolencodeAwarenessUpdate } from "y-protocols/awareness";
+import { Doc as YDoc } from "yjs";
 import { applyUpdate, encodeStateAsUpdate } from "yjs";
 import type { ColumnMeta } from "../src/types/account";
 import {
@@ -24,7 +24,7 @@ function getColumnRoomStub(columnId: string) {
 }
 
 function getResponseWebSocket(response: Response): WebSocket {
-	const ws = (response as unknown as { webSocket?: WebSocket }).webSocket;
+	const ws = response.webSocket;
 	if (!ws) {
 		throw new Error("Expected Response.webSocket to be set");
 	}
@@ -40,7 +40,7 @@ async function issueWsTicket(
 		headers: { "X-Authenticated-Account-ID": accountId },
 	});
 	expect(response.ok).toBe(true);
-	return ((await response.json()) as { ticket: string }).ticket;
+	return ((await response.json<{ ticket: string }>())).ticket;
 }
 
 async function setColumnRoomReadOnly(
@@ -48,12 +48,10 @@ async function setColumnRoomReadOnly(
 	enabled: boolean,
 ) {
 	await runInDurableObject(stub, async (instance) => {
-		const durableObjectEnv = (
-			instance as unknown as {
-				env: { READ_ONLY_MODE?: string };
-			}
-		).env;
-		durableObjectEnv.READ_ONLY_MODE = enabled ? "true" : "false";
+		if (!("env" in instance) || typeof instance.env !== "object" || !instance.env) {
+			throw new Error("Column room has no runtime environment");
+		}
+		Object.assign(instance.env, { READ_ONLY_MODE: String(enabled) });
 	});
 }
 
@@ -71,7 +69,7 @@ function decodeOp(data: ArrayBuffer | string): number {
 }
 
 function acceptWebSocket(ws: WebSocket) {
-	(ws as unknown as { accept: () => void }).accept();
+	ws.accept();
 }
 
 function waitForWsEvent<T extends keyof WebSocketEventMap>(
@@ -120,24 +118,21 @@ async function waitForPayloadWithOp(
 			throw new Error(`Timed out waiting for opcode ${expectedOp}`);
 		}
 		const frame = await readNextFrame(ws, remaining);
-		if (frame.op === expectedOp) return frame.payload;
+		if (frame.op === expectedOp) {return frame.payload;}
 	}
 }
 
-async function waitForOp(
-	ws: WebSocket,
-	expectedOp: number,
-	timeoutMs = 2000,
-): Promise<number> {
+async function drainInitialFrames(ws: WebSocket) {
+	const required = new Set([WS_OP_SYNC, WS_OP_AWARENESS, WS_OP_PRESENCE]);
+	const seen = new Set<number>();
 	const start = Date.now();
-	while (true) {
-		const elapsed = Date.now() - start;
-		const remaining = timeoutMs - elapsed;
+	while (seen.size < required.size) {
+		const remaining = 2000 - (Date.now() - start);
 		if (remaining <= 0) {
-			throw new Error(`Timed out waiting for opcode ${expectedOp}`);
+			throw new Error("Timed out draining initial WebSocket frames");
 		}
 		const op = await readNextOp(ws, remaining);
-		if (op === expectedOp) return op;
+		if (required.has(op)) {seen.add(op);}
 	}
 }
 
@@ -244,7 +239,7 @@ describe("ColumnRoomSql Durable Object (HTTP)", () => {
 
 		const metaRes = await stub.fetch(new Request("http://do/meta"));
 		expect(metaRes.ok).toBe(true);
-		expect((await metaRes.json()) as ColumnMeta).toMatchObject({
+		expect((await metaRes.json<ColumnMeta>())).toMatchObject({
 			id: columnId,
 			ownerId: meta.ownerId,
 			sharedWith: [],
@@ -271,7 +266,7 @@ describe("ColumnRoomSql Durable Object (HTTP)", () => {
 
 		const metaRes2 = await stub.fetch(new Request("http://do/meta"));
 		expect(metaRes2.ok).toBe(true);
-		expect((await metaRes2.json()) as ColumnMeta).toMatchObject({
+		expect((await metaRes2.json<ColumnMeta>())).toMatchObject({
 			sharedWith: ["2222 2222 2222 2222"],
 			publicId: "pub12345",
 		});
@@ -307,7 +302,7 @@ describe("ColumnRoomSql Durable Object (HTTP)", () => {
 		);
 		expect(initRes.ok).toBe(true);
 
-		const doc = new Y.Doc();
+		const doc = new YDoc();
 		doc.getText("t").insert(0, "export me");
 		const update = encodeStateAsUpdate(doc);
 
@@ -322,15 +317,15 @@ describe("ColumnRoomSql Durable Object (HTTP)", () => {
 
 		const exportRes = await stub.fetch(new Request("http://do/export"));
 		expect(exportRes.ok).toBe(true);
-		const exported = (await exportRes.json()) as {
+		const exported = (await exportRes.json<{
 			meta: ColumnMeta;
-			yjs: number[] | null;
-		};
+			yjs: Array<number> | null;
+		}>());
 
 		expect(exported.meta.id).toBe(columnId);
 		expect(exported.yjs).not.toBeNull();
 
-		const docOut = new Y.Doc();
+		const docOut = new YDoc();
 		applyUpdate(docOut, new Uint8Array(exported.yjs ?? []));
 		expect(docOut.getText("t").toString()).toBe("export me");
 	});
@@ -346,7 +341,7 @@ describe("ColumnRoomSql Durable Object (HTTP)", () => {
 			publicId: null,
 			createdAt: 1,
 		};
-		const originalDoc = new Y.Doc();
+		const originalDoc = new YDoc();
 		originalDoc.getText("t").insert(0, "keep me");
 		const initialImport = await stub.fetch(
 			new Request("http://do/import", {
@@ -372,29 +367,16 @@ describe("ColumnRoomSql Durable Object (HTTP)", () => {
 		const metaResponse = await stub.fetch(new Request("http://do/meta"));
 		expect(await metaResponse.json()).toEqual(originalMeta);
 		const exportResponse = await stub.fetch(new Request("http://do/export"));
-		const exported = (await exportResponse.json()) as {
-			yjs: number[] | null;
-		};
-		const restoredDoc = new Y.Doc();
+		const exported = (await exportResponse.json<{
+			yjs: Array<number> | null;
+		}>());
+		const restoredDoc = new YDoc();
 		applyUpdate(restoredDoc, Uint8Array.from(exported.yjs ?? []));
 		expect(restoredDoc.getText("t").toString()).toBe("keep me");
 	});
 });
 
 describe("ColumnRoomSql Durable Object (WebSocket)", () => {
-	async function drainInitialFrames(ws: WebSocket) {
-		const required = new Set([WS_OP_SYNC, WS_OP_AWARENESS, WS_OP_PRESENCE]);
-		const seen = new Set<number>();
-		const start = Date.now();
-		while (seen.size < required.size) {
-			const remaining = 2000 - (Date.now() - start);
-			if (remaining <= 0) {
-				throw new Error("Timed out draining initial WebSocket frames");
-			}
-			const op = await readNextOp(ws, remaining);
-			if (required.has(op)) seen.add(op);
-		}
-	}
 
 	it("upgrades to a binary WebSocket and sends initial frames", async () => {
 		const columnId = "00000000-0000-4000-8000-000000000106"; // ws-initial-frames
@@ -475,33 +457,29 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 		const receiver = await connect(sharedId);
 
 		await runInDurableObject(stub, async (instance) => {
-			const awareness = (
-				instance as unknown as { awareness: awarenessProtocol.Awareness | null }
-			).awareness;
-			expect(awareness).not.toBeNull();
-			expect(awareness?._checkInterval).toBeNull();
+			expect(instance).toMatchObject({ awareness: { _checkInterval: null } });
 		});
 
-		const peerDoc = new Y.Doc();
-		const peer = new awarenessProtocol.Awareness(peerDoc);
+		const peerDoc = new YDoc();
+		const peer = new awarenessProtocolAwareness(peerDoc);
 		peer.setLocalState({ cursor: "item-1" });
 		const relayed = waitForPayloadWithOp(receiver, WS_OP_AWARENESS);
 		sender.send(
 			encodeWsFrame(
 				WS_OP_AWARENESS,
-				awarenessProtocol.encodeAwarenessUpdate(peer, [peer.clientID]),
+				awarenessProtocolencodeAwarenessUpdate(peer, [peer.clientID]),
 			),
 		);
-		const seen = new awarenessProtocol.Awareness(new Y.Doc());
-		awarenessProtocol.applyAwarenessUpdate(seen, await relayed, "server");
+		const seen = new awarenessProtocolAwareness(new YDoc());
+		awarenessProtocolapplyAwarenessUpdate(seen, await relayed, "server");
 		expect(seen.getStates().get(peer.clientID)).toEqual({ cursor: "item-1" });
 
 		// Without the timer, the room drops a peer when its socket closes, and
 		// its next snapshot omits it.
 		const snapshot = waitForPayloadWithOp(receiver, WS_OP_AWARENESS);
 		sender.close();
-		const afterClose = new awarenessProtocol.Awareness(new Y.Doc());
-		awarenessProtocol.applyAwarenessUpdate(afterClose, await snapshot, "server");
+		const afterClose = new awarenessProtocolAwareness(new YDoc());
+		awarenessProtocolapplyAwarenessUpdate(afterClose, await snapshot, "server");
 		expect(afterClose.getStates().has(peer.clientID)).toBe(false);
 
 		peer.destroy();
@@ -646,7 +624,7 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 		const wsA = await connect();
 		const wsB = await connect();
 
-		const docA = new Y.Doc();
+		const docA = new YDoc();
 		docA.getText("t").insert(0, "hello");
 		const update = encodeStateAsUpdate(docA);
 
@@ -662,7 +640,7 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 			decodeWsMessage(encodeWsFrame(WS_OP_SYNC_ACK, ackPayload)),
 		).toEqual({ type: "sync-ack", outboxId: "delivery-1" });
 
-		const docB = new Y.Doc();
+		const docB = new YDoc();
 		applyUpdate(docB, received);
 		expect(docB.getText("t").toString()).toBe("hello");
 
@@ -713,13 +691,14 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 
 		const sender = await connect();
 		const peer = await connect();
+		const peerUpdate = waitForPayloadWithOp(peer, WS_OP_SYNC);
 		let peerSyncCount = 0;
 		const countPeerSync = (event: MessageEvent) => {
-			if (decodeOp(event.data) === WS_OP_SYNC) peerSyncCount += 1;
+			if (decodeOp(event.data) === WS_OP_SYNC) {peerSyncCount += 1;}
 		};
 		peer.addEventListener("message", countPeerSync);
 
-		const doc = new Y.Doc();
+		const doc = new YDoc();
 		doc.getText("t").insert(0, "deduplicated");
 		const update = encodeStateAsUpdate(doc);
 		const submission = encodeDurableSyncSubmission("stable-delivery", update);
@@ -731,7 +710,7 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 				decodeWsMessage(encodeWsFrame(WS_OP_SYNC_ACK, await ack)),
 			).toEqual({ type: "sync-ack", outboxId: "stable-delivery" });
 		}
-		await new Promise((resolve) => setTimeout(resolve, 25));
+		await peerUpdate;
 
 		await runInDurableObject(stub, async (_instance, state) => {
 			const updateCount = state.storage.sql
@@ -749,7 +728,6 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 		const replayAck = waitForPayloadWithOp(sender, WS_OP_SYNC_ACK);
 		sender.send(submission);
 		await replayAck;
-		await new Promise((resolve) => setTimeout(resolve, 25));
 
 		await runInDurableObject(stub, async (_instance, state) => {
 			const updateCount = state.storage.sql
@@ -763,9 +741,16 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 		});
 		expect(peerSyncCount).toBe(1);
 
+		// A duplicate from this peer gets one private echo followed by its ACK.
+		// Receiving that ACK also drains any earlier syncs on the same socket.
+		const peerAck = waitForPayloadWithOp(peer, WS_OP_SYNC_ACK);
+		peer.send(submission);
+		expect(decodeWsMessage(encodeWsFrame(WS_OP_SYNC_ACK, await peerAck)))
+			.toEqual({ type: "sync-ack", outboxId: "stable-delivery" });
+		expect(peerSyncCount).toBe(2);
+		peer.close();
 		peer.removeEventListener("message", countPeerSync);
 		sender.close();
-		peer.close();
 		doc.destroy();
 	});
 
@@ -795,7 +780,7 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 		acceptWebSocket(ws);
 		await drainInitialFrames(ws);
 
-		const first = new Y.Doc();
+		const first = new YDoc();
 		first.getText("t").insert(0, "first");
 		const firstAck = waitForPayloadWithOp(ws, WS_OP_SYNC_ACK);
 		ws.send(
@@ -803,7 +788,7 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 		);
 		await firstAck;
 
-		const second = new Y.Doc();
+		const second = new YDoc();
 		second.getText("t").insert(0, "second");
 		const error = waitForPayloadWithOp(ws, WS_OP_ERROR);
 		const closed = waitForWsEvent(ws, "close", 2000);
@@ -857,7 +842,7 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 		acceptWebSocket(ws);
 		await drainInitialFrames(ws);
 
-		const baselineDoc = new Y.Doc();
+		const baselineDoc = new YDoc();
 		baselineDoc.getText("t").insert(0, "baseline");
 		const baselineAck = waitForPayloadWithOp(ws, WS_OP_SYNC_ACK);
 		ws.send(
@@ -869,7 +854,7 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 		await baselineAck;
 
 		const beforeExport = await stub.fetch(new Request("http://do/export"));
-		const before = (await beforeExport.json()) as { yjs: number[] | null };
+		const before = (await beforeExport.json<{ yjs: Array<number> | null }>());
 		const beforeUpdateCount = await runInDurableObject(
 			stub,
 			async (_instance, state) =>
@@ -900,7 +885,7 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 
 			const errorPromise = waitForPayloadWithOp(ws, WS_OP_ERROR);
 			const closePromise = waitForWsEvent(ws, "close", 2000);
-			const rejectedDoc = new Y.Doc();
+			const rejectedDoc = new YDoc();
 			rejectedDoc.getText("t").insert(0, "must-not-persist");
 			ws.send(
 				encodeDurableSyncSubmission(
@@ -916,7 +901,7 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 			expect(close.code).toBe(1013);
 
 			const afterExport = await stub.fetch(new Request("http://do/export"));
-			const after = (await afterExport.json()) as { yjs: number[] | null };
+			const after = (await afterExport.json<{ yjs: Array<number> | null }>());
 			expect(after.yjs).toEqual(before.yjs);
 
 			const afterUpdateCount = await runInDurableObject(
@@ -929,7 +914,7 @@ describe("ColumnRoomSql Durable Object (WebSocket)", () => {
 			expect(afterUpdateCount).toBe(beforeUpdateCount);
 		} finally {
 			await setColumnRoomReadOnly(stub, false);
-			if (ws.readyState === WebSocket.OPEN) ws.close();
+			if (ws.readyState === WebSocket.OPEN) {ws.close();}
 		}
 	});
 });

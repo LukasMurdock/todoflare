@@ -8,7 +8,7 @@ export type ModifierKey = "mod" | "shift" | "alt";
 
 interface UseKeyboardShortcutOptions {
 	key: string;
-	modifiers?: ModifierKey[];
+	modifiers?: Array<ModifierKey>;
 	onTrigger: () => void;
 }
 
@@ -27,7 +27,7 @@ export function useKeyboardShortcut({
 	const handler = useCallback(
 		(event: KeyboardEvent) => {
 			// Something closer to the target (such as a board) already handled it.
-			if (event.defaultPrevented) return;
+			if (event.defaultPrevented) {return;}
 			const isMac = isMacPlatform();
 			// Check modifiers
 			const modPressed = modifiers.includes("mod")

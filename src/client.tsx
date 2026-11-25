@@ -1,5 +1,5 @@
 import "./styles/global.css";
-import { lazy, Suspense, useState, useEffect, useMemo } from "react";
+import { lazy, Suspense, useCallback, useState, useEffect, useMemo } from "react";
 import { createRoot } from "react-dom/client";
 import { Toaster } from "sonner";
 import { TodoApp } from "./components/todo/TodoApp";
@@ -31,7 +31,7 @@ function useRoute() {
 		if (publicId) {
 			return { type: "public" as const, publicId };
 		}
-		if (isOAuthAuthorizePagePath(pathname)) return { type: "oauth" as const };
+		if (isOAuthAuthorizePagePath(pathname)) {return { type: "oauth" as const };}
 
 		// Default to main app
 		return { type: "app" as const };
@@ -42,25 +42,19 @@ function AppContent() {
 	const { isFirstVisit, dismissWelcome } = useFirstVisit();
 	const { accountId, hasLocalData, isLoading } = useSyncContext();
 
-	const [showAccountModal, setShowAccountModal] = useState(false);
-	const [showClaimModal, setShowClaimModal] = useState(false);
-
-	// Determine which modal to show on first load
-	useEffect(() => {
-		if (isLoading) return;
-
-		// If no account is logged in
-		if (!accountId) {
-			const hasData = hasLocalData();
-			if (hasData) {
-				// Has local data - show claim modal
-				setShowClaimModal(true);
-			} else {
-				// No local data - show account modal
-				setShowAccountModal(true);
-			}
-		}
-	}, [accountId, hasLocalData, isLoading]);
+	const isGuest = !isLoading && !accountId;
+	const [wasGuest, setWasGuest] = useState(isGuest);
+	const [prompt, setPrompt] = useState<"claim" | "account" | null>(() =>
+		isGuest ? (hasLocalData() ? "claim" : "account") : null,
+	);
+	if (wasGuest !== isGuest) {
+		setWasGuest(isGuest);
+		if (isGuest) { setPrompt(hasLocalData() ? "claim" : "account"); }
+	}
+	// Recovery keeps its dialog open after sign-in until the rotated code is saved.
+	const onPromptOpenChange = useCallback((open: boolean) => {
+		if (!open) { setPrompt(null); }
+	}, []);
 
 	return (
 		<WelcomeRefsProvider>
@@ -68,13 +62,13 @@ function AppContent() {
 			{isFirstVisit && <WelcomeScreen onDismiss={dismissWelcome} />}
 
 			<AccountModal
-				open={showAccountModal}
-				onOpenChange={setShowAccountModal}
+				open={prompt === "account"}
+				onOpenChange={onPromptOpenChange}
 			/>
 
 			<ClaimDataModal
-				open={showClaimModal}
-				onOpenChange={setShowClaimModal}
+				open={prompt === "claim"}
+				onOpenChange={onPromptOpenChange}
 			/>
 
 			<Toaster position="bottom-right" richColors />
@@ -114,6 +108,8 @@ function App() {
 	);
 }
 
-createRoot(document.getElementById("root")!).render(
+const root = document.getElementById("root");
+if (!root) { throw new Error("Missing application root"); }
+createRoot(root).render(
 	<App />,
 );

@@ -1,6 +1,6 @@
 "use client";
 
-import * as React from "react";
+import React from "react";
 
 /**
  * Where the board's dialogs, popovers and menus portal to: the board's root

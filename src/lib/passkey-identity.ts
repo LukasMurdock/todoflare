@@ -12,11 +12,11 @@ import { displayAccountId, normalizeAccountId } from "./account";
  * links the passkey to a public Account ID, which a stolen authenticator's
  * holder could also read from the passkey's name. 0018 records the tradeoff.
  */
-export function passkeyUser(accountId: string): { id: string; name: string; displayName: string } {
+export function passkeyUser(accountId: string) {
 	const id = normalizeAccountId(accountId);
 	const name = displayAccountId(id);
 	return {
-		id: btoa(id).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""),
+		id: btoa(id).replaceAll('+', "-").replaceAll('/', "_").replace(/=+$/, ""),
 		name,
 		displayName: name,
 	};

@@ -25,7 +25,7 @@ export function ClaimDataModal({ open, onOpenChange }: ClaimDataModalProps) {
 		setOperation(startFresh ? "fresh" : "claim");
 		try {
 			if (await createAccount()) {
-				if (startFresh) clearLocalColumns();
+				if (startFresh) {clearLocalColumns();}
 				onOpenChange(false);
 			}
 		} finally {
@@ -60,14 +60,14 @@ export function ClaimDataModal({ open, onOpenChange }: ClaimDataModalProps) {
 					</div>
 				</DialogHeader>
 				<div className="flex flex-col gap-2.5">
-					<Button onClick={() => create(false)} disabled={busy} className="h-10 w-full">
+					<Button onClick={() => void create(false)} disabled={busy} className="h-10 w-full">
 						<Fingerprint className="stroke-[1.75]" />
 						{operation === "claim" ? "Creating passkey..." : "Create account and claim data"}
 					</Button>
 					<div className="flex flex-col gap-1">
 						<Button
 							variant="outline"
-							onClick={() => create(true)}
+							onClick={() => void create(true)}
 							disabled={busy}
 							aria-describedby="claim-fresh-caption"
 							className="h-10 w-full hover:border-red-500/40"
@@ -81,7 +81,7 @@ export function ClaimDataModal({ open, onOpenChange }: ClaimDataModalProps) {
 					<Button
 						variant="ghost"
 						size="sm"
-						onClick={signIn}
+						onClick={() => void signIn()}
 						disabled={busy}
 						className="mx-auto text-muted-foreground hover:text-foreground"
 					>
@@ -91,7 +91,7 @@ export function ClaimDataModal({ open, onOpenChange }: ClaimDataModalProps) {
 				</div>
 				<p className="flex items-start gap-2 border-t border-border/60 pt-4 text-xs leading-5 text-muted-foreground">
 					<Lock className="mt-0.5 size-3.5 shrink-0" />
-					Signing in to an existing account replaces the columns in this browser with that account's.
+					Signing in to an existing account replaces the columns in this browser with that account’s.
 				</p>
 			</DialogContent>
 		</Dialog>

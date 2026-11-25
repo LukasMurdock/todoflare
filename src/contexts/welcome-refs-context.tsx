@@ -1,7 +1,7 @@
 "use client";
 
-import * as React from "react";
-import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import { createContext, useCallback, useContext, useMemo, useState } from "react";
 
 interface WelcomeRefsContextValue {
 	registerRef: (key: string, element: HTMLElement | null) => void;
@@ -12,25 +12,25 @@ interface WelcomeRefsContextValue {
 
 const WelcomeRefsContext = createContext<WelcomeRefsContextValue | null>(null);
 
-export function WelcomeRefsProvider({ children }: { children: React.ReactNode }) {
-	const refsMap = useRef<Map<string, HTMLElement>>(new Map());
+export function WelcomeRefsProvider({ children }: { children: ReactNode }) {
+	const [refsMap] = useState(() => new Map<string, HTMLElement>());
 	const [version, setVersion] = useState(0);
 
 	const registerRef = useCallback((key: string, element: HTMLElement | null) => {
 		if (element) {
-			if (refsMap.current.get(key) !== element) {
-				refsMap.current.set(key, element);
+			if (refsMap.get(key) !== element) {
+				refsMap.set(key, element);
 				setVersion((n) => n + 1);
 			}
-		} else if (refsMap.current.has(key)) {
-			refsMap.current.delete(key);
+		} else if (refsMap.has(key)) {
+			refsMap.delete(key);
 			setVersion((n) => n + 1);
 		}
-	}, []);
+	}, [refsMap]);
 
 	const value = useMemo(
-		() => ({ registerRef, refs: refsMap.current, version }),
-		[registerRef, version],
+		() => ({ registerRef, refs: refsMap, version }),
+		[registerRef, refsMap, version],
 	);
 
 	return <WelcomeRefsContext.Provider value={value}>{children}</WelcomeRefsContext.Provider>;

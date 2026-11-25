@@ -12,7 +12,7 @@ const AT = 0x40;
 
 type Bytes = Uint8Array<ArrayBuffer>;
 
-const bytes = (...parts: Uint8Array[]): Bytes => {
+const bytes = (...parts: Array<Uint8Array>): Bytes => {
 	const out = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
 	let offset = 0;
 	for (const part of parts) {
@@ -29,7 +29,7 @@ const uint32 = (value: number) => new Uint8Array([value >>> 24, (value >>> 16) &
 function derSignature(raw: Bytes): Bytes {
 	const integer = (value: Bytes) => {
 		let start = 0;
-		while (start < value.length - 1 && value[start] === 0) start++;
+		while (start < value.length - 1 && value[start] === 0) {start++;}
 		const trimmed = value.slice(start);
 		const padded = trimmed[0] & 0x80 ? bytes(new Uint8Array([0]), trimmed) : trimmed;
 		return bytes(new Uint8Array([0x02, padded.length]), padded);
@@ -38,15 +38,13 @@ function derSignature(raw: Bytes): Bytes {
 	return bytes(new Uint8Array([0x30, body.length]), body);
 }
 
-export interface SoftwareAuthenticator {
-	credentialId: string;
-	register(options: { challenge: string }, verified: boolean): Promise<unknown>;
-	authenticate(options: { challenge: string }, verified: boolean): Promise<unknown>;
-}
+export type SoftwareAuthenticator = Awaited<ReturnType<typeof softwareAuthenticator>>;
 
-export async function softwareAuthenticator(origin: string, rpId: string): Promise<SoftwareAuthenticator> {
-	const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]) as CryptoKeyPair;
-	const jwk = await crypto.subtle.exportKey("jwk", keys.publicKey) as JsonWebKey;
+export async function softwareAuthenticator(origin: string, rpId: string) {
+	const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+	const jwk = await crypto.subtle.exportKey("jwk", keys.publicKey);
+	if (!jwk.x || !jwk.y) { throw new Error("Missing ES256 public coordinates"); }
+	const { x, y } = jwk;
 	const rawId = crypto.getRandomValues(new Uint8Array(32));
 	const credentialId = isoBase64URL.fromBuffer(rawId);
 	const rpIdHash = await sha256(utf8(rpId));
@@ -57,13 +55,13 @@ export async function softwareAuthenticator(origin: string, rpId: string): Promi
 
 	return {
 		credentialId,
-		async register({ challenge }, verified) {
+		async register({ challenge }: { challenge: string }, verified: boolean) {
 			const publicKey = isoCBOR.encode(new Map<number, number | Uint8Array>([
 				[1, 2],
 				[3, -7],
 				[-1, 1],
-				[-2, isoBase64URL.toBuffer(jwk.x!)],
-				[-3, isoBase64URL.toBuffer(jwk.y!)],
+				[-2, isoBase64URL.toBuffer(x)],
+				[-3, isoBase64URL.toBuffer(y)],
 			]));
 			const authData = bytes(
 				rpIdHash,
@@ -74,11 +72,11 @@ export async function softwareAuthenticator(origin: string, rpId: string): Promi
 				rawId,
 				publicKey,
 			);
-			const attestationObject = isoCBOR.encode(new Map<string, unknown>([
+			const attestationObject = isoCBOR.encode(new Map<string, string | Map<number, number> | Bytes>([
 				["fmt", "none"],
 				["attStmt", new Map()],
 				["authData", authData],
-			]) as never);
+			]));
 			return {
 				id: credentialId,
 				rawId: credentialId,
@@ -91,7 +89,7 @@ export async function softwareAuthenticator(origin: string, rpId: string): Promi
 				},
 			};
 		},
-		async authenticate({ challenge }, verified) {
+		async authenticate({ challenge }: { challenge: string }, verified: boolean) {
 			counter++;
 			const authData = bytes(rpIdHash, new Uint8Array([UP | (verified ? UV : 0)]), uint32(counter));
 			const clientDataJSON = clientData("webauthn.get", challenge);

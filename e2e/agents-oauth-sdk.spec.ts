@@ -3,7 +3,8 @@
 // itself; Playwright only plays the person approving the consent page.
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { UnauthorizedError, type OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
+import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
+import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { OAuthClientInformationMixed, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { expect, test } from "@playwright/test";
 import { getYjsOutboxCountForColumn } from "./helpers/local-first-readers";
@@ -97,9 +98,9 @@ test("the official MCP SDK client signs in with OAuth and uses the granted colum
 	provider.saved = { ...provider.saved!, access_token: `tfa_${"A".repeat(43)}` };
 	transport = new StreamableHTTPClientTransport(endpoint, { authProvider: provider });
 	const refreshed = new Client({ name: "sdk-oauth-test", version: "1.0.0" });
-	await refreshed.connect(transport).catch(async (error) => {
+	await refreshed.connect(transport).catch(async (error: unknown) => {
 		// SDK 1.32 refreshes on a 401 at connect time; tolerate one explicit retry.
-		if (!(error instanceof UnauthorizedError)) throw error;
+		if (!(error instanceof UnauthorizedError)) {throw error;}
 		await refreshed.connect(new StreamableHTTPClientTransport(endpoint, { authProvider: provider }));
 	});
 	expect(provider.saved?.access_token).not.toBe(`tfa_${"A".repeat(43)}`);

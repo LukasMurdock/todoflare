@@ -9,7 +9,7 @@ test("a request rejected before its body is read does not break the next one", a
 	// Four lanes issue 800 requests against the local Workers runtime.
 	test.setTimeout(90_000);
 	const base = baseURL ?? "http://127.0.0.1:4173";
-	const failures: string[] = [];
+	const failures: Array<string> = [];
 	const loop = async (lane: number) => {
 		for (let attempt = 0; attempt < 100; attempt++) {
 			const rejected = await fetch(`${base}/api/mcp`, {
@@ -17,10 +17,10 @@ test("a request rejected before its body is read does not break the next one", a
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ padding: "x".repeat(2000) }),
 			});
-			if (rejected.status !== 401) failures.push(`${lane}/${attempt}: rejected ${rejected.status}`);
+			if (rejected.status !== 401) {failures.push(`${lane}/${attempt}: rejected ${rejected.status}`);}
 			await rejected.text();
 			const next = await fetch(`${base}/.well-known/oauth-protected-resource/api/mcp`);
-			if (!(next.headers.get("content-type") ?? "").includes("application/json")) failures.push(`${lane}/${attempt}: next ${next.headers.get("content-type")}`);
+			if (!(next.headers.get("content-type") ?? "").includes("application/json")) {failures.push(`${lane}/${attempt}: next ${next.headers.get("content-type")}`);}
 			await next.text();
 		}
 	};

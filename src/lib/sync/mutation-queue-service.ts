@@ -9,10 +9,8 @@ import type {
 	ReplayReport,
 	TerminalReplayReason,
 } from "@/lib/sync/contracts";
-import {
-	replaceLocalFirstCollection,
-	type LocalFirstDatabase,
-} from "../local-first/database";
+import { replaceLocalFirstCollection } from '../local-first/database';
+import type { LocalFirstDatabase } from '../local-first/database';
 import { parseQueuedMutation } from "./account-command-parser";
 import { createOutboxJournal } from "../local-first/outbox-journal";
 
@@ -33,24 +31,24 @@ export type MutationReplayResult =
 	  };
 
 export interface MutationQueueStorage {
-	read(): QueuedMutation[];
-	write(mutations: QueuedMutation[]): void;
+	read(): Array<QueuedMutation>;
+	write(mutations: Array<QueuedMutation>): void;
 	flush?(): Promise<void>;
 }
 
 export type MutationExecutor = (
 	mutation: QueuedMutation,
 	options?: { signal?: AbortSignal },
-) => Promise<MutationReplayResult & { effects?: AccountCommandEffect[] }>;
+) => Promise<MutationReplayResult & { effects?: Array<AccountCommandEffect> }>;
 
-function cloneMutations(mutations: QueuedMutation[]): QueuedMutation[] {
+function cloneMutations(mutations: Array<QueuedMutation>): Array<QueuedMutation> {
 	return mutations.map((mutation) => ({ ...mutation }));
 }
 
 function mergeMutationsByQueueId(
-	baseMutations: QueuedMutation[],
-	overrideMutations: QueuedMutation[],
-): QueuedMutation[] {
+	baseMutations: Array<QueuedMutation>,
+	overrideMutations: Array<QueuedMutation>,
+): Array<QueuedMutation> {
 	const merged = new Map<string, QueuedMutation>();
 
 	for (const mutation of baseMutations) {
@@ -81,13 +79,13 @@ function byCreatedAt(a: QueuedMutation, b: QueuedMutation): number {
 }
 
 function toErrorMessage(err: unknown): string {
-	if (err instanceof Error && err.message) return err.message;
+	if (err instanceof Error && err.message) {return err.message;}
 	return "Unknown replay error";
 }
 
 export class LocalMutationQueueService implements MutationQueueService {
-	private queue: QueuedMutation[];
-	private readonly subscribers = new Set<(value: QueuedMutation[]) => void>();
+	private queue: Array<QueuedMutation>;
+	private readonly subscribers = new Set<(value: Array<QueuedMutation>) => void>();
 	private storage: MutationQueueStorage;
 	private readonly journal: MutationQueueStorage;
 	private readonly executeMutation: MutationExecutor;
@@ -106,9 +104,7 @@ export class LocalMutationQueueService implements MutationQueueService {
 		this.queue = this.storage.read().sort(byCreatedAt);
 	}
 
-	async enqueue<T extends AccountEditCommand["opType"]>(
-		cmd: AccountEditCommand<T>,
-	): Promise<string> {
+	async enqueue<T extends AccountEditCommand["opType"]>(cmd: AccountEditCommand<T>): Promise<string> {
 		const queueId = crypto.randomUUID();
 		const queued: QueuedMutation = {
 			...cmd,
@@ -143,11 +139,11 @@ export class LocalMutationQueueService implements MutationQueueService {
 	}): Promise<ReplayReport> {
 		const now = Date.now();
 		const maxBatch = options.maxBatch ?? 50;
-		const normalizedAccountId = options.accountId.replace(/\s/g, "");
+		const normalizedAccountId = options.accountId.replaceAll(/\s/g, "");
 		const eligible = this.queue
 			.filter(
 				(mutation) =>
-					mutation.entityId.replace(/\s/g, "") === normalizedAccountId &&
+					mutation.entityId.replaceAll(/\s/g, "") === normalizedAccountId &&
 					mutation.nextRetryAt <= now,
 			)
 			.sort(byCreatedAt)
@@ -164,22 +160,22 @@ export class LocalMutationQueueService implements MutationQueueService {
 		};
 
 		for (const mutation of eligible) {
-			if (options.signal?.aborted) break;
+			if (options.signal?.aborted) {break;}
 			report.attempted += 1;
 
-			let result: MutationReplayResult & { effects?: AccountCommandEffect[] };
+			let result: MutationReplayResult & { effects?: Array<AccountCommandEffect> };
 			try {
 				result = await this.executeMutation(mutation, {
 					signal: options.signal,
 				});
-			} catch (err) {
-				if (options.signal?.aborted) break;
-				result = { kind: "retry", error: toErrorMessage(err) };
+			} catch (error) {
+				if (options.signal?.aborted) {break;}
+				result = { kind: "retry", error: toErrorMessage(error) };
 			}
-			if (options.signal?.aborted) break;
+			if (options.signal?.aborted) {break;}
 
 			const index = this.queue.findIndex((entry) => entry.queueId === mutation.queueId);
-			if (index < 0) continue;
+			if (index < 0) {continue;}
 
 			if (result.kind === "authentication_required") {
 				report.authenticationRequired = true;
@@ -202,7 +198,7 @@ export class LocalMutationQueueService implements MutationQueueService {
 					reason: result.reason,
 					detail: result.detail,
 					failedAt: Date.now(),
-				} as (typeof report.terminalFailures)[number]);
+				});
 				continue;
 			}
 
@@ -235,7 +231,7 @@ export class LocalMutationQueueService implements MutationQueueService {
 		return dropped;
 	}
 
-	pending$(): ObservableLike<QueuedMutation[]> {
+	pending$(): ObservableLike<Array<QueuedMutation>> {
 		return {
 			subscribe: (next) => {
 				this.subscribers.add(next);
@@ -249,19 +245,19 @@ export class LocalMutationQueueService implements MutationQueueService {
 		};
 	}
 
-	getPending(accountId: string): QueuedMutation[] {
-		const normalizedAccountId = accountId.replace(/\s/g, "");
+	getPending(accountId: string): Array<QueuedMutation> {
+		const normalizedAccountId = accountId.replaceAll(/\s/g, "");
 		return cloneMutations(
 			this.queue.filter(
 				(mutation) =>
-					mutation.entityId.replace(/\s/g, "") === normalizedAccountId,
+					mutation.entityId.replaceAll(/\s/g, "") === normalizedAccountId,
 			),
 		);
 	}
 
 	getNextRetryAt(accountId: string): number | null {
 		const pending = this.getPending(accountId);
-		if (pending.length === 0) return null;
+		if (pending.length === 0) {return null;}
 		return Math.min(...pending.map((mutation) => mutation.nextRetryAt));
 	}
 
@@ -289,7 +285,7 @@ export function createLocalStorageMutationQueueStorage(storageKey: string): Muta
 }
 
 export function createMemoryMutationQueueStorage(
-	initial: QueuedMutation[] = [],
+	initial: Array<QueuedMutation> = [],
 ): MutationQueueStorage {
 	let queue = cloneMutations(initial);
 

@@ -1,9 +1,9 @@
 /** Map in input order while limiting simultaneously active asynchronous work. */
 export async function mapWithConcurrency<T, R>(
-	items: readonly T[],
+	items: ReadonlyArray<T>,
 	limit: number,
 	mapper: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
+): Promise<Array<R>> {
 	if (!Number.isInteger(limit) || limit < 1) {
 		throw new RangeError("Concurrency limit must be a positive integer");
 	}
@@ -15,7 +15,7 @@ export async function mapWithConcurrency<T, R>(
 			while (nextIndex < items.length) {
 				const index = nextIndex;
 				nextIndex += 1;
-				results[index] = await mapper(items[index]!, index);
+				results[index] = await mapper(items[index], index);
 			}
 		},
 	);

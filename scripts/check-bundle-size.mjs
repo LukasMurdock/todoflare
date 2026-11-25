@@ -36,7 +36,7 @@ import { gzipSync } from "node:zlib";
 const BUDGET_GZIP_KIB = 468;
 const dir = process.argv[2] ?? "dist/client/assets";
 const files = readdirSync(dir).filter((file) => file.endsWith(".js"));
-if (files.length === 0) throw new Error(`No JavaScript in ${dir}; build first.`);
+if (files.length === 0) {throw new Error(`No JavaScript in ${dir}; build first.`);}
 const total = files.reduce((sum, file) => sum + gzipSync(readFileSync(path.join(dir, file))).length, 0) / 1024;
 if (total > BUDGET_GZIP_KIB) {
 	console.error(`Client JS is ${total.toFixed(1)} KiB gzip, over the ${BUDGET_GZIP_KIB} KiB budget.`);

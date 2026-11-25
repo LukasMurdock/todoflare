@@ -14,11 +14,11 @@ export interface YjsOutboxRetentionInput {
 
 export interface YjsOutboxRetention {
 	/** Edits that will send once their column connects. */
-	sendable: YjsOutboxEntry[];
+	sendable: Array<YjsOutboxEntry>;
 	/** Edits kept for trashed columns; they only send after a restore. */
-	heldForTrash: YjsOutboxEntry[];
+	heldForTrash: Array<YjsOutboxEntry>;
 	/** Entries that can never send: stale presence, and edits for columns that no longer exist. */
-	discardable: YjsOutboxEntry[];
+	discardable: Array<YjsOutboxEntry>;
 }
 
 /**
@@ -26,7 +26,7 @@ export interface YjsOutboxRetention {
  * pass column sets from a server-confirmed projection, never a cached one.
  */
 export function classifyYjsOutbox(
-	entries: readonly YjsOutboxEntry[],
+	entries: ReadonlyArray<YjsOutboxEntry>,
 	input: YjsOutboxRetentionInput,
 ): YjsOutboxRetention {
 	const retention: YjsOutboxRetention = { sendable: [], heldForTrash: [], discardable: [] };

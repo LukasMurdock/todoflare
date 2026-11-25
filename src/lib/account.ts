@@ -32,9 +32,9 @@ function generateRandomCharacters(
 	while (result.length < length) {
 		randomValues(bytes);
 		for (const byte of bytes) {
-			if (byte >= rejectionLimit) continue;
+			if (byte >= rejectionLimit) {continue;}
 			result += alphabet[byte % alphabet.length];
-			if (result.length === length) break;
+			if (result.length === length) {break;}
 		}
 	}
 
@@ -64,7 +64,7 @@ export async function allocateGeneratedId(
 
 	for (let attempt = 0; attempt < maxAttempts; attempt++) {
 		const id = options.createId();
-		if (!(await options.isInUse(id))) return id;
+		if (!(await options.isInUse(id))) {return id;}
 	}
 
 	throw new Error(`Unable to allocate a unique ID after ${maxAttempts} attempts`);
@@ -87,8 +87,8 @@ export function generateAccountId(
  * "4829104738562019" -> "4829 1047 3856 2019"
  */
 function formatAccountIdRaw(raw: string): string {
-	const clean = raw.replace(/\D/g, "").slice(0, 16);
-	const groups: string[] = [];
+	const clean = raw.replaceAll(/\D/g, "").slice(0, 16);
+	const groups: Array<string> = [];
 	for (let i = 0; i < clean.length; i += 4) {
 		groups.push(clean.slice(i, i + 4));
 	}
@@ -101,7 +101,7 @@ function formatAccountIdRaw(raw: string): string {
  */
 export function formatAccountId(input: string): string {
 	// Remove all non-digits
-	const digits = input.replace(/\D/g, "").slice(0, 16);
+	const digits = input.replaceAll(/\D/g, "").slice(0, 16);
 	return formatAccountIdRaw(digits);
 }
 
@@ -110,7 +110,7 @@ export function formatAccountId(input: string): string {
  * Must be exactly 16 digits (with or without spaces)
  */
 export function validateAccountId(id: string): boolean {
-	const digits = id.replace(/\D/g, "");
+	const digits = id.replaceAll(/\D/g, "");
 	return digits.length === 16 && /^\d{16}$/.test(digits);
 }
 
@@ -120,7 +120,7 @@ export function validateAccountId(id: string): boolean {
  * "4829 1047 3856 2019" -> "4829104738562019"
  */
 export function normalizeAccountId(id: string): string {
-	return id.replace(/\D/g, "");
+	return id.replaceAll(/\D/g, "");
 }
 
 /**

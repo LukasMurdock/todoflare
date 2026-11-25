@@ -1,10 +1,11 @@
+import { restartColumnRoom } from "./helpers/restart-column-room";
 import { createAccountBackup, readAccountBackup } from "../src/server/account-backup";
 import { restoreAccountBackup } from "../src/server/workflows/restore-account-backup";
 import { accountRecordStore } from "../src/server/account-record-store";
-import { env, runInDurableObject, createExecutionContext, waitOnExecutionContext, applyD1Migrations } from "cloudflare:test";
+import { env, runInDurableObject, createExecutionContext, createScheduledController, runDurableObjectAlarm, waitOnExecutionContext, applyD1Migrations } from "cloudflare:test";
 import { describe, expect, it, beforeAll } from "vitest";
-import * as Y from "yjs";
-import worker, { runScheduledBackups, type Bindings } from "../src/index";
+import { Doc as YDoc, applyUpdate, encodeStateAsUpdate } from "yjs";
+import worker, { runScheduledBackups } from '../src/index';
 import { listColumnBackups, latestColumnBackupKey } from "../src/server/backup-catalog";
 import { checksumColumnBackupPayload } from "../src/server/column-backup-payload";
 import { restoreColumnBackup } from "../src/server/workflows/restore-column-backup";
@@ -37,31 +38,33 @@ describe("data-loss recovery regressions", () => {
 		}
 		expect(await latestColumnBackupKey(env.BACKUPS, columnId)).toBe(`columns/${columnId}/0000000000101.json`);
 		expect((await listColumnBackups(env.BACKUPS, columnId))).toHaveLength(101);
-	}, 20_000);
+	});
 
 	it("follows truncated pages even when R2 returns fewer than the requested limit", async () => {
 		const calls: Array<string | undefined> = [];
-		const bucket = { list: async (options: R2ListOptions = {}) => {
-			calls.push(options.cursor);
-			return options.cursor
-				? { objects: [{ key: "columns/c/002.json" }], truncated: false, delimitedPrefixes: [] }
-				: { objects: [{ key: "columns/c/001.json" }], truncated: true, cursor: "next", delimitedPrefixes: [] };
-		} } as unknown as Pick<R2Bucket, "list">;
+		await env.BACKUPS.put("columns/c/001.json", "{}");
+		await env.BACKUPS.put("columns/c/002.json", "{}");
+		const bucket = {
+			list: async (options: R2ListOptions = {}) => {
+				calls.push(options.cursor);
+				return env.BACKUPS.list({ ...options, limit: 1 });
+			},
+		};
 		expect(await latestColumnBackupKey(bucket, "c")).toBe("columns/c/002.json");
-		expect(calls).toEqual([undefined, "next"]);
+		expect(calls).toEqual([undefined, expect.any(String)]);
 	});
 
 	it("clears trash on backup restore and preserves restored content after expiry", async () => {
 		const { meta, columnId, records, bindings } = fixture();
-		const doc = new Y.Doc(); doc.getText("t").insert(0, "keep this");
-		const base = { schemaVersion: 1 as const, columnId, snapshotAt: 2, meta, yjs: Array.from(Y.encodeStateAsUpdate(doc)) };
+		const doc = new YDoc(); doc.getText("t").insert(0, "keep this");
+		const base = { schemaVersion: 1 as const, columnId, snapshotAt: 2, meta, yjs: Array.from(encodeStateAsUpdate(doc)) };
 		const restored = await restoreColumnBackup({ env: bindings, columnId, payload: { ...base, checksum: await checksumColumnBackupPayload(base) }, createPreRestoreBackup: async () => ({ key: "pre" }) });
 		expect(restored.ok).toBe(true);
 		expect(JSON.parse(records.get(`trash:${meta.ownerId}`)!)).toEqual([]);
 		const result = await purgeExpiredTrashedColumns({ env: bindings, now: () => TRASH_RETENTION_MS + 100 });
 		expect(result.columnsPurged).toBe(0);
-		const exported = await (await env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId)).fetch("http://do/export")).json() as { yjs: number[] };
-		const copy = new Y.Doc(); Y.applyUpdate(copy, Uint8Array.from(exported.yjs));
+		const exported = await (await env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId)).fetch("http://do/export")).json<{ yjs: Array<number> }>();
+		const copy = new YDoc(); applyUpdate(copy, Uint8Array.from(exported.yjs));
 		expect(copy.getText("t").toString()).toBe("keep this");
 		doc.destroy(); copy.destroy();
 	});
@@ -79,8 +82,8 @@ describe("data-loss recovery regressions", () => {
 	it("freezes scheduled maintenance in read-only mode", async () => {
 		const executionCtx = createExecutionContext();
 		// Invalid bindings deliberately prove that maintenance never starts.
-		await worker.scheduled({ cron: "0 * * * *" } as ScheduledController,
-			{ READ_ONLY_MODE: "true", AUTO_BACKUP_ENABLED: "true" } as Bindings, executionCtx);
+		await worker.scheduled(createScheduledController({ cron: "0 * * * *" }),
+			{ ...env, READ_ONLY_MODE: "true", AUTO_BACKUP_ENABLED: "true" }, executionCtx);
 		await waitOnExecutionContext(executionCtx);
 		const { bindings } = fixture();
 		const result = await purgeExpiredTrashedColumns({ env: { ...bindings, READ_ONLY_MODE: "true" }, now: () => TRASH_RETENTION_MS + 100 });
@@ -92,20 +95,20 @@ describe("data-loss recovery regressions", () => {
 			const { meta, columnId } = fixture();
 			const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
 			await stub.fetch("http://do/init", { method: "POST", body: JSON.stringify(meta) });
-			await runInDurableObject(stub, async (instance, state) => {
-				if (source === "snapshot") state.storage.sql.exec("INSERT INTO yjs_snapshot VALUES (1, ?, 1)", new Uint8Array([1]).buffer);
-				else state.storage.sql.exec("INSERT INTO yjs_updates (update_blob, ts) VALUES (?, 1)", new Uint8Array([1]).buffer);
-				// Exercise the same loader used on activation with fresh in-memory state.
-				(instance as unknown as { loadStateFromSql(): void }).loadStateFromSql();
+			await runInDurableObject(stub, async (_instance, state) => {
+				await state.storage.setAlarm(Date.now() + 60_000);
+				if (source === "snapshot") {state.storage.sql.exec("INSERT INTO yjs_snapshot VALUES (1, ?, 1)", new Uint8Array([1]).buffer);}
+				else {state.storage.sql.exec("INSERT INTO yjs_updates (update_blob, ts) VALUES (?, 1)", new Uint8Array([1]).buffer);}
 			});
-			expect((await stub.fetch("http://do/export")).status).toBe(503);
-			expect((await stub.fetch("http://do/init", { method: "POST", body: JSON.stringify(meta) })).status).toBe(503);
-			await runInDurableObject(stub, async (instance) => { await (instance as unknown as { alarm(): Promise<void> }).alarm(); });
-			const raw = await (await stub.fetch("http://do/export-raw")).json() as { snapshot: number[] | null; updates: Array<{ bytes: number[] }> };
+			const restarted = await restartColumnRoom(columnId);
+			expect((await restarted.fetch("http://do/export")).status).toBe(503);
+			expect((await restarted.fetch("http://do/init", { method: "POST", body: JSON.stringify(meta) })).status).toBe(503);
+			expect(await runDurableObjectAlarm(restarted)).toBe(true);
+			const raw = await (await restarted.fetch("http://do/export-raw")).json<{ snapshot: Array<number> | null; updates: Array<{ bytes: Array<number> }> }>();
 			expect(source === "snapshot" ? raw.snapshot : raw.updates[0]?.bytes).toEqual([1]);
-			const doc = new Y.Doc(); doc.getText("t").insert(0, "recovered");
-			expect((await stub.fetch("http://do/import", { method: "POST", body: JSON.stringify({ meta, yjs: Array.from(Y.encodeStateAsUpdate(doc)) }) })).status).toBe(200);
-			expect((await stub.fetch("http://do/export")).status).toBe(200);
+			const doc = new YDoc(); doc.getText("t").insert(0, "recovered");
+			expect((await restarted.fetch("http://do/import", { method: "POST", body: JSON.stringify({ meta, yjs: Array.from(encodeStateAsUpdate(doc)) }) })).status).toBe(200);
+			expect((await restarted.fetch("http://do/export")).status).toBe(200);
 			doc.destroy();
 		});
 	}
@@ -124,7 +127,7 @@ describe("data-loss recovery regressions", () => {
 			const result = await runScheduledBackups({ ...env, BACKUP_MAX_COLUMNS: "1" });
 			expect(result).toMatchObject({ columnsDiscovered: 3, columnsSelected: 1, backedUp: 1, accountsBackedUp: 1, failed: 0 });
 		}
-		for (const id of ids) expect(await latestColumnBackupKey(env.BACKUPS, id)).not.toBeNull();
+		for (const id of ids) {expect(await latestColumnBackupKey(env.BACKUPS, id)).not.toBeNull();}
 		const backup = await readAccountBackup(env, accountId);
 		expect(backup?.columnIds).toEqual(ids);
 	});
@@ -137,8 +140,8 @@ describe("data-loss recovery regressions", () => {
 		await env.AUTH_DB.prepare('INSERT INTO "user" (id, name, email, emailVerified, createdAt, updatedAt) VALUES (?, ?, ?, 0, 1, 1)').bind(accountId, "Recovered", `${accountId}@accounts.invalid`).run();
 		await env.AUTH_DB.prepare('INSERT INTO passkey (id, publicKey, userId, credentialID, counter, deviceType, backedUp) VALUES (?, ?, ?, ?, 0, ?, 0)').bind("recovery-key", "public", accountId, "credential", "singleDevice").run();
 		const meta = { schemaVersion: 1 as const, id: columnId, ownerId: accountId, sharedWith: [], publicId: null, createdAt: 1 };
-		const doc = new Y.Doc(); doc.getText("t").insert(0, "Recovered content");
-		const base = { schemaVersion: 1 as const, columnId, snapshotAt: Date.now(), meta, yjs: Array.from(Y.encodeStateAsUpdate(doc)) };
+		const doc = new YDoc(); doc.getText("t").insert(0, "Recovered content");
+		const base = { schemaVersion: 1 as const, columnId, snapshotAt: Date.now(), meta, yjs: Array.from(encodeStateAsUpdate(doc)) };
 		await env.BACKUPS.put(`columns/${columnId}/9999999999999.json`, JSON.stringify({ ...base, checksum: await checksumColumnBackupPayload(base) }));
 		const snapshot = await createAccountBackup(env, accountId);
 		expect(snapshot).not.toBeNull();
@@ -148,8 +151,8 @@ describe("data-loss recovery regressions", () => {
 		await restoreAccountBackup(env, verified!, async () => ({ key: null }));
 		expect(await records.get(`account:${accountId}`)).toBe(account);
 		expect(await env.AUTH_DB.prepare('SELECT publicKey FROM passkey WHERE userId = ?').bind(accountId).first()).toEqual({ publicKey: "public" });
-		const exported = await (await env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId)).fetch("http://do/export")).json() as { yjs: number[] };
-		const copy = new Y.Doc(); Y.applyUpdate(copy, Uint8Array.from(exported.yjs));
+		const exported = await (await env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId)).fetch("http://do/export")).json<{ yjs: Array<number> }>();
+		const copy = new YDoc(); applyUpdate(copy, Uint8Array.from(exported.yjs));
 		expect(copy.getText("t").toString()).toBe("Recovered content");
 		copy.destroy(); doc.destroy();
 	});

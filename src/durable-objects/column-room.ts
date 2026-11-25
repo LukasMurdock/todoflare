@@ -1,7 +1,8 @@
+import { z } from "zod";
 import { DurableObject } from "cloudflare:workers";
-import * as Y from "yjs";
-import { encodeStateAsUpdate, applyUpdate } from "yjs";
-import * as awarenessProtocol from "y-protocols/awareness";
+import { Doc as YDoc, applyUpdate, decodeUpdate, encodeStateVector } from "yjs";
+import { encodeStateAsUpdate } from "yjs";
+import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate, removeAwarenessStates } from "y-protocols/awareness";
 import type { ColumnMeta, PresenceUser, SyncMessage } from "../types/account";
 import { getAccountColor, normalizeAccountId } from "../lib/account";
 import {
@@ -12,14 +13,12 @@ import {
 import { TRASH_RETENTION_MS, parseColumnMetaRecord } from "../server/persistence-records";
 import { columnSnapshotImportSchema } from "../server/column-backup-payload";
 import { describeAgentChange } from "../server/agent-access/change-diff";
-import { applyAgentEdit, currentItemFields, undoAgentChange, type AgentEdit, type FieldValues, type UndoRecord } from "../server/agent-access/column-edits";
-import { agentLevelIncludes, type AgentGrantLevel } from "../lib/api/agent-contract";
-import {
-	isReadOnlyMode,
-	readOnlyModeResponse,
-	readOnlyModeWebSocketMessage,
-	type ReadOnlyModeEnv,
-} from "../server/read-only-mode";
+import { applyAgentEdit, currentItemFields, undoAgentChange, undoRecordSchema } from '../server/agent-access/column-edits';
+import type { AgentEdit, EditFailure, FieldValues } from '../server/agent-access/column-edits';
+import { agentLevelIncludes, agentGrantLevelSchema } from '../lib/api/agent-contract';
+import type { AgentGrantLevel } from '../lib/api/agent-contract';
+import { isReadOnlyMode, readOnlyModeResponse, readOnlyModeWebSocketMessage } from '../server/read-only-mode';
+import type { ReadOnlyModeEnv } from '../server/read-only-mode';
 import {
 	decodeDurableSyncSubmission,
 	decodeWsFrame,
@@ -43,8 +42,8 @@ const AGENT_ORIGIN = "todoflare-agent";
 
 function base64Url(bytes: Uint8Array): string {
 	let binary = "";
-	for (const byte of bytes) binary += String.fromCharCode(byte);
-	return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+	for (const byte of bytes) {binary += String.fromCharCode(byte);}
+	return btoa(binary).replaceAll('+', "-").replaceAll('/', "_").replace(/=+$/, "");
 }
 
 async function ticketHash(ticket: string): Promise<string> {
@@ -60,14 +59,20 @@ async function updateDigest(update: Uint8Array): Promise<string> {
 	return base64Url(new Uint8Array(digest));
 }
 
+const uint8ArraySchema = z.instanceof(Uint8Array);
+const arrayBufferSchema = z.instanceof(ArrayBuffer);
+const socketSchema = z.instanceof(WebSocket);
+
 function toUint8Array(value: unknown): Uint8Array | null {
-	if (!value) return null;
-	if (value instanceof Uint8Array) return value;
-	if (value instanceof ArrayBuffer) return new Uint8Array(value);
-	if (Array.isArray(value)) return new Uint8Array(value);
+	if (!value) {return null;}
+	const bytes = uint8ArraySchema.safeParse(value);
+	if (bytes.success) {return bytes.data;}
+	const buffer = arrayBufferSchema.safeParse(value);
+	if (buffer.success) {return new Uint8Array(buffer.data);}
+	if (Array.isArray(value)) {return new Uint8Array(value);}
 	if (typeof value === "object") {
-		const values = Object.values(value as Record<string, number>);
-		return new Uint8Array(values);
+		const values: Array<unknown> = Object.values(value);
+		return values.every(item => typeof item === "number") ? new Uint8Array(values) : null;
 	}
 	return null;
 }
@@ -80,17 +85,17 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 	private sessions: Map<WebSocket, SessionInfo> = new Map();
 	private awarenessClientsBySocket: Map<WebSocket, Set<number>> = new Map();
-	private doc: Y.Doc;
-	private awareness: awarenessProtocol.Awareness | null = null;
+	private doc: YDoc;
+	private awareness: Awareness | null = null;
 	private meta: ColumnMeta | null = null;
 	private nextCompactionAlarmAt = 0;
 	private storageLoadError: string | null = null;
 
 	constructor(ctx: DurableObjectState, env: ReadOnlyModeEnv) {
 		super(ctx, env);
-		this.doc = new Y.Doc();
+		this.doc = new YDoc();
 
-		this.ctx.blockConcurrencyWhile(async () => {
+		void this.ctx.blockConcurrencyWhile(async () => {
 			this.setupSchema();
 			this.loadStateFromSql();
 			this.restoreHibernatedWebSockets();
@@ -174,14 +179,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 			.toArray()[0];
 		if (metaRow?.meta) {
 			try {
-				const parsed = JSON.parse(metaRow.meta) as
-					| ColumnMeta
-					| {
-							schemaVersion: number;
-							migrationTag: string;
-							meta: ColumnMeta;
-					  };
-
+				const parsed: unknown = JSON.parse(metaRow.meta);
 				const candidate = (
 					parsed &&
 					typeof parsed === "object" &&
@@ -197,9 +195,9 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 					this.storageLoadError = "invalid_stored_metadata";
 					console.error("Stored column metadata failed validation", validated);
 				}
-			} catch (err) {
+			} catch (error) {
 				this.storageLoadError = "invalid_stored_metadata";
-				console.error("Failed to parse stored meta:", err);
+				console.error("Failed to parse stored meta:", error);
 			}
 		}
 
@@ -211,9 +209,9 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		if (snapshotRow?.snapshot) {
 			try {
 				applyUpdate(this.doc, toUint8Array(snapshotRow.snapshot) ?? new Uint8Array());
-			} catch (err) {
+			} catch (error) {
 				this.storageLoadError = "invalid_stored_snapshot";
-				console.error("Failed to apply snapshot:", err);
+				console.error("Failed to apply snapshot:", error);
 			}
 		}
 
@@ -230,9 +228,9 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 			}
 			try {
 				applyUpdate(this.doc, bytes);
-			} catch (err) {
+			} catch (error) {
 				this.storageLoadError = "invalid_stored_update";
-				console.error("Failed to apply queued update:", err);
+				console.error("Failed to apply queued update:", error);
 			}
 		}
 	}
@@ -240,13 +238,12 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 	private restoreHibernatedWebSockets() {
 		try {
 			if (this.storageLoadError) {
-				for (const ws of this.ctx.getWebSockets()) ws.close(1011, "Stored column requires recovery");
+				for (const ws of this.ctx.getWebSockets()) {ws.close(1011, "Stored column requires recovery");}
 				return;
 			}
 			for (const ws of this.ctx.getWebSockets()) {
-				const attachment = ws.deserializeAttachment();
-				if (attachment) {
-					const session = attachment as SessionInfo;
+				const session = readAttachment(ws);
+				if (session) {
 					if (isReadOnlyMode(this.env) && !session.readOnly) {
 						this.rejectWritableSocket(ws);
 						continue;
@@ -259,19 +256,21 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 				this.getAwareness();
 				this.broadcastPresence();
 			}
-		} catch (err) {
-			console.error("Failed to restore hibernated sockets:", err);
+		} catch (error) {
+			console.error("Failed to restore hibernated sockets:", error);
 		}
 	}
 
-	private getAwareness(): awarenessProtocol.Awareness {
+	private getAwareness(): Awareness {
 		if (!this.awareness) {
-			this.awareness = new awarenessProtocol.Awareness(this.doc);
+			this.awareness = new Awareness(this.doc);
 			// Awareness polls every 3 s to expire stale peers. A pending timer stops
 			// the object hibernating, so every open column was billed around the
 			// clock. The room only relays: peers expire when their socket closes,
 			// and clients expire peers that stop renewing on their own.
-			clearInterval(this.awareness._checkInterval);
+			const interval: unknown = this.awareness._checkInterval;
+			// Workers use numeric IDs, and Node Timeout implements numeric coercion.
+			clearInterval(Number(interval));
 			this.awareness._checkInterval = null;
 			this.awareness.on("update", this.handleAwarenessUpdate.bind(this));
 		}
@@ -291,14 +290,15 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 			added,
 			updated,
 			removed,
-		}: { added: number[]; updated: number[]; removed: number[] },
+		}: { added: Array<number>; updated: Array<number>; removed: Array<number> },
 		origin: unknown,
 	) {
 		const awareness = this.awareness;
-		if (!awareness) return;
+		if (!awareness) {return;}
 
-		if (origin instanceof WebSocket && this.sessions.has(origin)) {
-			const known = this.awarenessClientsBySocket.get(origin) ?? new Set<number>();
+		const sender = socketSchema.safeParse(origin);
+		if (sender.success && this.sessions.has(sender.data)) {
+			const known = this.awarenessClientsBySocket.get(sender.data) ?? new Set<number>();
 
 			for (const clientId of [...added, ...updated]) {
 				if (awareness.getStates().has(clientId)) {
@@ -311,9 +311,9 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 			}
 
 			if (known.size > 0) {
-				this.awarenessClientsBySocket.set(origin, known);
+				this.awarenessClientsBySocket.set(sender.data, known);
 			} else {
-				this.awarenessClientsBySocket.delete(origin);
+				this.awarenessClientsBySocket.delete(sender.data);
 			}
 		}
 
@@ -321,7 +321,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 	}
 
 	private persistMeta() {
-		if (!this.meta) return;
+		if (!this.meta) {return;}
 		this.persistMetaValue(this.meta);
 	}
 
@@ -360,13 +360,13 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 
 	private scheduleCompaction() {
 		const target = Date.now() + 10_000;
-		if (target <= this.nextCompactionAlarmAt) return;
+		if (target <= this.nextCompactionAlarmAt) {return;}
 		this.nextCompactionAlarmAt = target;
 		this.ctx.waitUntil(this.ctx.storage.setAlarm(target));
 	}
 
 	async alarm() {
-		if (this.storageLoadError) return;
+		if (this.storageLoadError) {return;}
 		try {
 			this.ctx.storage.transactionSync(() => {
 				this.persistSnapshot();
@@ -374,8 +374,8 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 				this.pruneReceivedOutbox();
 				this.pruneAgentChanges();
 			});
-		} catch (err) {
-			console.error("Compaction failed:", err);
+		} catch (error) {
+			console.error("Compaction failed:", error);
 		}
 	}
 
@@ -392,7 +392,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 				)
 				.toArray()[0]?.count ?? 0;
 		const overflow = count - RECEIVED_OUTBOX_MAX_ROWS;
-		if (overflow <= 0) return;
+		if (overflow <= 0) {return;}
 
 		this.ctx.storage.sql.exec(
 			`DELETE FROM received_outbox WHERE rowid IN (
@@ -421,12 +421,12 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 	 * version check and the write; a failed write leaves memory untouched.
 	 */
 	private commitAgentWork<T>(
-		compute: (scratch: Y.Doc) => T | null,
+		compute: (scratch: YDoc) => T | null,
 		persist: (result: T, update: Uint8Array) => void,
 	): T | null {
-		const scratch = new Y.Doc();
-		Y.applyUpdate(scratch, encodeStateAsUpdate(this.doc));
-		const stateBefore = Y.encodeStateVector(scratch);
+		const scratch = new YDoc();
+		applyUpdate(scratch, encodeStateAsUpdate(this.doc));
+		const stateBefore = encodeStateVector(scratch);
 		const result = compute(scratch);
 		if (result === null) {
 			scratch.destroy();
@@ -435,7 +435,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		const update = encodeStateAsUpdate(scratch, stateBefore);
 		scratch.destroy();
 		this.ctx.storage.transactionSync(() => {
-			if (update.byteLength > 2) this.insertUpdateRow(update);
+			if (update.byteLength > 2) {this.insertUpdateRow(update);}
 			persist(result, update);
 		});
 		if (update.byteLength > 2) {
@@ -448,7 +448,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 
 	/** Rejects agent work on columns the acting account cannot write right now. */
 	private agentAccessFailure(accountId: unknown): Response | null {
-		if (isReadOnlyMode(this.env)) return readOnlyModeResponse();
+		if (isReadOnlyMode(this.env)) {return readOnlyModeResponse();}
 		if (typeof accountId !== "string" || !this.meta || this.isTrashed() || !hasColumnAccess(this.meta, accountId)) {
 			return Response.json({ ok: false, code: "not_found" }, { status: 404 });
 		}
@@ -456,27 +456,27 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 	}
 
 	private async handleAgentEdit(request: Request): Promise<Response> {
-		const body = (await request.json()) as {
+		const body = await request.json<{
 			accountId: string;
 			connectionId: string;
 			agentName: string;
 			tool: string;
 			requiredLevel: string;
 			edit: AgentEdit;
-		};
+		}>();
 		// Rechecked here, after the Worker's decision: membership and trash are authoritative in this object.
 		const denied = this.agentAccessFailure(body.accountId);
-		if (denied) return denied;
+		if (denied) {return denied;}
 		const id = `chg_${base64Url(crypto.getRandomValues(new Uint8Array(16)))}`;
-		let failure: unknown = null;
+		let failure: EditFailure | null = null;
 		const outcome = this.commitAgentWork(
 			(scratch) => {
 				const result = applyAgentEdit(scratch, body.edit, AGENT_ORIGIN);
-				if (!result.ok) failure = result.failure;
+				if (!result.ok) {failure = result.failure;}
 				return result.ok ? result : null;
 			},
 			(result) => {
-				if (!result.changed) return;
+				if (!result.changed) {return;}
 				this.ctx.storage.sql.exec(
 					`INSERT INTO agent_changes
 					 (id, connection_id, account_id, agent_name, tool, required_level, summary, item_ids, undo, created_at)
@@ -495,7 +495,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 				this.pruneAgentChanges();
 			},
 		);
-		if (!outcome) return Response.json({ ok: false, failure }, { status: 409 });
+		if (!outcome) {return Response.json({ ok: false, failure }, { status: 409 });}
 		return Response.json({
 			ok: true,
 			changeId: outcome.changed ? id : null,
@@ -506,9 +506,9 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 	}
 
 	private async handleAgentUndo(request: Request): Promise<Response> {
-		const body = (await request.json()) as { accountId: string; changeId: string; connectionId?: string; grantedLevel?: AgentGrantLevel };
+		const body = await request.json<{ accountId: string; changeId: string; connectionId?: string; grantedLevel?: AgentGrantLevel }>();
 		const denied = this.agentAccessFailure(body.accountId);
-		if (denied) return denied;
+		if (denied) {return denied;}
 		const row = this.ctx.storage.sql
 			.exec<{ undo: string; undone_at: number | null; connection_id: string; required_level: string }>(
 				"SELECT undo, undone_at, connection_id, required_level FROM agent_changes WHERE id = ?",
@@ -519,11 +519,11 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		if (!row || (body.connectionId !== undefined && row.connection_id !== body.connectionId)) {
 			return Response.json({ ok: false, code: "change_not_found" }, { status: 404 });
 		}
-		if (row.undone_at !== null) return Response.json({ ok: false, code: "already_undone" }, { status: 409 });
-		if (body.grantedLevel !== undefined && !agentLevelIncludes(body.grantedLevel, row.required_level as AgentGrantLevel)) {
+		if (row.undone_at !== null) {return Response.json({ ok: false, code: "already_undone" }, { status: 409 });}
+		if (body.grantedLevel !== undefined && !agentLevelIncludes(body.grantedLevel, agentGrantLevelSchema.parse(row.required_level))) {
 			return Response.json({ ok: false, code: "insufficient_grant" }, { status: 403 });
 		}
-		const record = JSON.parse(row.undo) as UndoRecord;
+		const record = undoRecordSchema.parse(JSON.parse(row.undo));
 		const outcome = this.commitAgentWork(
 			(scratch) => undoAgentChange(scratch, record, AGENT_ORIGIN),
 			(result) => {
@@ -535,7 +535,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 					body.changeId,
 				);
 			},
-		)!;
+		);
 		return Response.json({ ok: true, ...outcome });
 	}
 
@@ -556,20 +556,20 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 				accountId: row.account_id,
 				tool: row.tool,
 				summary: row.summary,
-				itemIds: JSON.parse(row.item_ids) as string[],
+				itemIds: z.array(z.string()).parse(JSON.parse(row.item_ids)),
 				createdAt: row.created_at,
 				undoneAt: row.undone_at,
 				undoneBy: row.undone_by,
 				undoResult: row.undo_result ? (JSON.parse(row.undo_result) as unknown) : null,
-				diff: describeAgentChange(JSON.parse(row.undo) as UndoRecord, currentItem),
+				diff: describeAgentChange(JSON.parse(row.undo), currentItem),
 			})),
 		});
 	}
 
 	private hasAccess(accountId: string | null, isPublic: boolean): boolean {
-		if (!this.meta) return false;
-		if (isPublic && this.meta.publicId) return true;
-		if (!accountId) return false;
+		if (!this.meta) {return false;}
+		if (isPublic && this.meta.publicId) {return true;}
+		if (!accountId) {return false;}
 
 		return hasColumnAccess(this.meta, accountId);
 	}
@@ -602,30 +602,30 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		}
 
 		if (request.method === "GET" && url.pathname === "/meta") {
-			if (!this.meta) return new Response("Column not found", { status: 404 });
+			if (!this.meta) {return new Response("Column not found", { status: 404 });}
 			return Response.json(this.meta);
 		}
 
 		// Agent access is decided against authoritative membership and trash state.
 		if (request.method === "GET" && url.pathname === "/access-state") {
-			if (!this.meta) return new Response("Column not found", { status: 404 });
+			if (!this.meta) {return new Response("Column not found", { status: 404 });}
 			return Response.json({ meta: this.meta, trashed: this.isTrashed() });
 		}
 
-		if (request.method === "POST" && url.pathname === "/agent-edit") return this.handleAgentEdit(request);
-		if (request.method === "POST" && url.pathname === "/agent-undo") return this.handleAgentUndo(request);
+		if (request.method === "POST" && url.pathname === "/agent-edit") {return this.handleAgentEdit(request);}
+		if (request.method === "POST" && url.pathname === "/agent-undo") {return this.handleAgentUndo(request);}
 		if (request.method === "GET" && url.pathname === "/agent-changes") {
-			if (!this.meta) return new Response("Column not found", { status: 404 });
+			if (!this.meta) {return new Response("Column not found", { status: 404 });}
 			return this.listAgentChanges();
 		}
 
 		if (request.method === "GET" && url.pathname === "/yjs-state") {
-			if (!this.meta) return new Response("Column not found", { status: 404 });
+			if (!this.meta) {return new Response("Column not found", { status: 404 });}
 			return new Response(toArrayBuffer(encodeStateAsUpdate(this.doc)), { headers: { "Content-Type": "application/octet-stream" } });
 		}
 
 		if (request.method === "GET" && url.pathname === "/export") {
-			if (!this.meta) return new Response("Column not found", { status: 404 });
+			if (!this.meta) {return new Response("Column not found", { status: 404 });}
 			const snapshot = encodeStateAsUpdate(this.doc);
 			return Response.json({
 				meta: this.meta,
@@ -634,8 +634,8 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		}
 
 		if (request.method === "POST" && url.pathname === "/ws-ticket") {
-			if (this.isTrashed()) return Response.json({ code: "durable_object_unavailable", error: "Column is in trash" }, { status: 503 });
-			if (isReadOnlyMode(this.env)) return readOnlyModeResponse();
+			if (this.isTrashed()) {return Response.json({ code: "durable_object_unavailable", error: "Column is in trash" }, { status: 503 });}
+			if (isReadOnlyMode(this.env)) {return readOnlyModeResponse();}
 
 			const accountId = request.headers.get("X-Authenticated-Account-ID");
 			if (!this.meta) {
@@ -702,14 +702,14 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 				return Response.json({ error: "invalid_import_payload" }, { status: 400 });
 			}
 
-			const candidateDoc = new Y.Doc();
+			const candidateDoc = new YDoc();
 			try {
 				if (parsed.data.yjs !== null) {
 					applyUpdate(candidateDoc, Uint8Array.from(parsed.data.yjs));
 				}
-			} catch (err) {
+			} catch (error) {
 				candidateDoc.destroy();
-				console.error("Failed to decode imported Yjs state:", err);
+				console.error("Failed to decode imported Yjs state:", error);
 				return Response.json({ error: "invalid_yjs_update" }, { status: 422 });
 			}
 
@@ -725,9 +725,9 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 					// Recorded changes describe content this import replaces.
 					this.ctx.storage.sql.exec("DELETE FROM agent_changes");
 				});
-			} catch (err) {
+			} catch (error) {
 				candidateDoc.destroy();
-				console.error("Failed to persist imported column state:", err);
+				console.error("Failed to persist imported column state:", error);
 				return Response.json({ error: "import_persist_failed" }, { status: 500 });
 			}
 
@@ -743,8 +743,8 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		}
 
 		if (request.method === "PUT" && url.pathname === "/share") {
-			const { sharedWith } = (await request.json()) as { sharedWith: string[] };
-			if (!this.meta) return new Response("Column not found", { status: 404 });
+			const { sharedWith } = await request.json<{ sharedWith: Array<string> }>();
+			if (!this.meta) {return new Response("Column not found", { status: 404 });}
 			this.meta.sharedWith = sharedWith;
 			this.persistMeta();
 			this.notifyAccessChanges(sharedWith);
@@ -752,18 +752,18 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		}
 
 		if (request.method === "PUT" && url.pathname === "/public") {
-			const { publicId } = (await request.json()) as { publicId: string | null };
-			if (!this.meta) return new Response("Column not found", { status: 404 });
+			const { publicId } = await request.json<{ publicId: string | null }>();
+			if (!this.meta) {return new Response("Column not found", { status: 404 });}
 			this.meta.publicId = publicId;
 			this.persistMeta();
 			return Response.json(this.meta);
 		}
 
 		if (request.method === "POST" && url.pathname === "/trash") {
-			if (isReadOnlyMode(this.env)) return readOnlyModeResponse();
-			if (!this.meta) return new Response("Column not found", { status: 404 });
-			const { deletedAt } = await request.json() as { deletedAt: number };
-			if (!Number.isFinite(deletedAt) || deletedAt < 0) return new Response("Invalid deletion timestamp", { status: 400 });
+			if (isReadOnlyMode(this.env)) {return readOnlyModeResponse();}
+			if (!this.meta) {return new Response("Column not found", { status: 404 });}
+			const { deletedAt } = await request.json<{ deletedAt: number }>();
+			if (!Number.isFinite(deletedAt) || deletedAt < 0) {return new Response("Invalid deletion timestamp", { status: 400 });}
 			// Deleting a trashed column again keeps its first time, so its purge date never moves.
 			this.ctx.storage.sql.exec("INSERT INTO column_lifecycle VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET trashed_at = COALESCE(column_lifecycle.trashed_at, excluded.trashed_at)", deletedAt);
 			const trashedAt = this.ctx.storage.sql.exec<{ trashed_at: number }>("SELECT trashed_at FROM column_lifecycle WHERE id = 1").one().trashed_at;
@@ -771,40 +771,40 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 			return Response.json({ success: true, deletedAt: trashedAt });
 		}
 		if (request.method === "POST" && url.pathname === "/restore-active") {
-			if (isReadOnlyMode(this.env)) return readOnlyModeResponse();
-			if (!this.meta) return new Response("Column not found", { status: 404 });
+			if (isReadOnlyMode(this.env)) {return readOnlyModeResponse();}
+			if (!this.meta) {return new Response("Column not found", { status: 404 });}
 			const row = this.ctx.storage.sql.exec<{ trashed_at: number | null }>("SELECT trashed_at FROM column_lifecycle WHERE id = 1").toArray()[0];
-			if (row?.trashed_at !== undefined && row.trashed_at !== null && Date.now() - row.trashed_at >= TRASH_RETENTION_MS) return new Response("Column expired", { status: 410 });
+			if (row?.trashed_at !== undefined && row.trashed_at !== null && Date.now() - row.trashed_at >= TRASH_RETENTION_MS) {return new Response("Column expired", { status: 410 });}
 			this.ctx.storage.sql.exec("INSERT INTO column_lifecycle VALUES (1, NULL) ON CONFLICT(id) DO UPDATE SET trashed_at = NULL");
 			return Response.json({ success: true });
 		}
 		if (request.method === "DELETE" && url.pathname === "/purge") {
-			if (isReadOnlyMode(this.env)) return readOnlyModeResponse();
-			const { deletedAt, ownerId } = await request.json() as { deletedAt: number; ownerId: string };
-			if (!Number.isFinite(deletedAt) || Date.now() - deletedAt < TRASH_RETENTION_MS) return new Response("Column has not expired", { status: 409 });
-			if (!this.meta) return Response.json({ success: true });
-			if (!isColumnOwner(this.meta, ownerId)) return new Response("Owner mismatch", { status: 409 });
+			if (isReadOnlyMode(this.env)) {return readOnlyModeResponse();}
+			const { deletedAt, ownerId } = await request.json<{ deletedAt: number; ownerId: string }>();
+			if (!Number.isFinite(deletedAt) || Date.now() - deletedAt < TRASH_RETENTION_MS) {return new Response("Column has not expired", { status: 409 });}
+			if (!this.meta) {return Response.json({ success: true });}
+			if (!isColumnOwner(this.meta, ownerId)) {return new Response("Owner mismatch", { status: 409 });}
 			const row = this.ctx.storage.sql.exec<{ trashed_at: number | null }>("SELECT trashed_at FROM column_lifecycle WHERE id = 1").toArray()[0];
 			// A restore marks this row active in the same transaction as import.
 			// No stale purge invocation can cross that boundary and delete it.
-			if (row && row.trashed_at !== deletedAt) return new Response("Column lifecycle changed", { status: 409 });
+			if (row && row.trashed_at !== deletedAt) {return new Response("Column lifecycle changed", { status: 409 });}
 			this.closeDeletedSessions();
 			this.ctx.storage.transactionSync(() => {
-				for (const table of ["meta", "yjs_snapshot", "yjs_updates", "received_outbox", "ws_tickets", "agent_changes", "column_lifecycle"]) this.ctx.storage.sql.exec(`DELETE FROM ${table}`);
+				for (const table of ["meta", "yjs_snapshot", "yjs_updates", "received_outbox", "ws_tickets", "agent_changes", "column_lifecycle"]) {this.ctx.storage.sql.exec(`DELETE FROM ${table}`);}
 			});
 			this.meta = null;
-			this.doc.destroy(); this.doc = new Y.Doc();
+			this.doc.destroy(); this.doc = new YDoc();
 			return Response.json({ success: true });
 		}
 
 		if (request.method === "DELETE" && url.pathname === "/") {
-			if (isReadOnlyMode(this.env)) return readOnlyModeResponse();
+			if (isReadOnlyMode(this.env)) {return readOnlyModeResponse();}
 			this.closeDeletedSessions();
 			await this.ctx.storage.deleteAll();
 			this.meta = null;
 			this.sessions.clear();
 			this.destroyAwareness();
-			this.doc = new Y.Doc();
+			this.doc = new YDoc();
 			return Response.json({ success: true });
 		}
 
@@ -818,14 +818,14 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 
 	private closeDeletedSessions() {
 		this.broadcast({ type: "column-deleted" });
-		for (const ws of this.sessions.keys()) ws.close(1000, "Column deleted");
+		for (const ws of this.sessions.keys()) {ws.close(1000, "Column deleted");}
 		this.sessions.clear();
 		this.destroyAwareness();
 	}
 
 	private async handleWebSocket(request: Request): Promise<Response> {
 		const url = new URL(request.url);
-		if (this.isTrashed()) return new Response("Column is in trash", { status: 503 });
+		if (this.isTrashed()) {return new Response("Column is in trash", { status: 503 });}
 		let accountId: string | null = null;
 		const requestedProtocols = (request.headers.get("Sec-WebSocket-Protocol") ?? "")
 			.split(",")
@@ -858,10 +858,10 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 				return new Response("Invalid public link", { status: 403 });
 			}
 		} else {
-			if (isReadOnlyMode(this.env)) return readOnlyModeResponse();
+			if (isReadOnlyMode(this.env)) {return readOnlyModeResponse();}
 
 			const ticket = url.searchParams.get("ticket");
-			if (!ticket) return new Response("WebSocket ticket required", { status: 403 });
+			if (!ticket) {return new Response("WebSocket ticket required", { status: 403 });}
 			const hash = await ticketHash(ticket);
 			const row = this.ctx.storage.sql
 				.exec<{ account_id: string; expires_at: number }>(
@@ -910,7 +910,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		ws.send(encodeServerMessage({ type: "sync", data: update }));
 
 		const awareness = this.getAwareness();
-		const awarenessUpdate = awarenessProtocol.encodeAwarenessUpdate(
+		const awarenessUpdate = encodeAwarenessUpdate(
 			awareness,
 			Array.from(awareness.getStates().keys()),
 		);
@@ -930,13 +930,12 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 	async webSocketMessage(ws: WebSocket, message: ArrayBuffer | string) {
 		let session = this.sessions.get(ws);
 		if (!session) {
-			const attachment = ws.deserializeAttachment();
-			if (attachment) {
-				session = attachment as SessionInfo;
+			session = readAttachment(ws);
+			if (session) {
 				this.sessions.set(ws, session);
 			}
 		}
-		if (!session) return;
+		if (!session) {return;}
 		if (session.legacy) {
 			this.sessions.delete(ws); ws.close(1008, "Sign in with your passkey"); return;
 		}
@@ -995,8 +994,8 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 				default:
 					ws.send(encodeServerMessage({ type: "error", message: `Unknown opcode: ${op}` }));
 			}
-		} catch (err) {
-			console.error("Error handling binary message:", err);
+		} catch (error) {
+			console.error("Error handling binary message:", error);
 		}
 	}
 
@@ -1012,7 +1011,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		}
 
 		try {
-			Y.decodeUpdate(update);
+			decodeUpdate(update);
 		} catch {
 			origin.send(encodeServerMessage({ type: "error", message: "Malformed Yjs update" }));
 			origin.close(1007, "Malformed Yjs update");
@@ -1021,7 +1020,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 
 		const digest = await updateDigest(update);
 		// Recheck after yielding: a delete, restore or access revocation may have run.
-		if (this.storageLoadError || !this.meta || this.isTrashed() || !this.sessions.has(origin) || !hasColumnAccess(this.meta, accountId)) return;
+		if (this.storageLoadError || !this.meta || this.isTrashed() || !this.sessions.has(origin) || !hasColumnAccess(this.meta, accountId)) {return;}
 		const outcome = this.ctx.storage.transactionSync<
 			"inserted" | "duplicate" | "conflict"
 		>(() => {
@@ -1071,7 +1070,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		for (const [ws] of this.sessions) {
 			if (ws.readyState === WebSocket.OPEN) {
 				// Echo before acknowledging: a new tab replaying another tab
-				// has not applied these bytes to its own in-memory Y.Doc yet.
+				// has not applied these bytes to its own in-memory YDoc yet.
 				ws.send(encodeServerMessage({ type: "sync", data: update }));
 			}
 		}
@@ -1080,14 +1079,14 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 	}
 
 	private applyAwareness(update: Uint8Array, origin: WebSocket) {
-		awarenessProtocol.applyAwarenessUpdate(this.getAwareness(), update, origin);
+		applyAwarenessUpdate(this.getAwareness(), update, origin);
 	}
 
 	private broadcastAwareness() {
 		const awareness = this.awareness;
-		if (!awareness) return;
+		if (!awareness) {return;}
 
-		const update = awarenessProtocol.encodeAwarenessUpdate(
+		const update = encodeAwarenessUpdate(
 			awareness,
 			Array.from(awareness.getStates().keys()),
 		);
@@ -1103,7 +1102,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		const awareness = this.awareness;
 		const clientIds = this.awarenessClientsBySocket.get(ws);
 		if (awareness && clientIds && clientIds.size > 0) {
-			awarenessProtocol.removeAwarenessStates(
+			removeAwarenessStates(
 				awareness,
 				Array.from(clientIds),
 				ws,
@@ -1113,7 +1112,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		this.awarenessClientsBySocket.delete(ws);
 
 		const session = this.sessions.get(ws);
-		if (!session) return;
+		if (!session) {return;}
 		this.sessions.delete(ws);
 		this.broadcastPresence();
 		if (this.sessions.size === 0) {
@@ -1125,13 +1124,13 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		this.webSocketClose(ws);
 	}
 
-	private getPresenceUsers(): PresenceUser[] {
-		const users: PresenceUser[] = [];
+	private getPresenceUsers(): Array<PresenceUser> {
+		const users: Array<PresenceUser> = [];
 		const seenAccounts = new Set<string>();
 
 		for (const [, session] of this.sessions) {
-			if (session.isPublic || !session.accountId) continue;
-			if (seenAccounts.has(session.accountId)) continue;
+			if (session.isPublic || !session.accountId) {continue;}
+			if (seenAccounts.has(session.accountId)) {continue;}
 			seenAccounts.add(session.accountId);
 			users.push({
 				accountId: session.accountId,
@@ -1157,7 +1156,7 @@ export class ColumnRoomSql extends DurableObject<ReadOnlyModeEnv> {
 		}
 	}
 
-	private notifyAccessChanges(newSharedWith: string[]) {
+	private notifyAccessChanges(newSharedWith: Array<string>) {
 		const newSet = normalizeAccountIdSet(newSharedWith);
 
 		for (const [ws, session] of this.sessions) {
@@ -1198,11 +1197,16 @@ type AgentChangeRow = {
 	undo_result: string | null;
 };
 
-interface SessionInfo {
-	/** Reject hibernated sockets from the retired credential scheme. Never set on new sessions. */
-	legacy?: boolean;
-	accountId: string | null;
-	isPublic: boolean;
-	readOnly: boolean;
-	connectedAt: number;
+const sessionInfoSchema = z.object({
+	legacy: z.boolean().optional(),
+	accountId: z.string().nullable(),
+	isPublic: z.boolean(),
+	readOnly: z.boolean(),
+	connectedAt: z.number(),
+});
+type SessionInfo = z.output<typeof sessionInfoSchema>;
+
+function readAttachment(ws: WebSocket): SessionInfo | undefined {
+	const parsed = sessionInfoSchema.safeParse(ws.deserializeAttachment());
+	return parsed.success ? parsed.data : undefined;
 }

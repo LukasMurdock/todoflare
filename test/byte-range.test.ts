@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
 import worker from "../src/index";
+import { env, createExecutionContext } from "cloudflare:test";
+import { describe, expect, it } from "vitest";
 import { parseByteRange, serveByteRangeResponse } from "../src/server/http/byte-range";
 
 const PAYLOAD = new TextEncoder().encode("0123456789abcdef");
@@ -123,17 +124,12 @@ describe("serveByteRangeResponse", () => {
 
 describe("/og.mp4 route", () => {
 	it("fetches from ASSETS and returns 206 Partial Content for Range requests", async () => {
-		const fakeAssets = {
-			fetch: async () =>
-				new Response(PAYLOAD, {
-					status: 200,
-					headers: { "Content-Type": "video/mp4", ETag: '"asset-etag"' },
-				}),
-		} as unknown as Fetcher;
 		const res = await worker.fetch(
 			new Request("https://todo.tamesystems.org/og.mp4", { headers: { Range: "bytes=0-1" } }),
-			{ ASSETS: fakeAssets } as never,
-			{} as ExecutionContext,
+			{ ...env, ASSETS: { fetch: async () => new Response(PAYLOAD, {
+				headers: { "Content-Type": "video/mp4", ETag: '"asset-etag"' },
+			}) } },
+			createExecutionContext(),
 		);
 		expect(res.status).toBe(206);
 		expect(res.headers.get("Content-Type")).toBe("video/mp4");

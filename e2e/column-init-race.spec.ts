@@ -15,7 +15,7 @@ test.describe("collaborative editing", () => {
 		await page.getByRole("button", { name: "Add column" }).click();
 
 		const newEditor = page.getByRole("textbox", { name: "Todo editor" }).first();
-		await expect(newEditor).toBeVisible({ timeout: 15000 });
+		await expect(newEditor).toBeVisible({ timeout: 15_000 });
 
 		const typedText = `fresh synced text ${Date.now()}`;
 		await newEditor.click();

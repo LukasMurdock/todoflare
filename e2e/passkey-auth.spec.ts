@@ -1,3 +1,4 @@
+import { registerPasskey } from "./helpers/passkey-session";
 import { expect, test } from "@playwright/test";
 import { addColumnAndGetId } from "./helpers/ui-session";
 import { getSyncStateSnapshot, getYjsOutboxCountForColumn } from "./helpers/local-first-readers";
@@ -25,74 +26,15 @@ test("reconnects with a real passkey after expiry and preserves queued metadata 
 	// Seed actual content so empty-editor normalization does not decide which
 	// dialog opens or start a competing conditional WebAuthn request.
 	await page.addInitScript(() => {
-		if (!localStorage.getItem("todoflare-columns")) localStorage.setItem("todoflare-columns", JSON.stringify([
+		if (!localStorage.getItem("todoflare-columns")) {localStorage.setItem("todoflare-columns", JSON.stringify([
 			{ id: "passkey-guest", value: [{ type: "p", children: [{ text: "Guest draft" }] }] },
-		]));
+		]));}
 	});
 	await page.goto(origin);
-	const accountId = await page.evaluate(async () => {
-		const encode = (value: ArrayBuffer): string => {
-			const bytes = new Uint8Array(value);
-			let binary = "";
-			for (const byte of bytes) binary += String.fromCharCode(byte);
-			return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-		};
-		const decode = (value: string): ArrayBuffer => {
-			const padded = value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
-			const binary = atob(padded);
-			return Uint8Array.from(binary, (character) => character.charCodeAt(0)).buffer;
-		};
-
-		const bootstrap = await fetch("/api/auth/sign-in/anonymous", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: "{}",
-		});
-		if (!bootstrap.ok) throw new Error(await bootstrap.text());
-		const provisional = (await bootstrap.json()) as { user: { id: string } };
-		const optionsResponse = await fetch("/api/auth/passkey/generate-register-options?name=Primary");
-		if (!optionsResponse.ok) throw new Error(await optionsResponse.text());
-		const options = (await optionsResponse.json()) as PublicKeyCredentialCreationOptionsJSON;
-		const credential = (await navigator.credentials.create({
-			publicKey: {
-				...options,
-				challenge: decode(options.challenge),
-				user: { ...options.user, id: decode(options.user.id) },
-				excludeCredentials: options.excludeCredentials?.map((item) => ({
-					...item,
-					id: decode(item.id),
-				})),
-			},
-		})) as PublicKeyCredential;
-		const attestation = credential.response as AuthenticatorAttestationResponse;
-		const verification = await fetch("/api/auth/passkey/verify-registration", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({
-				name: "Primary",
-				response: {
-					id: credential.id,
-					rawId: encode(credential.rawId),
-					type: credential.type,
-					authenticatorAttachment: credential.authenticatorAttachment,
-					response: {
-						clientDataJSON: encode(attestation.clientDataJSON),
-						attestationObject: encode(attestation.attestationObject),
-						transports: attestation.getTransports?.() ?? [],
-					},
-					clientExtensionResults: credential.getClientExtensionResults(),
-				},
-			}),
-		});
-		if (!verification.ok) throw new Error(await verification.text());
-		const provision = await fetch("/api/account", { method: "POST" });
-		if (!provision.ok) throw new Error(await provision.text());
-		await fetch("/api/auth/sign-out", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: "{}",
-		});
-		return provisional.user.id;
+	const accountId = await page.evaluate(registerPasskey);
+	await page.evaluate(async () => {
+		const response = await fetch("/api/auth/sign-out", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+		if (!response.ok) {throw new Error(await response.text());}
 	});
 
 	await page.reload();
@@ -156,10 +98,3 @@ test("reconnects with a real passkey after expiry and preserves queued metadata 
 	} finally { await observer.close(); }
 
 });
-
-interface PublicKeyCredentialCreationOptionsJSON
-	extends Omit<PublicKeyCredentialCreationOptions, "challenge" | "user" | "excludeCredentials"> {
-	challenge: string;
-	user: Omit<PublicKeyCredentialUserEntity, "id"> & { id: string };
-	excludeCredentials?: Array<Omit<PublicKeyCredentialDescriptor, "id"> & { id: string }>;
-}

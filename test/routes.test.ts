@@ -1,6 +1,9 @@
+import type { ColumnMeta } from "../src/types/account";
+import { z } from "zod";
+import { fetchWithEnv } from "./helpers/agent-fixtures";
 import { SELF, env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import * as Y from "yjs";
+import { Doc as YDoc, applyUpdate, encodeStateAsUpdate } from "yjs";
 import {
 	decodeWsFrame,
 	WS_OP_PRESENCE,
@@ -8,17 +11,17 @@ import {
 } from "../src/lib/collaboration/websocket-protocol";
 
 function normalizeAccountId(id: string): string {
-	return id.replace(/\D/g, "");
+	return id.replaceAll(/\D/g, "");
 }
 
-function accountHeaders(accountId: string): Record<string, string> {
+function accountHeaders(accountId: string) {
 	return { "X-Todoflare-Test-Account": normalizeAccountId(accountId) };
 }
 
 function toHex(bytes: ArrayBuffer): string {
 	const view = new Uint8Array(bytes);
 	let out = "";
-	for (const b of view) out += b.toString(16).padStart(2, "0");
+	for (const b of view) {out += b.toString(16).padStart(2, "0");}
 	return out;
 }
 
@@ -31,7 +34,7 @@ async function sha256Hex(value: string): Promise<string> {
 async function putColumnBackup(
 	columnId: string,
 	meta: unknown,
-	yjs: number[] | null,
+	yjs: Array<number> | null,
 	keySuffix: string,
 ): Promise<string> {
 	const base = {
@@ -54,7 +57,7 @@ async function createAccount(): Promise<string> {
 		headers: { "X-Forwarded-For": syntheticIp },
 	});
 	expect(res.ok).toBe(true);
-	const data = (await res.json()) as { account: { id: string } };
+	const data = (await res.json<{ account: { id: string } }>());
 	expect(typeof data.account?.id).toBe("string");
 	return data.account.id;
 }
@@ -66,7 +69,7 @@ async function createColumn(accountId: string): Promise<string> {
 		body: JSON.stringify({}),
 	});
 	expect(res.ok).toBe(true);
-	const data = (await res.json()) as { column: { id: string } };
+	const data = (await res.json<{ column: { id: string } }>());
 	expect(typeof data.column?.id).toBe("string");
 	return data.column.id;
 }
@@ -81,7 +84,7 @@ async function createColumnWithId(
 		body: JSON.stringify({ columnId }),
 	});
 	expect(res.ok).toBe(true);
-	const data = (await res.json()) as { column: { id: string } };
+	const data = (await res.json<{ column: { id: string } }>());
 	expect(data.column.id).toBe(columnId);
 	return data.column.id;
 }
@@ -119,8 +122,8 @@ async function shareColumn(
 }
 
 function getResponseWebSocket(response: Response): WebSocket {
-	const ws = (response as unknown as { webSocket?: WebSocket }).webSocket;
-	if (!ws) throw new Error("Expected Response.webSocket to be set");
+	const ws = response.webSocket;
+	if (!ws) {throw new Error("Expected Response.webSocket to be set");}
 	return ws;
 }
 
@@ -147,11 +150,43 @@ function waitForWsMessage(ws: WebSocket, timeoutMs: number): Promise<MessageEven
 	});
 }
 
+const claimDelete = async (accountId: string, columnId: string, idempotencyKey: string) => {
+	const normalizedAccountId = normalizeAccountId(accountId);
+	const path = `/api/column/${columnId}`;
+	const scope = `account:${normalizedAccountId}:column:${columnId}:delete`;
+	const cacheKey = `idempotency:${scope}:${normalizedAccountId}:${idempotencyKey}`;
+	const coordinator = env.IDEMPOTENCY_COORDINATOR.get(
+		env.IDEMPOTENCY_COORDINATOR.idFromName(cacheKey),
+	);
+	const claim = await coordinator.fetch(
+		new Request("http://idempotency/begin", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				fingerprint: await sha256Hex(`DELETE ${path}\n`),
+				pendingExpiresAt: Date.now() + 24 * 60 * 60 * 1000,
+			}),
+		}),
+	);
+	expect(claim.ok).toBe(true);
+	return { coordinator, path, ownerToken: ((await claim.json<{ ownerToken: string }>())).ownerToken };
+};
+
+const expectTrashed = async (accountId: string, columnId: string) => {
+	const data = (await (await SELF.fetch("http://example.com/api/account", {
+		headers: accountHeaders(accountId),
+	})).json<{ account: { columnOrder: Array<string> }; deletedColumns: Array<{ columnId: string }> }>());
+	expect(data.account.columnOrder).not.toContain(columnId);
+	expect(data.deletedColumns.some((c) => c.columnId === columnId)).toBe(true);
+};
+
+const frozen = (url: string, init?: RequestInit) => fetchWithEnv(new Request(url, init), { READ_ONLY_MODE: "true" });
+
 describe("Worker routes", () => {
 	it("serves /api/clock", async () => {
 		const res = await SELF.fetch("http://example.com/api/clock");
 		expect(res.ok).toBe(true);
-		expect((await res.json()) as { time: string }).toHaveProperty("time");
+		expect((await res.json<{ time: string }>())).toHaveProperty("time");
 	});
 
 	it("does not implement GET /api/column", async () => {
@@ -272,7 +307,7 @@ describe("Worker routes", () => {
 	it("accepts a current account export as an import payload", async () => {
 		const accountId = await createAccount();
 		await createColumn(accountId);
-		const normalizedAccountId = normalizeAccountId(accountId);
+
 		const exportResponse = await SELF.fetch(
 			"http://example.com/api/account/export",
 			{ headers: accountHeaders(accountId) },
@@ -307,9 +342,9 @@ describe("Worker routes", () => {
 		const accountResponse = await SELF.fetch("http://example.com/api/account", {
 			headers: accountHeaders(accountId),
 		});
-		const { account } = (await accountResponse.json()) as {
-			account: { columnOrder: string[] };
-		};
+		const { account } = (await accountResponse.json<{
+			account: { columnOrder: Array<string> };
+		}>());
 		const accountCoordinator = env.ACCOUNT_COORDINATOR.get(
 			env.ACCOUNT_COORDINATOR.idFromName(normalizedId),
 		);
@@ -348,14 +383,14 @@ describe("Worker routes", () => {
 			"http://example.com/api/account/export",
 			{ headers: accountHeaders(accountId) },
 		);
-		const payload = (await exportResponse.json()) as {
+		const payload = (await exportResponse.json<{
 			schemaVersion: number;
 			complete: boolean;
-			expectedColumnIds: string[];
+			expectedColumnIds: Array<string>;
 			account: unknown;
-			ownedColumns: unknown[];
+			ownedColumns: Array<unknown>;
 			exportedAt: number;
-		};
+		}>());
 		expect(payload).toMatchObject({
 			schemaVersion: 2,
 			complete: true,
@@ -390,11 +425,11 @@ describe("Worker routes", () => {
 			"http://example.com/api/account/export",
 			{ headers: accountHeaders(accountId) },
 		);
-		const current = (await exportResponse.json()) as {
+		const current = (await exportResponse.json<{
 			exportedAt: number;
 			account: unknown;
-			ownedColumns: unknown[];
-		};
+			ownedColumns: Array<unknown>;
+		}>());
 		const legacy = {
 			schemaVersion: 1,
 			exportedAt: current.exportedAt,
@@ -444,7 +479,7 @@ describe("Worker routes", () => {
 			},
 		);
 		expect(metaRes.ok).toBe(true);
-		const data = (await metaRes.json()) as { column: { id: string; ownerId: string } };
+		const data = (await metaRes.json<{ column: { id: string; ownerId: string } }>());
 		expect(data.column.id).toBe(columnId);
 		expect(data.column.ownerId).toBe(accountId);
 	});
@@ -490,14 +525,14 @@ describe("Worker routes", () => {
 			headers: accountHeaders(accountId),
 		});
 		expect(accountRes.ok).toBe(true);
-		const data = (await accountRes.json()) as {
-			account: { columnOrder: string[] };
+		const data = (await accountRes.json<{
+			account: { columnOrder: Array<string> };
 			ownedColumns: Array<{
 				id: string;
-				sharedWith: string[];
+				sharedWith: Array<string>;
 				publicId: string | null;
 			}>;
-		};
+		}>());
 
 		expect(data.account.columnOrder).toContain(columnId);
 		expect(data.ownedColumns).toContainEqual(
@@ -520,9 +555,9 @@ describe("Worker routes", () => {
 			headers: accountHeaders(accountId),
 		});
 		expect(accountRes.ok).toBe(true);
-		const data = (await accountRes.json()) as {
-			account: { columnOrder: string[] };
-		};
+		const data = (await accountRes.json<{
+			account: { columnOrder: Array<string> };
+		}>());
 
 		const occurrences = data.account.columnOrder.filter(
 			(id) => id === columnId,
@@ -542,7 +577,7 @@ describe("Worker routes", () => {
 		expect(res.ok).toBe(true);
 		const data = (await (await SELF.fetch("http://example.com/api/account", {
 			headers: accountHeaders(accountId),
-		})).json()) as { account: { columnOrder: string[] } };
+		})).json<{ account: { columnOrder: Array<string> } }>());
 		expect(data.account.columnOrder.filter((id) => id === first || id === second)).toEqual([second, first]);
 		expect(new Set(data.account.columnOrder).size).toBe(data.account.columnOrder.length);
 	});
@@ -556,17 +591,16 @@ describe("Worker routes", () => {
 				headers: accountHeaders(accountId),
 			});
 			expect(res.ok).toBe(true);
-			return ((await res.json()) as { deleteAfter: number }).deleteAfter;
+			return ((await res.json<{ deleteAfter: number }>())).deleteAfter;
 		};
 		const trashedAt = async () => {
 			const data = (await (await SELF.fetch("http://example.com/api/account", {
 				headers: accountHeaders(accountId),
-			})).json()) as { deletedColumns: Array<{ columnId: string; deletedAt: number }> };
+			})).json<{ deletedColumns: Array<{ columnId: string; deletedAt: number }> }>());
 			return data.deletedColumns.find((c) => c.columnId === columnId)?.deletedAt;
 		};
 		const firstDeleteAfter = await del();
 		const firstDeletedAt = await trashedAt();
-		await new Promise((resolve) => setTimeout(resolve, 5));
 		expect(await del()).toBe(firstDeleteAfter);
 		expect(await trashedAt()).toBe(firstDeletedAt);
 	});
@@ -580,10 +614,10 @@ describe("Worker routes", () => {
 			headers: accountHeaders(accountId),
 		});
 		expect(accountRes.ok).toBe(true);
-		const data = (await accountRes.json()) as {
-			account: { columnOrder: string[] };
+		const data = (await accountRes.json<{
+			account: { columnOrder: Array<string> };
 			deletedColumns: Array<{ columnId: string; deletedAt: number }>;
-		};
+		}>());
 
 		expect(data.account.columnOrder).not.toContain(columnId);
 		expect(data.deletedColumns.some((c) => c.columnId === columnId)).toBe(true);
@@ -599,10 +633,10 @@ describe("Worker routes", () => {
 			headers: accountHeaders(accountId),
 		});
 		expect(accountRes.ok).toBe(true);
-		const data = (await accountRes.json()) as {
-			account: { columnOrder: string[] };
+		const data = (await accountRes.json<{
+			account: { columnOrder: Array<string> };
 			deletedColumns: Array<{ columnId: string }>;
-		};
+		}>());
 
 		expect(data.account.columnOrder).toContain(columnId);
 		expect(data.deletedColumns.some((c) => c.columnId === columnId)).toBe(false);
@@ -625,20 +659,20 @@ describe("Worker routes", () => {
 
 		const firstRestore = await requestRestore();
 		expect(firstRestore.ok).toBe(true);
-		const firstPayload = (await firstRestore.json()) as {
+		const firstPayload = (await firstRestore.json<{
 			success: boolean;
 			column: { id: string };
-		};
+		}>());
 		expect(firstPayload.success).toBe(true);
 		expect(firstPayload.column.id).toBe(columnId);
 
 		const replayedRestore = await requestRestore();
 		expect(replayedRestore.ok).toBe(true);
 		expect(replayedRestore.headers.get("X-Idempotency-Replay")).toBe("1");
-		const replayedPayload = (await replayedRestore.json()) as {
+		const replayedPayload = (await replayedRestore.json<{
 			success: boolean;
 			column: { id: string };
-		};
+		}>());
 		expect(replayedPayload.success).toBe(true);
 		expect(replayedPayload.column.id).toBe(columnId);
 	});
@@ -659,19 +693,19 @@ describe("Worker routes", () => {
 
 		const firstEnable = await enablePublic();
 		expect(firstEnable.ok).toBe(true);
-		const firstPayload = (await firstEnable.json()) as {
+		const firstPayload = (await firstEnable.json<{
 			publicId: string;
 			url: string;
-		};
+		}>());
 		expect(typeof firstPayload.publicId).toBe("string");
 
 		const replayedEnable = await enablePublic();
 		expect(replayedEnable.ok).toBe(true);
 		expect(replayedEnable.headers.get("X-Idempotency-Replay")).toBe("1");
-		const replayedPayload = (await replayedEnable.json()) as {
+		const replayedPayload = (await replayedEnable.json<{
 			publicId: string;
 			url: string;
-		};
+		}>());
 
 		expect(replayedPayload.publicId).toBe(firstPayload.publicId);
 		expect(replayedPayload.url).toBe(firstPayload.url);
@@ -691,7 +725,7 @@ describe("Worker routes", () => {
 				body: JSON.stringify({}),
 			});
 
-		const responses: Response[] = await Promise.all(
+		const responses: Array<Response> = await Promise.all(
 			Array.from({ length: 12 }, request),
 		);
 		expect(responses.every((response) => response.ok)).toBe(true);
@@ -699,23 +733,21 @@ describe("Worker routes", () => {
 			responses.filter((response) => response.headers.get("X-Idempotency-Replay") !== "1"),
 		).toHaveLength(1);
 
-		const payloads = (await Promise.all(
-			responses.map((response) => response.json()),
-		)) as Array<{ column: { id: string } }>;
+		const payloads = await Promise.all(responses.map(response => response.json<{ column: { id: string } }>()));
 		expect(new Set(payloads.map((payload) => payload.column.id)).size).toBe(1);
 
 		const accountResponse = await SELF.fetch("http://example.com/api/account", {
 			headers: accountHeaders(accountId),
 		});
-		const account = (await accountResponse.json()) as {
-			account: { columnOrder: string[] };
-		};
+		const account = (await accountResponse.json<{
+			account: { columnOrder: Array<string> };
+		}>());
 		expect(account.account.columnOrder).toEqual([payloads[0].column.id]);
 	});
 
 	it("allows only one of two concurrent fingerprints to execute", async () => {
 		const accountId = await createAccount();
-		const normalizedId = normalizeAccountId(accountId);
+
 		const firstColumnId = await createColumn(accountId);
 		const secondColumnId = await createColumn(accountId);
 		const idempotencyKey = crypto.randomUUID();
@@ -730,11 +762,11 @@ describe("Worker routes", () => {
 				body: JSON.stringify({ hiddenSharedColumns: [columnId] }),
 			});
 
-		const responses: Response[] = await Promise.all([
+		const responses: Array<Response> = await Promise.all([
 			write(firstColumnId),
 			write(secondColumnId),
 		]);
-		expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+		expect(responses.map((response) => response.status).sort((a, b) => a - b)).toEqual([200, 409]);
 		const conflict = responses.find((response) => response.status === 409);
 		expect(await conflict?.json()).toMatchObject({
 			error: "idempotency_key_conflict",
@@ -743,9 +775,9 @@ describe("Worker routes", () => {
 		const accountResponse = await SELF.fetch("http://example.com/api/account", {
 			headers: accountHeaders(accountId),
 		});
-		const account = (await accountResponse.json()) as {
-			account: { hiddenSharedColumns: string[] };
-		};
+		const account = (await accountResponse.json<{
+			account: { hiddenSharedColumns: Array<string> };
+		}>());
 		expect([
 			JSON.stringify([firstColumnId]),
 			JSON.stringify([secondColumnId]),
@@ -765,7 +797,7 @@ describe("Worker routes", () => {
 			});
 		const firstPublicResponse = await enablePublic();
 		expect(firstPublicResponse.ok).toBe(true);
-		const firstPublic = (await firstPublicResponse.json()) as { publicId: string };
+		const firstPublic = (await firstPublicResponse.json<{ publicId: string }>());
 
 		const sharedKey = `shared:${normalizeAccountId(collaboratorId)}`;
 		await env.ACCOUNTS.delete(sharedKey);
@@ -774,13 +806,13 @@ describe("Worker routes", () => {
 		await shareColumn(ownerId, columnId, collaboratorId);
 		const repairedPublicResponse = await enablePublic();
 		expect(repairedPublicResponse.ok).toBe(true);
-		const repairedPublic = (await repairedPublicResponse.json()) as {
+		const repairedPublic = (await repairedPublicResponse.json<{
 			publicId: string;
-		};
+		}>());
 
 		expect(repairedPublic.publicId).toBe(firstPublic.publicId);
 		expect(
-			JSON.parse((await env.ACCOUNTS.get(sharedKey)) ?? "[]") as string[],
+			z.array(z.string()).parse(JSON.parse((await env.ACCOUNTS.get(sharedKey)) ?? "[]")),
 		).toContain(columnId);
 		expect(await env.ACCOUNTS.get(`public:${firstPublic.publicId}`)).toBe(
 			columnId,
@@ -798,7 +830,7 @@ describe("Worker routes", () => {
 			{ method: "POST", headers: accountHeaders(ownerId) },
 		);
 		expect(publicResponse.ok).toBe(true);
-		const { publicId } = (await publicResponse.json()) as { publicId: string };
+		const { publicId } = (await publicResponse.json<{ publicId: string }>());
 
 		const revokeResponse = await SELF.fetch(
 			`http://example.com/api/column/${columnId}/share`,
@@ -825,11 +857,11 @@ describe("Worker routes", () => {
 		expect(await disableResponse.json()).toEqual({ success: true });
 
 		expect(
-			JSON.parse(
+			z.array(z.string()).parse(JSON.parse(
 				(await env.ACCOUNTS.get(
 					`shared:${normalizeAccountId(collaboratorId)}`,
 				)) ?? "[]",
-			) as string[],
+			)),
 		).not.toContain(columnId);
 		expect(await env.ACCOUNTS.get(`public:${publicId}`)).toBeNull();
 	});
@@ -853,22 +885,22 @@ describe("Worker routes", () => {
 			headers: accountHeaders(collaboratorId),
 		});
 		expect(accountResponse.ok).toBe(true);
-		const accountPayload = (await accountResponse.json()) as {
+		const accountPayload = (await accountResponse.json<{
 			sharedColumns: Array<{ id: string }>;
-		};
+		}>());
 		expect(accountPayload.sharedColumns).toEqual([]);
 		expect(
-			JSON.parse(
+			z.array(z.string()).parse(JSON.parse(
 				(await env.ACCOUNTS.get(
 					`shared:${normalizeAccountId(collaboratorId)}`,
 				)) ?? "[]",
-			) as string[],
+			)),
 		).not.toContain(columnId);
 	});
 
 	it("rejects duplicate idempotency key reused with different payload", async () => {
 		const accountId = await createAccount();
-		const normalizedAccountId = normalizeAccountId(accountId);
+
 		const firstColumnId = await createColumn(accountId);
 		const secondColumnId = await createColumn(accountId);
 		const idempotencyKey = crypto.randomUUID();
@@ -908,9 +940,9 @@ describe("Worker routes", () => {
 			headers: accountHeaders(accountId),
 		});
 		expect(accountRes.ok).toBe(true);
-		const accountPayload = (await accountRes.json()) as {
-			account: { hiddenSharedColumns: string[] };
-		};
+		const accountPayload = (await accountRes.json<{
+			account: { hiddenSharedColumns: Array<string> };
+		}>());
 		expect(accountPayload.account.hiddenSharedColumns).toEqual([firstColumnId]);
 	});
 
@@ -954,34 +986,6 @@ describe("Worker routes", () => {
 		});
 	});
 
-	const claimDelete = async (accountId: string, columnId: string, idempotencyKey: string) => {
-		const normalizedAccountId = normalizeAccountId(accountId);
-		const path = `/api/column/${columnId}`;
-		const scope = `account:${normalizedAccountId}:column:${columnId}:delete`;
-		const cacheKey = `idempotency:${scope}:${normalizedAccountId}:${idempotencyKey}`;
-		const coordinator = env.IDEMPOTENCY_COORDINATOR.get(
-			env.IDEMPOTENCY_COORDINATOR.idFromName(cacheKey),
-		);
-		const claim = await coordinator.fetch(
-			new Request("http://idempotency/begin", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					fingerprint: await sha256Hex(`DELETE ${path}\n`),
-					pendingExpiresAt: Date.now() + 24 * 60 * 60 * 1000,
-				}),
-			}),
-		);
-		expect(claim.ok).toBe(true);
-		return { coordinator, path, ownerToken: ((await claim.json()) as { ownerToken: string }).ownerToken };
-	};
-	const expectTrashed = async (accountId: string, columnId: string) => {
-		const data = (await (await SELF.fetch("http://example.com/api/account", {
-			headers: accountHeaders(accountId),
-		})).json()) as { account: { columnOrder: string[] }; deletedColumns: Array<{ columnId: string }> };
-		expect(data.account.columnOrder).not.toContain(columnId);
-		expect(data.deletedColumns.some((c) => c.columnId === columnId)).toBe(true);
-	};
 
 	it("re-runs a queued command whose earlier request died holding its claim", async () => {
 		const accountId = await createAccount();
@@ -1071,7 +1075,7 @@ describe("Worker routes", () => {
 		);
 
 		expect(res.status).toBe(503);
-		const data = (await res.json()) as { error?: string };
+		const data = (await res.json<{ error?: string }>());
 		expect(["backup_not_configured", "backup_auth_not_configured"]).toContain(
 			data.error,
 		);
@@ -1080,21 +1084,17 @@ describe("Worker routes", () => {
 
 describe("Backup restore validation", () => {
 	it("rejects corrupt Yjs for clone and in-place restores without replacing state", async () => {
-		const previousToken = env.BACKUP_ADMIN_TOKEN;
-		const previousReadOnly = env.READ_ONLY_MODE;
-		env.BACKUP_ADMIN_TOKEN = "test-token";
-		try {
 			const accountId = await createAccount();
 			const columnId = await createColumn(accountId);
 			const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
 			const meta = await (await stub.fetch("http://do/meta")).json();
-			const liveDoc = new Y.Doc();
+			const liveDoc = new YDoc();
 			liveDoc.getText("t").insert(0, "still live");
 			const liveImport = await stub.fetch("http://do/import", {
 				method: "POST",
 				body: JSON.stringify({
 					meta,
-					yjs: Array.from(Y.encodeStateAsUpdate(liveDoc)),
+					yjs: Array.from(encodeStateAsUpdate(liveDoc)),
 				}),
 			});
 			expect(liveImport.ok).toBe(true);
@@ -1106,8 +1106,7 @@ describe("Backup restore validation", () => {
 				"9999999999999",
 			);
 			for (const mode of ["clone", "in_place"] as const) {
-				env.READ_ONLY_MODE = mode === "in_place" ? "true" : "false";
-				const response = await SELF.fetch(
+				const response = await fetchWithEnv(new Request(
 					`http://example.com/api/admin/backups/column/${columnId}/restore`,
 					{
 						method: "POST",
@@ -1117,7 +1116,7 @@ describe("Backup restore validation", () => {
 						},
 						body: JSON.stringify({ key: corruptKey, mode }),
 					},
-				);
+				), { BACKUP_ADMIN_TOKEN: "test-token", READ_ONLY_MODE: mode === "in_place" ? "true" : "false" });
 				expect(response.status).toBe(422);
 				expect(await response.json()).toMatchObject({
 					error: "invalid_yjs_update",
@@ -1126,27 +1125,19 @@ describe("Backup restore validation", () => {
 
 			const exported = (await (
 				await stub.fetch("http://do/export")
-			).json()) as { yjs: number[] };
-			const afterDoc = new Y.Doc();
-			Y.applyUpdate(afterDoc, Uint8Array.from(exported.yjs));
+			).json<{ yjs: Array<number> }>());
+			const afterDoc = new YDoc();
+			applyUpdate(afterDoc, Uint8Array.from(exported.yjs));
 			expect(afterDoc.getText("t").toString()).toBe("still live");
 			const accountResponse = (await (
 				await SELF.fetch("http://example.com/api/account", {
 					headers: accountHeaders(accountId),
 				})
-			).json()) as { account: { columnOrder: string[] } };
+			).json<{ account: { columnOrder: Array<string> } }>());
 			expect(accountResponse.account.columnOrder).toEqual([columnId]);
-		} finally {
-			env.BACKUP_ADMIN_TOKEN = previousToken;
-			env.READ_ONLY_MODE = previousReadOnly;
-		}
 	});
 
 	it("continues an account restore after malformed and corrupt backup objects", async () => {
-		const previousToken = env.BACKUP_ADMIN_TOKEN;
-		const previousReadOnly = env.READ_ONLY_MODE;
-		env.BACKUP_ADMIN_TOKEN = "test-token";
-		try {
 			const accountId = await createAccount();
 			const malformedColumnId = await createColumn(accountId);
 			const corruptColumnId = await createColumn(accountId);
@@ -1178,9 +1169,7 @@ describe("Backup restore validation", () => {
 				[0, 0],
 				"9999999999999",
 			);
-
-			env.READ_ONLY_MODE = "true";
-			const response = await SELF.fetch(
+			const response = await fetchWithEnv(new Request(
 				"http://example.com/api/admin/backups/account/restore",
 				{
 					method: "POST",
@@ -1190,7 +1179,7 @@ describe("Backup restore validation", () => {
 					},
 					body: JSON.stringify({ accountId }),
 				},
-			);
+			), { BACKUP_ADMIN_TOKEN: "test-token", READ_ONLY_MODE: "true" });
 			expect(response.ok).toBe(true);
 			expect(await response.json()).toMatchObject({
 				success: false,
@@ -1201,21 +1190,12 @@ describe("Backup restore validation", () => {
 					{ columnId: corruptColumnId, code: "invalid_yjs_update" },
 				],
 			});
-		} finally {
-			env.BACKUP_ADMIN_TOKEN = previousToken;
-			env.READ_ONLY_MODE = previousReadOnly;
-		}
 	});
 
 	it("reports account restore failure when an expected backup is missing", async () => {
-		const previousToken = env.BACKUP_ADMIN_TOKEN;
-		const previousReadOnly = env.READ_ONLY_MODE;
-		env.BACKUP_ADMIN_TOKEN = "test-token";
-		try {
 			const accountId = await createAccount();
 			const columnId = await createColumn(accountId);
-			env.READ_ONLY_MODE = "true";
-			const response = await SELF.fetch(
+			const response = await fetchWithEnv(new Request(
 				"http://example.com/api/admin/backups/account/restore",
 				{
 					method: "POST",
@@ -1225,7 +1205,7 @@ describe("Backup restore validation", () => {
 					},
 					body: JSON.stringify({ accountId }),
 				},
-			);
+			), { BACKUP_ADMIN_TOKEN: "test-token", READ_ONLY_MODE: "true" });
 			expect(response.ok).toBe(true);
 			expect(await response.json()).toMatchObject({
 				success: false,
@@ -1233,10 +1213,6 @@ describe("Backup restore validation", () => {
 				missingBackups: [columnId],
 				failedColumns: [],
 			});
-		} finally {
-			env.BACKUP_ADMIN_TOKEN = previousToken;
-			env.READ_ONLY_MODE = previousReadOnly;
-		}
 		});
 });
 
@@ -1249,13 +1225,9 @@ describe("WebSocket upgrade routing", () => {
 			{ method: "POST", headers: accountHeaders(accountId) },
 		);
 		expect(ticketResponse.ok).toBe(true);
-		const { ticket } = (await ticketResponse.json()) as { ticket: string };
-		const previousReadOnlyMode = env.READ_ONLY_MODE;
+		const { ticket } = (await ticketResponse.json<{ ticket: string }>());
 
-		try {
-			env.READ_ONLY_MODE = "true";
-
-			const blockedTicket = await SELF.fetch(
+			const blockedTicket = await frozen(
 				`http://example.com/api/column/${columnId}/ws-ticket`,
 				{ method: "POST", headers: accountHeaders(accountId) },
 			);
@@ -1266,18 +1238,15 @@ describe("WebSocket upgrade routing", () => {
 				code: "read_only_mode",
 			});
 
-			const blockedUpgrade = await SELF.fetch(
+			const blockedUpgrade = await frozen(
 				`http://example.com/api/column/${columnId}/ws?ticket=${encodeURIComponent(ticket)}`,
 				{ headers: { Upgrade: "websocket" } },
 			);
 			expect(blockedUpgrade.status).toBe(503);
 
-			const clock = await SELF.fetch("http://example.com/api/clock");
+			const clock = await frozen("http://example.com/api/clock");
 			expect(clock.headers.get("Cache-Control")).toBe("no-store");
 			expect(await clock.json()).toMatchObject({ readOnlyMode: true });
-		} finally {
-			env.READ_ONLY_MODE = previousReadOnlyMode;
-		}
 	});
 
 	it("upgrades /api/column/:id/ws and reaches the DO", async () => {
@@ -1288,7 +1257,7 @@ describe("WebSocket upgrade routing", () => {
 			{ method: "POST", headers: accountHeaders(accountId) },
 		);
 		expect(ticketResponse.ok).toBe(true);
-		const { ticket } = (await ticketResponse.json()) as { ticket: string };
+		const { ticket } = (await ticketResponse.json<{ ticket: string }>());
 
 		const res = await SELF.fetch(
 			`http://example.com/api/column/${columnId}/ws?ticket=${encodeURIComponent(ticket)}`,
@@ -1299,11 +1268,11 @@ describe("WebSocket upgrade routing", () => {
 		expect(res.status).toBe(101);
 
 		const ws = getResponseWebSocket(res);
-		(ws as unknown as { accept: () => void }).accept();
+		ws.accept();
 
 		// Read a few initial frames. We only assert we see a sync frame at least once,
 		// since ordering can vary with presence/awareness updates.
-		const ops: number[] = [];
+		const ops: Array<number> = [];
 		for (let i = 0; i < 4; i++) {
 			const event = await waitForWsMessage(ws, 2000);
 			ops.push(decodeOpcode(event.data));
@@ -1326,7 +1295,7 @@ describe("WebSocket upgrade routing", () => {
 			},
 		);
 		expect(publicRes.ok).toBe(true);
-		const publicData = (await publicRes.json()) as { publicId: string };
+		const publicData = (await publicRes.json<{ publicId: string }>());
 		expect(typeof publicData.publicId).toBe("string");
 
 		const res = await SELF.fetch(
@@ -1338,9 +1307,9 @@ describe("WebSocket upgrade routing", () => {
 		expect(res.status).toBe(101);
 
 		const ws = getResponseWebSocket(res);
-		(ws as unknown as { accept: () => void }).accept();
+		ws.accept();
 
-		const ops: number[] = [];
+		const ops: Array<number> = [];
 		for (let i = 0; i < 4; i++) {
 			const event = await waitForWsMessage(ws, 2000);
 			ops.push(decodeOpcode(event.data));
@@ -1386,7 +1355,7 @@ describe("Persistence schema routing", () => {
 				body: JSON.stringify({ key: trashKey }),
 			}),
 		);
-		expect(((await rawResponse.json()) as { value: string }).value).toBe("{");
+		expect(((await rawResponse.json<{ value: string }>())).value).toBe("{");
 	});
 
 	for (const persistedAccountCase of [
@@ -1448,7 +1417,7 @@ describe("Persistence schema routing", () => {
 		const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
 		const metaResponse = await stub.fetch(new Request("http://do/meta"));
 		expect(metaResponse.ok).toBe(true);
-		const meta = (await metaResponse.json()) as Record<string, unknown>;
+		const meta = (await metaResponse.json<ColumnMeta>());
 		const importResponse = await stub.fetch(
 			new Request("http://do/import", {
 				method: "POST",

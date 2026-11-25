@@ -164,9 +164,7 @@ export const ACCOUNT_COMMANDS = {
 export type AccountCommands = typeof ACCOUNT_COMMANDS;
 export type AccountCommandType = keyof AccountCommands;
 
-export const ACCOUNT_COMMAND_TYPES = Object.keys(
-	ACCOUNT_COMMANDS,
-) as AccountCommandType[];
+export const ACCOUNT_COMMAND_TYPES = Object.keys(ACCOUNT_COMMANDS).filter(isAccountCommandType);
 
 export type AccountCommandPayloadMap = {
 	[T in AccountCommandType]: z.output<AccountCommands[T]["payload"]>;
@@ -176,11 +174,24 @@ export type AccountCommandResponse<T extends AccountCommandType> = z.output<
 	AccountCommands[T]["response"]
 >;
 
+/** A lookup preserves the relationship between the operation and its wire types. */
+export const accountCommandContracts: {
+	[K in AccountCommandType]: {
+		method: CommandMethod;
+		path: string;
+		payload: z.ZodType<AccountCommandPayloadMap[K]>;
+		request: (payload: AccountCommandPayloadMap[K]) => { id?: string; body?: unknown };
+		affectedColumnId: (payload: AccountCommandPayloadMap[K]) => string | null;
+		response: z.ZodType<AccountCommandResponse<K>>;
+	};
+// oxlint-disable-next-line quality/no-known-value-widening -- A mapped interface keeps a generic operation correlated with its parser, request builder, and response.
+} = ACCOUNT_COMMANDS;
+
 export function isAccountCommandType(value: unknown): value is AccountCommandType {
 	return typeof value === "string" && Object.hasOwn(ACCOUNT_COMMANDS, value);
 }
 
 /** Fills a command route's `:id` parameter. */
 export function accountCommandUrl(path: string, id: string | undefined): string {
-	return routePath(path, (id === undefined ? {} : { id }) as never);
+	return routePath(path, id === undefined ? {} : { id });
 }

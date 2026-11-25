@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { LOCAL_STORAGE_QUARANTINE_SUFFIX } from "../src/lib/local-first/local-storage-quarantine";
 import { createLocalStorageYjsOutboxStorage } from "../src/lib/sync/yjs-update-outbox";
 
@@ -26,7 +27,6 @@ class MemoryStorage implements Storage {
 
 describe("localStorage outbox quarantine", () => {
 	const storage = new MemoryStorage();
-	let consoleError: ReturnType<typeof vi.spyOn>;
 
 	beforeEach(() => {
 		storage.clear();
@@ -34,11 +34,9 @@ describe("localStorage outbox quarantine", () => {
 			configurable: true,
 			value: { localStorage: storage },
 		});
-		consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 	});
 
 	afterEach(() => {
-		consoleError.mockRestore();
 		Reflect.deleteProperty(globalThis, "window");
 	});
 
@@ -48,9 +46,9 @@ describe("localStorage outbox quarantine", () => {
 		const outboxStorage = createLocalStorageYjsOutboxStorage(key);
 
 		expect(outboxStorage.read()).toEqual([]);
-		const quarantined = JSON.parse(
+		const quarantined = z.array(z.object({ sourceCollection: z.string(), raw: z.unknown() })).parse(JSON.parse(
 			storage.getItem(`${key}${LOCAL_STORAGE_QUARANTINE_SUFFIX}`) ?? "[]",
-		) as Array<{ sourceCollection: string; raw: unknown }>;
+		));
 		expect(quarantined).toHaveLength(1);
 		expect(quarantined[0]).toMatchObject({
 			sourceCollection: "yjsUpdateOutbox",

@@ -1,69 +1,37 @@
-import { ACCOUNT_COMMANDS, isAccountCommandType } from "../api/account-commands";
+import { z } from "zod";
+import { accountCommandContracts, isAccountCommandType } from "../api/account-commands";
+import type { AccountCommandType } from "../api/account-commands";
+import { createAccountEditCommand } from "./contracts";
 import type { QueuedMutation } from "./contracts";
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function isNonEmptyString(value: unknown): value is string {
-	return typeof value === "string" && value.length > 0;
-}
-
-interface ParsedQueueFields {
-	queueId: string;
-	idempotencyKey: string;
-	entityId: string;
-	createdAt: number;
-	attemptCount: number;
-	nextRetryAt: number;
-	lastError?: string;
-}
-
-function parseQueueFields(value: Record<string, unknown>): ParsedQueueFields | null {
-	if (
-		!isNonEmptyString(value.queueId) ||
-		!isNonEmptyString(value.idempotencyKey) ||
-		!isNonEmptyString(value.entityId) ||
-		typeof value.createdAt !== "number" ||
-		!Number.isFinite(value.createdAt) ||
-		typeof value.attemptCount !== "number" ||
-		!Number.isInteger(value.attemptCount) ||
-		value.attemptCount < 0 ||
-		typeof value.nextRetryAt !== "number" ||
-		!Number.isFinite(value.nextRetryAt) ||
-		!(
-			value.lastError === undefined ||
-			value.lastError === null ||
-			typeof value.lastError === "string"
-		)
-	) {
-		return null;
-	}
-
-	return {
-		queueId: value.queueId,
-		idempotencyKey: value.idempotencyKey,
-		entityId: value.entityId,
-		createdAt: value.createdAt,
-		attemptCount: value.attemptCount,
-		nextRetryAt: value.nextRetryAt,
-		...(typeof value.lastError === "string"
-			? { lastError: value.lastError }
-			: {}),
-	};
-}
+const queueFields = z.object({
+	queueId: z.string().min(1),
+	idempotencyKey: z.string().min(1),
+	entityId: z.string().min(1),
+	createdAt: z.number().finite(),
+	attemptCount: z.number().nonnegative().refine(Number.isInteger),
+	nextRetryAt: z.number().finite(),
+	lastError: z.string().nullish(),
+	opType: z.custom<AccountCommandType>(isAccountCommandType),
+	payload: z.unknown(),
+});
 
 /** Parse the only untyped command boundary: data loaded from persisted outboxes. */
 export function parseQueuedMutation(value: unknown): QueuedMutation | null {
-	if (!isRecord(value) || !isAccountCommandType(value.opType)) return null;
-	const fields = parseQueueFields(value);
-	if (!fields) return null;
+	const parsed = queueFields.safeParse(value);
+	if (!parsed.success) {return null;}
+	const { opType, payload, lastError, ...fields } = parsed.data;
+	const command = parsePayload(opType, fields, payload);
+	if (command && typeof lastError === "string") { command.lastError = lastError; }
+	return command;
+}
 
-	const payload = ACCOUNT_COMMANDS[value.opType].payload.safeParse(value.payload);
-	if (!payload.success) return null;
-	return {
-		...fields,
-		opType: value.opType,
-		payload: payload.data,
-	} as QueuedMutation;
+function parsePayload<T extends AccountCommandType>(
+	opType: T,
+	fields: Omit<z.output<typeof queueFields>, "opType" | "payload" | "lastError">,
+	raw: unknown,
+): QueuedMutation<T> | null {
+	const payload = accountCommandContracts[opType].payload.safeParse(raw);
+	if (!payload.success) {return null;}
+	return { ...createAccountEditCommand(opType, payload.data, fields), queueId: fields.queueId };
 }

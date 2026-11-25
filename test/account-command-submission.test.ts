@@ -3,10 +3,8 @@ import { describe, expect, it } from "vitest";
 import { persistAccountCommand } from "../src/hooks/use-account-convergence";
 import { createAccountConvergenceMachine } from "../src/lib/sync/account-convergence-machine";
 import { projectionFromServer } from "../src/lib/sync/account-projection";
-import {
-	LocalMutationQueueService,
-	type MutationQueueStorage,
-} from "../src/lib/sync/mutation-queue-service";
+import { LocalMutationQueueService } from '../src/lib/sync/mutation-queue-service';
+import type { MutationQueueStorage } from '../src/lib/sync/mutation-queue-service';
 import type { QueuedMutation } from "../src/lib/sync/contracts";
 
 const ACCOUNT_ID = "1111 1111 1111 1111";
@@ -37,7 +35,7 @@ function deferred() {
 }
 
 function memoryStorage(): MutationQueueStorage {
-	let stored: QueuedMutation[] = [];
+	let stored: Array<QueuedMutation> = [];
 	return {
 		read: () => stored.map((mutation) => ({ ...mutation })),
 		write: (mutations) => {

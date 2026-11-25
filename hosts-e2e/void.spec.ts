@@ -22,10 +22,10 @@ test("the server HTML is the finished board, before any JavaScript", async ({ br
 });
 
 test("hydrates without mismatches and becomes editable", async ({ page }) => {
-	const problems: string[] = [];
+	const problems: Array<string> = [];
 	page.on("pageerror", (error) => problems.push(error.message));
 	page.on("console", (message) => {
-		if (message.type() === "error" || /hydrat/i.test(message.text())) problems.push(message.text().slice(0, 300));
+		if (message.type() === "error" || /hydrat/i.test(message.text())) {problems.push(message.text().slice(0, 300));}
 	});
 	await page.goto("/");
 	const editor = page.getByRole("textbox", { name: "Todo editor" }).first();
@@ -39,12 +39,14 @@ test("hydrates without mismatches and becomes editable", async ({ page }) => {
 	expect(problems).toEqual([]);
 });
 
-test("hydration swaps in the editor without a visible change", async ({ browser }) => {
+test("hydration swaps in the editor without a visible change", async ({ browser }, testInfo) => {
 	const shot = async (javaScriptEnabled: boolean) => {
 		const context = await browser.newContext({ javaScriptEnabled, viewport: { width: 1100, height: 640 } });
 		const page = await context.newPage();
 		await page.goto("/");
-		if (javaScriptEnabled) await expect(page.getByRole("textbox", { name: "Todo editor" })).toBeVisible();
+		if (javaScriptEnabled) {
+			await page.getByRole("textbox", { name: "Todo editor" }).waitFor();
+		}
 		// The column's top 300px: headers and content. The shortcuts button sits lower and
 		// switches from "Ctrl" to "⌘" on Apple platforms after hydration, by design.
 		const box = (await page.locator("[data-column-id]").first().boundingBox())!;
@@ -56,7 +58,13 @@ test("hydration swaps in the editor without a visible change", async ({ browser 
 		await context.close();
 		return image;
 	};
-	expect((await shot(true)).equals(await shot(false))).toBe(true);
+	const hydrated = await shot(true);
+	const server = await shot(false);
+	if (!hydrated.equals(server)) {
+		await testInfo.attach("hydrated", { body: hydrated, contentType: "image/png" });
+		await testInfo.attach("server", { body: server, contentType: "image/png" });
+	}
+	expect(hydrated.equals(server)).toBe(true);
 });
 
 test("the page's hostile global CSS does not restyle the board", async ({ page }) => {

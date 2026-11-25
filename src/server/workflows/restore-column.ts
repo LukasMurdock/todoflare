@@ -8,12 +8,8 @@ import {
 	parseDeletedColumnRecords,
 	TRASH_RETENTION_MS,
 } from "../persistence-records";
-import {
-	type ColumnLifecycleBindings,
-	type ColumnLifecycleResult,
-	type ColumnLifecycleWriteObserver,
-	lifecycleNotFound,
-} from "./column-lifecycle";
+import { lifecycleNotFound } from './column-lifecycle';
+import type { ColumnLifecycleBindings, ColumnLifecycleResult, ColumnLifecycleWriteObserver } from './column-lifecycle';
 
 export type RestoreColumnWriteBoundary = "owner-account" | "trash";
 
@@ -46,7 +42,7 @@ export async function restoreColumn<TColumnRoomId>(
 	const normalizedAccountId = normalizeAccountId(accountId);
 	const accountKey = `account:${normalizedAccountId}`;
 	const accountData = await records.get(accountKey);
-	if (!accountData) return lifecycleNotFound("Account not found");
+	if (!accountData) {return lifecycleNotFound("Account not found");}
 
 	const parsedAccount = parseAccountRecord(accountData);
 	if (!parsedAccount.ok) {
@@ -71,7 +67,7 @@ export async function restoreColumn<TColumnRoomId>(
 	const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
 	const loadMeta = async (): Promise<ColumnLifecycleResult<ColumnMeta>> => {
 		const metaResponse = await stub.fetch(new Request("http://do/meta"));
-		if (!metaResponse.ok) return lifecycleNotFound("Column not found");
+		if (!metaResponse.ok) {return lifecycleNotFound("Column not found");}
 		const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
 		if (!parsedMeta.ok) {
 			return {
@@ -92,7 +88,7 @@ export async function restoreColumn<TColumnRoomId>(
 		}
 
 		const completedMeta = await loadMeta();
-		if (!completedMeta.ok) return completedMeta;
+		if (!completedMeta.ok) {return completedMeta;}
 		if (!isColumnOwner(completedMeta.value, accountId)) {
 			return lifecycleNotFound("Column not in garbage can");
 		}
@@ -104,7 +100,7 @@ export async function restoreColumn<TColumnRoomId>(
 	}
 
 	const loadedMeta = await loadMeta();
-	if (!loadedMeta.ok) return loadedMeta;
+	if (!loadedMeta.ok) {return loadedMeta;}
 	const meta = loadedMeta.value;
 	if (!isColumnOwner(meta, accountId)) {
 		return {
@@ -114,7 +110,7 @@ export async function restoreColumn<TColumnRoomId>(
 	}
 
 	const activeResponse = await stub.fetch(new Request("http://do/restore-active", { method: "POST" }));
-	if (!activeResponse.ok) return lifecycleNotFound("Column expired or unavailable", activeResponse.status === 410 ? 410 : 404);
+	if (!activeResponse.ok) {return lifecycleNotFound("Column expired or unavailable", activeResponse.status === 410 ? 410 : 404);}
 	if (!account.columnOrder.includes(columnId)) {
 		await mutateAccountRecord(env, accountKey, {
 			kind: "account-add-column",

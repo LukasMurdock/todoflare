@@ -21,15 +21,15 @@ export type Bindings = {
 	/** "production" or "staging"; only production invites crawlers. */
 	ENVIRONMENT?: string;
 	BACKUPS?: R2Bucket;
-	ASSETS?: Fetcher;
+	ASSETS?: Pick<Fetcher, "fetch">;
 	BACKUP_ADMIN_TOKEN?: string;
 	AUTO_BACKUP_ENABLED?: string;
 	BACKUP_MAX_COLUMNS?: string;
 	LIFECYCLE_METRICS?: {
 		writeDataPoint(event: {
-			blobs?: string[];
-			doubles?: number[];
-			indexes?: string[];
+			blobs?: Array<string>;
+			doubles?: Array<number>;
+			indexes?: Array<string>;
 		}): void;
 	};
 };

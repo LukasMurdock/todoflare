@@ -5,12 +5,8 @@ import {
 	parseColumnMetaRecord,
 	parseSharedColumnIndex,
 } from "../persistence-records";
-import {
-	type ColumnLifecycleBindings,
-	type ColumnLifecycleResult,
-	type ColumnLifecycleWriteObserver,
-	lifecycleNotFound,
-} from "./column-lifecycle";
+import { lifecycleNotFound } from './column-lifecycle';
+import type { ColumnLifecycleBindings, ColumnLifecycleResult, ColumnLifecycleWriteObserver } from './column-lifecycle';
 
 export type RevokeColumnShareWriteBoundary =
 	| "column-shares"
@@ -26,7 +22,7 @@ export interface RevokeColumnShareInput<TColumnRoomId> {
 
 export interface RevokeColumnShareOutput {
 	success: true;
-	sharedWith: string[];
+	sharedWith: Array<string>;
 }
 
 /**
@@ -42,7 +38,7 @@ export async function revokeColumnShare<TColumnRoomId>(
 	const normalizedTargetId = normalizeAccountId(targetAccountId);
 	const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
 	const metaResponse = await stub.fetch(new Request("http://do/meta"));
-	if (!metaResponse.ok) return lifecycleNotFound("Column not found");
+	if (!metaResponse.ok) {return lifecycleNotFound("Column not found");}
 
 	const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
 	if (!parsedMeta.ok) {
@@ -97,7 +93,7 @@ export async function revokeColumnShare<TColumnRoomId>(
 		const sharedColumns = parsedSharedColumns.value;
 		const updated = sharedColumns.filter((id) => id !== columnId);
 		await mutateAccountRecord(env, sharedKey, { kind: "shared-remove", columnId });
-		if (updated.length !== sharedColumns.length) await afterWrite?.("shared-account");
+		if (updated.length !== sharedColumns.length) {await afterWrite?.("shared-account");}
 	}
 
 	return { ok: true, value: { success: true, sharedWith } };

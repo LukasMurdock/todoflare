@@ -97,7 +97,7 @@ test.describe("collaborative editing", () => {
 	});
 
 	test("stale stored account id falls back to account modal", async ({ page }) => {
-		const staleAccountId = `9999 0000 ${Math.floor(Date.now() % 10000)
+		const staleAccountId = `9999 0000 ${Math.floor(Date.now() % 10_000)
 			.toString()
 			.padStart(4, "0")} 1234`;
 
@@ -117,7 +117,7 @@ test.describe("collaborative editing", () => {
 
 		await page.goto("/");
 
-		await expect(page.getByRole("dialog")).toBeVisible({ timeout: 15000 });
+		await expect(page.getByRole("dialog")).toBeVisible({ timeout: 15_000 });
 		await expect(
 			page.getByRole("heading", { name: "Sync with a passkey" }),
 		).toBeVisible();
@@ -151,7 +151,7 @@ test.describe("collaborative editing", () => {
 		const secondEditor = secondPage.getByRole("textbox", { name: "Todo editor" }).first();
 		await expect
 			.poll(async () => (await secondEditor.innerText()).trim(), {
-				timeout: 15000,
+				timeout: 15_000,
 			})
 			.toContain(text);
 

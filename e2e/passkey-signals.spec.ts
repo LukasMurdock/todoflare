@@ -1,9 +1,10 @@
+import { z } from "zod";
 import { expect, test } from "@playwright/test";
 import { signInWithNewPasskey } from "./helpers/passkey-session";
 
 declare global {
 	interface Window {
-		passkeySignals: { name: string; options: unknown }[];
+		passkeySignals: Array<{ name: string; options: unknown }>;
 	}
 }
 
@@ -26,9 +27,9 @@ test("tells the password manager when a passkey is deleted", async ({ page, cont
 		}
 	});
 	const accountId = await signInWithNewPasskey(page, context, origin);
-	const [{ credentialID }] = await page.evaluate(async () =>
-		(await fetch("/api/auth/passkey/list-user-passkeys")).json() as Promise<{ credentialID: string }[]>,
-	);
+	const [{ credentialID }] = z.array(z.object({ credentialID: z.string() })).parse(JSON.parse(await page.evaluate(async () =>
+		(await fetch("/api/auth/passkey/list-user-passkeys")).text(),
+	)));
 
 	await page.getByRole("button", { name: `${accountId.slice(0, 4)}...${accountId.slice(12)}` }).click();
 	await page.getByRole("menuitem", { name: "Passkeys and recovery" }).click();

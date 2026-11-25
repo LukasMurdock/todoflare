@@ -22,7 +22,7 @@ function when(timestamp: number): string {
 }
 
 function undoneLabel(change: AgentChange): string {
-	if (!change.undoResult) return "Undone";
+	if (!change.undoResult) {return "Undone";}
 	const { restored, kept } = change.undoResult;
 	return kept > 0 ? `Undone · kept ${kept} edited since` : restored > 0 ? "Undone" : "Undone · nothing left to revert";
 }
@@ -34,7 +34,7 @@ function undoneLabel(change: AgentChange): string {
 export function ColumnAgentsMenu({ accountId, columnId }: ColumnAgentsMenuProps) {
 	const { state } = useAgentConnections(accountId, true);
 	const [open, setOpen] = useState(false);
-	const [changes, setChanges] = useState<AgentChange[] | null>(null);
+	const [changes, setChanges] = useState<Array<AgentChange> | null>(null);
 	const [busy, setBusy] = useState(false);
 	// Widening an agent's access needs a recent sign-in.
 	const recent = useRecentSignIn(accountId);
@@ -42,7 +42,7 @@ export function ColumnAgentsMenu({ accountId, columnId }: ColumnAgentsMenuProps)
 	// While a refused change waits for confirmation, nothing else may change.
 	const locked = busy || recent.pending;
 	useEffect(() => {
-		if (!open) cancel();
+		if (!open) {cancel();}
 	}, [open, cancel]);
 
 	const loadChanges = useCallback(() => {
@@ -50,10 +50,10 @@ export function ColumnAgentsMenu({ accountId, columnId }: ColumnAgentsMenuProps)
 	}, [accountId, columnId]);
 
 	useEffect(() => {
-		if (open) loadChanges();
+		if (open) {loadChanges();}
 	}, [open, loadChanges]);
 
-	if (state.status !== "ready") return null;
+	if (state.status !== "ready") {return null;}
 	const agents = state.agents;
 	const activeHere = agents.filter((agent) => agent.grants.some((grant) => grant.columnId === columnId));
 
@@ -67,8 +67,8 @@ export function ColumnAgentsMenu({ accountId, columnId }: ColumnAgentsMenuProps)
 			} else {
 				replaceAgentConnection(accountId, await agentsApi.removeGrant(accountId, agentId, columnId));
 			}
-		} catch (cause) {
-			toast.error(cause instanceof Error && cause.message ? cause.message : "Could not change access");
+		} catch (error) {
+			toast.error(error instanceof Error && error.message ? error.message : "Could not change access");
 		} finally {
 			setBusy(false);
 		}
@@ -78,8 +78,8 @@ export function ColumnAgentsMenu({ accountId, columnId }: ColumnAgentsMenuProps)
 		setBusy(true);
 		try {
 			await recent.confirm();
-		} catch (cause) {
-			toast.error(cause instanceof Error && cause.message ? cause.message : "Could not change access");
+		} catch (error) {
+			toast.error(error instanceof Error && error.message ? error.message : "Could not change access");
 		} finally {
 			setBusy(false);
 		}
@@ -91,8 +91,8 @@ export function ColumnAgentsMenu({ accountId, columnId }: ColumnAgentsMenuProps)
 			const result = await agentsApi.undo(accountId, columnId, change.id);
 			toast.success(result.kept > 0 ? `Undone. Kept ${result.kept} that someone edited since.` : "Undone");
 			loadChanges();
-		} catch (cause) {
-			toast.error(cause instanceof Error ? cause.message : "Could not undo");
+		} catch (error) {
+			toast.error(error instanceof Error ? error.message : "Could not undo");
 		} finally {
 			setBusy(false);
 		}
@@ -104,6 +104,7 @@ export function ColumnAgentsMenu({ accountId, columnId }: ColumnAgentsMenuProps)
 		<Popover open={open} onOpenChange={setOpen}>
 			<PopoverTrigger asChild>
 				<button
+					type="button"
 					className="relative rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-brand/25 focus-visible:outline-none data-[state=open]:bg-muted data-[state=open]:text-foreground"
 					aria-label="Agents for this column"
 					title="Agents"
@@ -147,13 +148,13 @@ export function ColumnAgentsMenu({ accountId, columnId }: ColumnAgentsMenuProps)
 											label={`${agent.name} access to this column`}
 											value={agent.grants.find((grant) => grant.columnId === columnId)?.level ?? null}
 											disabled={locked}
-											onChange={(level) => setLevel(agent.id, level)}
+											onChange={(level) => void setLevel(agent.id, level)}
 										/>
 									</li>
 								))}
 							</ul>
 						)}
-						{recent.pending && <ConfirmSignIn busy={busy} onConfirm={confirm} onCancel={recent.cancel} />}
+						{recent.pending && <ConfirmSignIn busy={busy} onConfirm={() => void confirm()} onCancel={recent.cancel} />}
 					</section>
 					<section className="flex flex-col gap-2 border-t border-border/60 pt-3">
 						<h4 className={eyebrow}>Recent agent changes</h4>
@@ -183,7 +184,7 @@ export function ColumnAgentsMenu({ accountId, columnId }: ColumnAgentsMenuProps)
 												<div className="flex items-start justify-between gap-2">
 													<p className={cn("min-w-0 text-[13px] leading-5", undone && "text-muted-foreground line-through")}>{change.summary}</p>
 													{!undone && (
-														<Button variant="ghost" size="sm" className="-mt-0.5 h-6 shrink-0 gap-1 px-1.5 text-xs" disabled={locked} onClick={() => undo(change)} aria-label={`Undo: ${change.summary}`}>
+														<Button variant="ghost" size="sm" className="-mt-0.5 h-6 shrink-0 gap-1 px-1.5 text-xs" disabled={locked} onClick={() => void undo(change)} aria-label={`Undo: ${change.summary}`}>
 															<Undo2 className="size-3" />
 															Undo
 														</Button>

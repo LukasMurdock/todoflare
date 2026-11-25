@@ -1,18 +1,11 @@
 import { useCallback, useMemo } from "react";
 import { useActorRef, useSelector } from "@xstate/react";
-import { waitFor, type ActorRefFrom } from "xstate";
-import {
-	type AccountConvergenceError,
-	type AccountConvergenceDependencies,
-	type AccountConvergenceInput,
-	createAccountConvergenceMachine,
-} from "../lib/sync/account-convergence-machine";
-import {
-	createAccountEditCommand,
-	type AccountCommandPayloadMap,
-	type AccountCommandType,
-	type ReplayReport,
-} from "../lib/sync/contracts";
+import { waitFor } from 'xstate';
+import type { ActorRefFrom } from 'xstate';
+import { createAccountConvergenceMachine } from '../lib/sync/account-convergence-machine';
+import type { AccountConvergenceError, AccountConvergenceDependencies, AccountConvergenceInput } from '../lib/sync/account-convergence-machine';
+import { createAccountEditCommand } from '../lib/sync/contracts';
+import type { AccountCommandPayloadMap, AccountCommandType, ReplayReport } from '../lib/sync/contracts';
 import type { LocalMutationQueueService } from "../lib/sync/mutation-queue-service";
 
 type AccountConvergenceMachine = ReturnType<
@@ -43,7 +36,7 @@ function reportOutcomeForQueue(
 	report: ReplayReport | null,
 	queueId: string,
 ): "acknowledged" | "terminal" | null {
-	if (!report) return null;
+	if (!report) {return null;}
 	if (report.terminalFailures.some((failure) => failure.queueId === queueId)) {
 		return "terminal";
 	}
@@ -130,14 +123,14 @@ export async function persistAccountCommand<T extends AccountCommandType>(
 export function accountConvergenceErrorMessage(
 	error: AccountConvergenceError | null,
 ): string | null {
-	if (!error) return null;
+	if (!error) {return null;}
 	if (error.scope === "auth") {
-		if (error.kind === "invalid") return "Invalid account ID format";
-		if (error.kind === "not_found") return "Account not found";
-		if (error.kind === "reauth_required") return "Sign in with a passkey to resume syncing";
+		if (error.kind === "invalid") {return "Invalid account ID format";}
+		if (error.kind === "not_found") {return "Account not found";}
+		if (error.kind === "reauth_required") {return "Sign in with a passkey to resume syncing";}
 		return "Failed to authenticate account";
 	}
-	if (error.scope === "access") return "Access revoked";
+	if (error.scope === "access") {return "Access revoked";}
 	if (error.kind === "rate_limited") {
 		return "Account request was rate limited";
 	}

@@ -6,12 +6,8 @@ import {
 	parseColumnMetaRecord,
 	parseSharedColumnIndex,
 } from "../persistence-records";
-import {
-	type ColumnLifecycleBindings,
-	type ColumnLifecycleResult,
-	type ColumnLifecycleWriteObserver,
-	lifecycleNotFound,
-} from "./column-lifecycle";
+import { lifecycleNotFound } from './column-lifecycle';
+import type { ColumnLifecycleBindings, ColumnLifecycleResult, ColumnLifecycleWriteObserver } from './column-lifecycle';
 
 export type ShareColumnWriteBoundary = "column-shares" | "shared-account";
 
@@ -25,7 +21,7 @@ export interface ShareColumnInput<TColumnRoomId> {
 
 export interface ShareColumnOutput {
 	success: true;
-	sharedWith: string[];
+	sharedWith: Array<string>;
 }
 
 /**
@@ -40,7 +36,7 @@ export async function shareColumn<TColumnRoomId>(
 	const records = accountRecordStore(env);
 	const normalizedTargetId = normalizeAccountId(targetAccountId);
 	const targetData = await records.get(`account:${normalizedTargetId}`);
-	if (!targetData) return lifecycleNotFound("Target account not found");
+	if (!targetData) {return lifecycleNotFound("Target account not found");}
 
 	const parsedTarget = parseAccountRecord(targetData);
 	if (!parsedTarget.ok) {
@@ -52,7 +48,7 @@ export async function shareColumn<TColumnRoomId>(
 
 	const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
 	const metaResponse = await stub.fetch(new Request("http://do/meta"));
-	if (!metaResponse.ok) return lifecycleNotFound("Column not found");
+	if (!metaResponse.ok) {return lifecycleNotFound("Column not found");}
 
 	const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
 	if (!parsedMeta.ok) {
@@ -100,7 +96,7 @@ export async function shareColumn<TColumnRoomId>(
 	}
 	const sharedColumns = parsedSharedColumns.value;
 	await mutateAccountRecord(env, sharedKey, { kind: "shared-add", columnId });
-	if (!sharedColumns.includes(columnId)) await afterWrite?.("shared-account");
+	if (!sharedColumns.includes(columnId)) {await afterWrite?.("shared-account");}
 
 	return { ok: true, value: { success: true, sharedWith: meta.sharedWith } };
 }

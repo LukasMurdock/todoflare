@@ -125,6 +125,7 @@ packages/board  ◄──  src/components, hooks, contexts, lib  (browser)
 | Worker logs and traces stay off, and no account identifier is built into a URL. | `check:sensitive-url-observability` |
 | `pnpm verify` builds once, runs E2E against `.wrangler/e2e-state` only, and equals CI. | `check:verification-config` |
 | Client JavaScript stays within the gzip budget. | `check:bundle-size` (full `verify` only) |
+| Cloudflare type-aware Oxlint rules and Landmines checks run on first-party code. | `lint` |
 | React hooks rules, zero warnings. | `lint:hooks` |
 
 Not enforced, but expected: route handlers validate input once and delegate
@@ -260,7 +261,10 @@ editor ─ Y.Doc update ─► cache in IndexedDB ─► Yjs outbox (persist fir
 
 A revoke or delete reaches the client over the socket (`access-revoked`,
 `column-deleted`), from a ticket 403/404, from a `revoked` replay result, or
-from a shared column missing in a fresh hydration. All paths end in
+from a shared column missing in a fresh hydration. A ticket request that
+overlaps a queued column create retries a 403/404: the room may have answered
+before the create committed. A fresh request after the create is acknowledged
+can confirm access loss. Confirmed losses end in
 `applyColumnAccessLossPolicy` (`src/contexts/sync-context.tsx`): drop the
 column's cached document, queued commands and Yjs outbox, remove it from the
 projection (which unmounts the editor), and show a toast. Revocation is the

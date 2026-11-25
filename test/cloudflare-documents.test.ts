@@ -1,15 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
-import * as Y from "yjs";
-import { createCloudflareDocuments, type ColumnSyncTransport } from "../src/lib/collaboration/cloudflare-yjs-provider";
+import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
+import { createCloudflareDocuments } from '../src/lib/collaboration/cloudflare-yjs-provider';
+import type { ColumnSyncTransport } from '../src/lib/collaboration/cloudflare-yjs-provider';
 import type { SyncMessage } from "../src/types/account";
 
 const COLUMN_ID = "00000000-0000-4000-8000-000000000001";
 
 function fakeTransport() {
 	const listeners = new Set<(message: SyncMessage) => void>();
-	const sent: Uint8Array[] = [];
-	const unsubscribeColumn = vi.fn();
-	const subscribeToColumn = vi.fn((_columnId: string) => unsubscribeColumn);
+	const sent: Array<Uint8Array> = [];
+	const subscribed: Array<string> = [];
+	const released: Array<string> = [];
+	const subscribeToColumn = (columnId: string) => {
+		subscribed.push(columnId);
+		return () => { released.push(columnId); };
+	};
 	const transport: ColumnSyncTransport = {
 		subscribeToColumn,
 		onColumnMessage: (_columnId, callback) => {
@@ -19,13 +24,13 @@ function fakeTransport() {
 		sendUpdate: (_columnId, update) => sent.push(update),
 		sendAwareness: () => {},
 	};
-	return { transport, listeners, sent, subscribeToColumn, unsubscribeColumn };
+	return { transport, listeners, sent, subscribed, released };
 }
 
 function cachedText(text: string): Uint8Array {
-	const doc = new Y.Doc();
+	const doc = new YDoc();
 	doc.getText("t").insert(0, text);
-	return Y.encodeStateAsUpdate(doc);
+	return encodeStateAsUpdate(doc);
 }
 
 describe("Cloudflare document adapter", () => {
@@ -39,14 +44,14 @@ describe("Cloudflare document adapter", () => {
 
 		const opened = await documents.open(COLUMN_ID, new AbortController().signal);
 		expect(opened.doc.getText("t").toString()).toBe("cached");
-		expect(fake.subscribeToColumn).toHaveBeenCalledWith(COLUMN_ID);
+		expect(fake.subscribed).toEqual([COLUMN_ID]);
 		expect(sent).toHaveLength(0);
 
 		opened.doc.getText("t").insert(6, " edit");
 		expect(sent).toHaveLength(1);
 
 		opened.release();
-		expect(fake.unsubscribeColumn).toHaveBeenCalledOnce();
+		expect(fake.released).toEqual([COLUMN_ID]);
 		expect(fake.listeners.size).toBe(0);
 	});
 
@@ -56,7 +61,7 @@ describe("Cloudflare document adapter", () => {
 		const documents = createCloudflareDocuments({ loadColumnDocument: async () => null, transport: fake.transport });
 		const opened = await documents.open(COLUMN_ID, new AbortController().signal);
 
-		for (const listener of fake.listeners) listener({ type: "sync", data: cachedText("remote") } as SyncMessage);
+		for (const listener of fake.listeners) {listener({ type: "sync", data: cachedText("remote") });}
 		expect(opened.doc.getText("t").toString()).toBe("remote");
 		expect(sent).toHaveLength(0);
 		opened.release();
@@ -64,7 +69,7 @@ describe("Cloudflare document adapter", () => {
 
 	it("opens without the cache when reading it fails", async () => {
 		const fake = fakeTransport();
-		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		const reported = vi.spyOn(console, "error");
 		const documents = createCloudflareDocuments({
 			loadColumnDocument: async () => {
 				throw new Error("IndexedDB unavailable");
@@ -73,9 +78,9 @@ describe("Cloudflare document adapter", () => {
 		});
 		const opened = await documents.open(COLUMN_ID, new AbortController().signal);
 		expect(opened.doc.getText("t").toString()).toBe("");
-		expect(error).toHaveBeenCalled();
+		expect(reported).toHaveBeenCalled();
+		reported.mockRestore();
 		opened.release();
-		error.mockRestore();
 	});
 
 	it("rejects without subscribing when the column unmounts while the cache loads", async () => {
@@ -89,6 +94,6 @@ describe("Cloudflare document adapter", () => {
 			transport: fake.transport,
 		});
 		await expect(documents.open(COLUMN_ID, controller.signal)).rejects.toThrow();
-		expect(fake.subscribeToColumn).not.toHaveBeenCalled();
+		expect(fake.subscribed).toEqual([]);
 	});
 });

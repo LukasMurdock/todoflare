@@ -28,7 +28,7 @@ export function deriveSyncMode(ctx: SyncModeContext): SyncMode {
 		return "guest_local";
 	}
 
-	if (ctx.authenticationRequired) return "account_auth_required";
+	if (ctx.authenticationRequired) {return "account_auth_required";}
 
 	if (!ctx.isNetworkOnline) {
 		return "account_offline";

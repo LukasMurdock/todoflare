@@ -1,7 +1,8 @@
+import type { z } from "zod";
 import type { ColumnMeta } from "../../types/account";
 import { hasColumnAccess } from "../../lib/column-access";
 import type { ApiErrorCode } from "../../lib/api/errors";
-import { type SchemaParseResult } from "../persistence-records";
+import type { SchemaParseResult } from '../persistence-records';
 import type { ColumnLifecycleFailure } from "../workflows/column-lifecycle";
 
 export function apiErrorResponse(
@@ -18,11 +19,11 @@ export function apiErrorResponse(
  */
 export async function rewriteJsonResponse(
 	response: Response,
-	transform: (body: object) => unknown,
+	transform: (body: Extract<z.core.util.JSONType, object>) => z.core.util.JSONType,
 ): Promise<Response> {
-	if (!(response.headers.get("Content-Type") ?? "").includes("application/json")) return response;
-	const body: unknown = await response.clone().json().catch(() => null);
-	if (!body || typeof body !== "object") return response;
+	if (!(response.headers.get("Content-Type") ?? "").includes("application/json")) {return response;}
+	const body = await response.clone().json<z.core.util.JSONType>().catch(() => null);
+	if (!body || typeof body !== "object") {return response;}
 	const headers = new Headers(response.headers);
 	headers.delete("Content-Length");
 	return Response.json(transform(body), { status: response.status, statusText: response.statusText, headers });
@@ -46,7 +47,7 @@ export function schemaErrorResponse(
 }
 
 export function isDurableObjectDurationError(err: unknown): boolean {
-	if (!(err instanceof Error)) return false;
+	if (!(err instanceof Error)) {return false;}
 	return err.message.includes("Exceeded allowed duration in Durable Objects free tier");
 }
 

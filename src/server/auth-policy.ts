@@ -4,7 +4,8 @@ import {
 	parseAuthenticatorData,
 } from "@simplewebauthn/server/helpers";
 import { namesAnotherAccount } from "../lib/account-request-headers";
-import { AUTH_ROUTES, type ApiRoute } from "../lib/api/routes";
+import { AUTH_ROUTES } from '../lib/api/routes';
+import type { ApiRoute } from '../lib/api/routes';
 import { passkeyUser } from "../lib/passkey-identity";
 import type { AuthErrorCode, AuthErrorEnvelope } from "../lib/api/errors";
 import { readOnlyModeResponse } from "./read-only-mode";
@@ -64,7 +65,8 @@ const endpoint = (route: ApiRoute) => `${route.method} ${route.path}`;
  * (email, social, account linking, user updates) that Todoflare does not use.
  * test/auth-policy.test.ts checks each row against better-auth's endpoints.
  */
-export const AUTH_ENDPOINTS: Readonly<Record<string, AuthEndpointPolicy>> = {
+type AuthEndpointRegistry = Readonly<Record<string, AuthEndpointPolicy>>;
+export const AUTH_ENDPOINTS = Object.freeze<AuthEndpointRegistry>({
 	"GET /get-session": { whileFrozen: true },
 	"POST /sign-out": { whileFrozen: true },
 	"POST /sign-in/anonymous": {},
@@ -77,10 +79,11 @@ export const AUTH_ENDPOINTS: Readonly<Record<string, AuthEndpointPolicy>> = {
 	"POST /passkey/delete-passkey": { recentSignIn: "always", expectedAccount: true, keepsRecoveryMethod: true },
 	[endpoint(AUTH_ROUTES.generateRecoveryCode)]: { recentSignIn: "always", expectedAccount: true },
 	[endpoint(AUTH_ROUTES.recoverAccount)]: {},
-};
+});
 
 export function authEndpointPolicy(method: string, path: string): AuthEndpointPolicy | undefined {
-	return Object.hasOwn(AUTH_ENDPOINTS, `${method} ${path}`) ? AUTH_ENDPOINTS[`${method} ${path}`] : undefined;
+	const key = `${method} ${path}`;
+	return Object.hasOwn(AUTH_ENDPOINTS, key) ? AUTH_ENDPOINTS[key] : undefined;
 }
 
 /** What each refusal means to the client; one entry per AUTH_ERROR_CODES. */
@@ -142,14 +145,17 @@ export function isRecentSession(createdAt: Date | string | number, now = Date.no
 }
 
 function authenticatorData(ceremony: "registration" | "authentication", body: unknown): Uint8Array<ArrayBuffer> | null {
-	const response = (body as { response?: { response?: Record<string, unknown> } } | null)?.response?.response;
-	if (!response) return null;
+	if (!body || typeof body !== "object" || !("response" in body)) {return null;}
+	const credential = body.response;
+	if (!credential || typeof credential !== "object" || !("response" in credential)) {return null;}
+	const response = credential.response;
+	if (!response || typeof response !== "object") {return null;}
 	if (ceremony === "authentication") {
-		const encoded = response.authenticatorData;
+		const encoded = "authenticatorData" in response && response.authenticatorData;
 		return typeof encoded === "string" ? isoBase64URL.toBuffer(encoded) : null;
 	}
-	const encoded = response.attestationObject;
-	if (typeof encoded !== "string") return null;
+	const encoded = "attestationObject" in response && response.attestationObject;
+	if (typeof encoded !== "string") {return null;}
 	const data = decodeAttestationObject(isoBase64URL.toBuffer(encoded)).get("authData");
 	return data ? new Uint8Array(data) : null;
 }
@@ -163,7 +169,7 @@ function authenticatorData(ceremony: "registration" | "authentication", body: un
 export function userVerified(ceremony: "registration" | "authentication", body: unknown): boolean {
 	try {
 		const data = authenticatorData(ceremony, body);
-		if (!data) return false;
+		if (!data) {return false;}
 		return parseAuthenticatorData(data).flags.uv === true;
 	} catch {
 		return false;
@@ -193,35 +199,35 @@ export interface AuthRequest {
  */
 export async function serveAuthEndpoint(auth: AuthRequest): Promise<Response> {
 	const policy = authEndpointPolicy(auth.request.method, auth.path);
-	if (auth.frozen && !policy?.whileFrozen) return readOnlyModeResponse();
-	if (!policy) return authError("not_found");
+	if (auth.frozen && !policy?.whileFrozen) {return readOnlyModeResponse();}
+	if (!policy) {return authError("not_found");}
 	const refused = await refusal(policy, auth);
-	if (refused) return authError(refused);
+	if (refused) {return authError(refused);}
 	const response = await auth.handle();
-	if (!policy.webauthnOptions || !response.ok) return response;
+	if (!policy.webauthnOptions || !response.ok) {return response;}
 	if (policy.webauthnOptions === "authentication") {
-		return rewriteJsonResponse(response, (options) => ({ ...options, userVerification: USER_VERIFICATION }));
+		return rewriteJsonResponse(response, (options) => Array.isArray(options) ? options : { ...options, userVerification: USER_VERIFICATION });
 	}
 	const current = await auth.session();
-	return current ? rewriteJsonResponse(response, (options) => ({ ...options, user: passkeyUser(current.user.id) })) : response;
+	return current ? rewriteJsonResponse(response, (options) => Array.isArray(options) ? options : { ...options, user: passkeyUser(current.user.id) }) : response;
 }
 
 async function refusal(policy: AuthEndpointPolicy, { request, db, session }: AuthRequest): Promise<AuthErrorCode | null> {
 	const checksRecency = policy.recentSignIn === "always" || policy.recentSignIn === "unlessUnenrolled";
 	if (policy.expectedAccount || checksRecency || policy.keepsRecoveryMethod) {
 		const current = await session();
-		if (!current) return "unauthorized";
-		if (policy.expectedAccount && namesAnotherAccount(request.headers, current.user.id)) return "account_mismatch";
+		if (!current) {return "unauthorized";}
+		if (policy.expectedAccount && namesAnotherAccount(request.headers, current.user.id)) {return "account_mismatch";}
 		if (checksRecency || policy.keepsRecoveryMethod) {
 			const inventory = await credentialInventory(db, current.user.id);
 			const exempt = policy.recentSignIn === "unlessUnenrolled" && isUnenrolled(inventory);
-			if (checksRecency && !exempt && !isRecentSession(current.session.createdAt)) return "recent_authentication_required";
-			if (policy.keepsRecoveryMethod && isLastRecoveryMethod(inventory)) return "last_recovery_method";
+			if (checksRecency && !exempt && !isRecentSession(current.session.createdAt)) {return "recent_authentication_required";}
+			if (policy.keepsRecoveryMethod && isLastRecoveryMethod(inventory)) {return "last_recovery_method";}
 		}
 	}
 	if (policy.userVerification) {
 		const body = await request.clone().json().catch(() => null);
-		if (!userVerified(policy.userVerification, body)) return "user_verification_required";
+		if (!userVerified(policy.userVerification, body)) {return "user_verification_required";}
 	}
 	return null;
 }

@@ -1,13 +1,11 @@
+import { isStoredQuarantineRecord, isRecord } from "./persistence-contract";
 import type {
 	DurableCollectionName,
 	QuarantinedRecord,
+	StoredQuarantineRecord,
 } from "./collections";
 
 export const LOCAL_STORAGE_QUARANTINE_SUFFIX = ":quarantine-v1";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return !!value && typeof value === "object" && !Array.isArray(value);
-}
 
 function persistQuarantine(
 	storageKey: string,
@@ -19,15 +17,18 @@ function persistQuarantine(
 		reason: string;
 	}>,
 ): void {
-	if (invalid.length === 0 || typeof window === "undefined") return;
+	if (invalid.length === 0 || typeof window === "undefined") {return;}
 	const quarantineKey = `${storageKey}${LOCAL_STORAGE_QUARANTINE_SUFFIX}`;
 	try {
 		const existingRaw = window.localStorage.getItem(quarantineKey);
 		const parsedExisting: unknown = existingRaw ? JSON.parse(existingRaw) : [];
-		const existing = Array.isArray(parsedExisting)
-			? (parsedExisting as QuarantinedRecord[])
-			: [];
-		const byId = new Map(existing.map((record) => [record.id, record]));
+		const existing: Array<unknown> = Array.isArray(parsedExisting) ? parsedExisting : [];
+		const byId = new Map<string, StoredQuarantineRecord>();
+		const unrecognized: Array<unknown> = [];
+		for (const record of existing) {
+			if (isStoredQuarantineRecord(record)) { byId.set(record.id, record); }
+			else { unrecognized.push(record); }
+		}
 		for (const item of invalid) {
 			const version =
 				isRecord(item.raw) && typeof item.raw.schemaVersion === "number"
@@ -49,7 +50,7 @@ function persistQuarantine(
 		}
 		window.localStorage.setItem(
 			quarantineKey,
-			JSON.stringify(Array.from(byId.values())),
+			JSON.stringify([...unrecognized, ...byId.values()]),
 		);
 		console.error(
 			`Quarantined ${invalid.length} invalid ${collection} localStorage record(s).`,
@@ -66,11 +67,11 @@ export function readVersionedLocalStorageArray<T>(params: {
 	storageKey: string;
 	collection: "mutationOutbox" | "yjsUpdateOutbox";
 	parse: (raw: unknown) => T | null;
-}): { records: T[]; writeBlocked: boolean } {
-	if (typeof window === "undefined") return { records: [], writeBlocked: false };
+}) {
+	if (typeof window === "undefined") {return { records: [], writeBlocked: false };}
 	try {
 		const rawText = window.localStorage.getItem(params.storageKey);
-		if (!rawText) return { records: [], writeBlocked: false };
+		if (!rawText) {return { records: [], writeBlocked: false };}
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(rawText);
@@ -97,7 +98,7 @@ export function readVersionedLocalStorageArray<T>(params: {
 			return { records: [], writeBlocked: false };
 		}
 
-		const records: T[] = [];
+		const records: Array<T> = [];
 		const invalid: Parameters<typeof persistQuarantine>[2] = [];
 		let writeBlocked = false;
 		parsed.forEach((raw, index) => {
@@ -125,7 +126,7 @@ export function readVersionedLocalStorageArray<T>(params: {
 				return;
 			}
 			const record = params.parse(raw);
-			if (record) records.push(record);
+			if (record) {records.push(record);}
 			else {
 				invalid.push({
 					index,
@@ -143,26 +144,19 @@ export function readVersionedLocalStorageArray<T>(params: {
 	}
 }
 
-export function readAllLocalStorageQuarantine(): QuarantinedRecord[] {
-	if (typeof window === "undefined") return [];
-	const byId = new Map<string, QuarantinedRecord>();
+export function readAllLocalStorageQuarantine(): Array<StoredQuarantineRecord> {
+	if (typeof window === "undefined") {return [];}
+	const byId = new Map<string, StoredQuarantineRecord>();
 	try {
 		for (let index = 0; index < window.localStorage.length; index += 1) {
 			const key = window.localStorage.key(index);
-			if (!key?.endsWith(LOCAL_STORAGE_QUARANTINE_SUFFIX)) continue;
+			if (!key?.endsWith(LOCAL_STORAGE_QUARANTINE_SUFFIX)) {continue;}
 			const raw = window.localStorage.getItem(key);
-			if (!raw) continue;
+			if (!raw) {continue;}
 			const parsed: unknown = JSON.parse(raw);
-			if (!Array.isArray(parsed)) continue;
+			if (!Array.isArray(parsed)) {continue;}
 			for (const value of parsed) {
-				if (
-					!isRecord(value) ||
-					value.schemaVersion !== 1 ||
-					typeof value.id !== "string"
-				) {
-					continue;
-				}
-				byId.set(value.id, value as unknown as QuarantinedRecord);
+				if (isStoredQuarantineRecord(value)) { byId.set(value.id, value); }
 			}
 		}
 	} catch (error) {

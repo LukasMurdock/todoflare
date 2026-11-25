@@ -28,7 +28,7 @@ function mutation<T extends AccountCommandType>(
 			nextRetryAt: 0,
 		}),
 		queueId: `queue:${opType}`,
-	} as QueuedMutation<T>;
+	};
 }
 
 describe("account command executor", () => {
@@ -88,7 +88,7 @@ describe("account command executor", () => {
 		const executor = createAccountCommandExecutor({
 			fetch: fetchMock,
 		});
-		const commands: QueuedMutation[] = [
+		const commands: Array<QueuedMutation> = [
 			mutation("column.create", { columnId: COLUMN_ID }),
 			mutation("column.reorder", { columnOrder: [COLUMN_ID] }),
 			mutation("column.hide_shared", { hiddenSharedColumns: [COLUMN_ID] }),
@@ -154,7 +154,7 @@ describe("account command executor", () => {
 			fetch: (async () => {
 				fetchCount += 1;
 				return Response.json({ success: true });
-			}) as typeof globalThis.fetch,
+			}),
 		});
 
 		const result = await executor.execute(
@@ -177,7 +177,7 @@ describe("account command executor", () => {
 				Response.json(
 					{ error: "Only owner can delete", code: "not_owner" },
 					{ status: 403 },
-				)) as typeof globalThis.fetch,
+				)),
 		});
 		expect(
 			await deniedExecutor.execute(
@@ -204,7 +204,7 @@ describe("account command executor", () => {
 		mutation("column.public.disable", { columnId: COLUMN_ID }),
 	])("retries a malformed 2xx response for $opType", async (command) => {
 		const executor = createAccountCommandExecutor({
-			fetch: (async () => Response.json({})) as typeof globalThis.fetch,
+			fetch: (async () => Response.json({})),
 		});
 
 		expect(await executor.execute(command)).toEqual({
@@ -253,7 +253,7 @@ describe("account command executor", () => {
 		body,
 	}) => {
 		const executor = createAccountCommandExecutor({
-			fetch: (async () => Response.json(body)) as typeof globalThis.fetch,
+			fetch: (async () => Response.json(body)),
 		});
 
 		expect(await executor.execute(command)).toMatchObject({ kind: "retry" });
@@ -262,7 +262,7 @@ describe("account command executor", () => {
 	it("keeps a command durable when a 2xx response violates its contract", async () => {
 		const storage = createMemoryMutationQueueStorage();
 		const executor = createAccountCommandExecutor({
-			fetch: (async () => Response.json({ success: "yes" })) as typeof globalThis.fetch,
+			fetch: (async () => Response.json({ success: "yes" })),
 		});
 		const queue = new LocalMutationQueueService({
 			executor: executor.execute.bind(executor),

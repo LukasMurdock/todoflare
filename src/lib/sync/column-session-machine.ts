@@ -1,10 +1,7 @@
-import { createAsyncLogic, setup, types, type ActorRefFrom } from "xstate";
-import {
-	columnSocketActor,
-	type ColumnSocketFrame,
-	type ColumnSocketInput,
-	type ColumnSocketLike,
-} from "./column-socket-actor";
+import { createAsyncLogic, setup, types } from 'xstate';
+import type { ActorRefFrom } from 'xstate';
+import { columnSocketActor } from './column-socket-actor';
+import type { ColumnSocketFrame, ColumnSocketInput, ColumnSocketLike } from './column-socket-actor';
 import type {
 	ConnectionStatus,
 	PresenceUser,
@@ -42,7 +39,7 @@ export interface ColumnSessionContext {
 	leases: ReadonlySet<string>;
 	retryAttempt: number;
 	hasConnected: boolean;
-	presence: PresenceUser[];
+	presence: Array<PresenceUser>;
 	pendingAwareness: Uint8Array | null;
 	lastClose: {
 		code: number;
@@ -86,7 +83,7 @@ export type ColumnSessionEvent =
 
 export interface ColumnSessionDependencies {
 	onAuthenticationRequired?: () => void;
-	createSocket: (url: string, protocols: string[]) => ColumnSocketLike;
+	createSocket: (url: string, protocols: Array<string>) => ColumnSocketLike | WebSocket;
 	getSocketUrl: (
 		accountId: string,
 		columnId: string,
@@ -101,7 +98,7 @@ export interface ColumnSessionDependencies {
 	loadReplayFrames: (
 		accountId: string,
 		columnId: string
-	) => ColumnSocketFrame[];
+	) => Array<ColumnSocketFrame>;
 	onBestEffortFrameWritten: (frame: ColumnSocketFrame) => void;
 	onDurableFrameAcknowledged: (
 		accountId: string,
@@ -127,7 +124,7 @@ function withLease(leases: ReadonlySet<string>, leaseId: string) {
 }
 
 function withoutLease(leases: ReadonlySet<string>, leaseId: string) {
-	if (!leases.has(leaseId)) return leases;
+	if (!leases.has(leaseId)) {return leases;}
 	const next = new Set(leases);
 	next.delete(leaseId);
 	return next;
@@ -300,7 +297,7 @@ export function createColumnSessionMachine(
 			event: ColumnSessionEvent;
 			children: { columnSocket?: ActorRefFrom<typeof columnSocketActor> };
 		}) => {
-			if (event.type !== "SEND_SYNC") return;
+			if (event.type !== "SEND_SYNC") {return;}
 			const socket = children.columnSocket;
 			persistAndMaybeSend(
 				context,
@@ -320,7 +317,7 @@ export function createColumnSessionMachine(
 			event: ColumnSessionEvent;
 			children: { columnSocket?: ActorRefFrom<typeof columnSocketActor> };
 		}) => {
-			if (event.type !== "SEND_AWARENESS") return;
+			if (event.type !== "SEND_AWARENESS") {return;}
 			const socket = children.columnSocket;
 			persistAndMaybeSend(
 				context,
@@ -400,24 +397,24 @@ export function createColumnSessionMachine(
 		delays: {
 			retryDelay: ({ context }) =>
 				Math.min(
-					1_000 * 2 ** Math.max(0, context.retryAttempt - 1),
+					1000 * 2 ** Math.max(0, context.retryAttempt - 1),
 					30_000
 				),
 		},
 		guards: {
-			isLastLease: ({ context, event }) =>
+			isLastLease: ({ context, event }: { context: ColumnSessionContext; event: ColumnSessionEvent }) =>
 				event.type === "UNSUBSCRIBE" &&
 				context.leases.has(event.leaseId) &&
 				context.leases.size === 1,
-			canConnect: ({ context }) =>
+			canConnect: ({ context }: { context: ColumnSessionContext }) =>
 				context.networkOnline &&
 				context.realtimeEnabled &&
 				context.leases.size > 0,
-			canConnectAfterSubscribe: ({ context }) =>
+			canConnectAfterSubscribe: ({ context }: { context: ColumnSessionContext }) =>
 				context.networkOnline && context.realtimeEnabled,
-			canConnectAfterOnline: ({ context }) =>
+			canConnectAfterOnline: ({ context }: { context: ColumnSessionContext }) =>
 				context.realtimeEnabled && context.leases.size > 0,
-			canConnectAfterEnabled: ({ context }) =>
+			canConnectAfterEnabled: ({ context }: { context: ColumnSessionContext }) =>
 				context.networkOnline && context.leases.size > 0,
 		},
 	}).createMachine({
@@ -630,7 +627,7 @@ export function createColumnSessionMachine(
 				id: "columnSession.reconnectDelay",
 				after: {
 					retryDelay: (args) => {
-						if (!args.guards.canConnect(args)) return;
+						if (!args.guards.canConnect(args)) {return;}
 						return { target: "active" };
 					},
 				},
@@ -729,7 +726,7 @@ export function columnSessionConnectionStatus(snapshot: {
 	matches(value: unknown): boolean;
 }): ConnectionStatus {
 	if (snapshot.matches({ active: { transport: "connected" } }))
-		return "connected";
+		{return "connected";}
 	if (
 		snapshot.matches({ active: "authorizing" }) ||
 		snapshot.matches({ active: { transport: "connecting" } }) ||

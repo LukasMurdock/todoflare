@@ -1,7 +1,7 @@
-import { type Context } from "hono";
+import type { Context } from 'hono';
 import { z } from "zod";
 import { normalizeAccountId, validateAccountId } from "../../lib/account";
-import { type Bindings } from "../bindings";
+import type { Bindings } from '../bindings';
 import { serverContractInvalidResponse } from "./responses";
 
 export const IDEMPOTENCY_HEADER = "X-Idempotency-Key";
@@ -15,7 +15,7 @@ export const IDEMPOTENCY_PENDING_WAIT_MS = 1500;
 export const IDEMPOTENCY_PENDING_POLL_MS = 50;
 
 export function parseIdempotencyKey(value: string | null | undefined): string | null {
-	if (!value) return null;
+	if (!value) {return null;}
 	const parsed = z
 		.string()
 		.trim()
@@ -105,13 +105,13 @@ export async function waitForPendingIdempotentCompletion(
 	while (Date.now() < deadline) {
 		await wait(IDEMPOTENCY_PENDING_POLL_MS);
 		const outcome = await beginIdempotentRequest(stub, fingerprint, rerunnable);
-		if (outcome.kind === "conflict") return idempotencyKeyConflictResponse();
+		if (outcome.kind === "conflict") {return idempotencyKeyConflictResponse();}
 		if (outcome.kind === "completed") {
 			return toIdempotentReplayResponse(outcome.status, outcome.body);
 		}
-		if (outcome.kind === "indeterminate") return idempotencyOutcomeUnknownResponse();
+		if (outcome.kind === "indeterminate") {return idempotencyOutcomeUnknownResponse();}
 		if (outcome.kind === "acquired") {
-			if (rerunnable) return outcome;
+			if (rerunnable) {return outcome;}
 			throw new Error("Idempotency coordinator unexpectedly released an active claim");
 		}
 	}
@@ -142,14 +142,14 @@ export async function beginIdempotentRequest(
 			}),
 		}),
 	);
-	if (!response.ok) throw new Error(`Idempotency coordinator failed: ${response.status}`);
-	return (await response.json()) as IdempotencyBeginOutcome;
+	if (!response.ok) {throw new Error(`Idempotency coordinator failed: ${response.status}`);}
+	return await response.json<IdempotencyBeginOutcome>();
 }
 
 export async function finishIdempotentRequest(
 	stub: DurableObjectStub,
 	path: "complete" | "indeterminate",
-	payload: Record<string, unknown>,
+	payload: { ownerToken: string; body?: unknown; status?: number },
 ): Promise<void> {
 	const response = await stub.fetch(
 		new Request(`http://idempotency/${path}`, {
@@ -162,8 +162,8 @@ export async function finishIdempotentRequest(
 		}),
 	);
 	// 409: a rerunnable retry took this claim over; its result is the recorded one.
-	if (response.status === 409) return;
-	if (!response.ok) throw new Error(`Idempotency coordinator failed: ${response.status}`);
+	if (response.status === 409) {return;}
+	if (!response.ok) {throw new Error(`Idempotency coordinator failed: ${response.status}`);}
 }
 
 export async function idempotencyRequestFingerprint(
@@ -201,7 +201,7 @@ export async function validateSuccessfulWriteResponse(
 	response: Response,
 	schema?: z.ZodType,
 ): Promise<Response> {
-	if (!response.ok || !schema) return response;
+	if (!response.ok || !schema) {return response;}
 	const body = await response
 		.clone()
 		.json()
@@ -245,14 +245,14 @@ export async function withIdempotentWrite(
 		console.error("Idempotency coordinator unavailable", error);
 		return idempotencyCoordinatorUnavailableResponse();
 	}
-	if (outcome.kind === "conflict") return idempotencyKeyConflictResponse();
+	if (outcome.kind === "conflict") {return idempotencyKeyConflictResponse();}
 	if (outcome.kind === "completed") {
 		return validateSuccessfulWriteResponse(
 			toIdempotentReplayResponse(outcome.status, outcome.body),
 			options.successSchema,
 		);
 	}
-	if (outcome.kind === "indeterminate") return idempotencyOutcomeUnknownResponse();
+	if (outcome.kind === "indeterminate") {return idempotencyOutcomeUnknownResponse();}
 	if (outcome.kind === "pending") {
 		let waited: Awaited<ReturnType<typeof waitForPendingIdempotentCompletion>>;
 		try {
@@ -261,7 +261,7 @@ export async function withIdempotentWrite(
 			console.error("Idempotency coordinator unavailable while waiting", error);
 			return idempotencyCoordinatorUnavailableResponse();
 		}
-		if (waited === null || waited instanceof Response) {
+		if (waited === null || !("kind" in waited)) {
 			return validateSuccessfulWriteResponse(
 				waited ?? idempotencyRequestInProgressResponse(),
 				options.successSchema,
@@ -277,7 +277,7 @@ export async function withIdempotentWrite(
 			options.successSchema,
 		);
 		const body = await response.clone().json().catch(() => undefined);
-		if (response.status < 500 && typeof body !== "undefined") {
+		if (response.status < 500 && body !== undefined) {
 			await finishIdempotentRequest(stub, "complete", {
 				ownerToken,
 				status: response.status,
@@ -290,20 +290,20 @@ export async function withIdempotentWrite(
 		}
 
 		return response;
-	} catch (err) {
+	} catch (error) {
 		await finishIdempotentRequest(stub, "indeterminate", {
 			ownerToken,
-		}).catch((markError) => {
+		}).catch((markError: unknown) => {
 			console.error("Failed to mark idempotency outcome indeterminate", markError);
 		});
-		throw err;
+		throw error;
 	}
 }
 
 export function toHex(bytes: ArrayBuffer): string {
 	const view = new Uint8Array(bytes);
 	let out = "";
-	for (const b of view) out += b.toString(16).padStart(2, "0");
+	for (const b of view) {out += b.toString(16).padStart(2, "0");}
 	return out;
 }
 

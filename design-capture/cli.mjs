@@ -24,15 +24,16 @@ import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { chromium, request as pwRequest } from "@playwright/test";
 import { buildContactSheets, computeHillClimbDiffs, convertWebmToMp4, writeReviewFeedHtml, writeRunsIndexHtml } from "./feed-builder.mjs";
 import { attachDiagnostics, collectLayoutDiagnostics, createCaptureContext, parseViewport } from "./helpers.mjs";
 import { SCENARIOS } from "./scenarios.mjs";
 import { loadSpecScenarios } from "./spec-runner.mjs";
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const ROOT = path.resolve(import.meta.dirname, "..");
 const DEFAULT_OUT_ROOT = path.join(ROOT, ".design-review");
+
+const p = (n) => String(n).padStart(2, "0");
 
 function parseArgs(argv) {
 	const out = {
@@ -54,21 +55,21 @@ function parseArgs(argv) {
 	};
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i];
-		if (a === "--run") out.run = argv[++i];
-		else if (a === "--compare") out.compare = argv[++i];
-		else if (a === "--filter") out.filter = argv[++i];
-		else if (a === "--category") out.category = argv[++i];
-		else if (a === "--themes" || a === "--theme") out.themes = argv[++i].split(",").map((s) => s.trim()).filter(Boolean);
-		else if (a === "--viewports" || a === "--viewport") out.viewports = argv[++i].split(",").map((s) => s.trim()).filter(Boolean);
-		else if (a === "--dpr") out.dpr = Number(argv[++i]);
-		else if (a === "--video") out.video = true;
-		else if (a === "--spec") out.spec = path.resolve(argv[++i]);
-		else if (a === "--list") out.list = true;
-		else if (a === "--no-build") out.noBuild = true;
-		else if (a === "--url") out.url = argv[++i];
-		else if (a === "--out") out.outRoot = path.resolve(argv[++i]);
-		else if (a === "--no-contact-sheets") out.contactSheets = false;
-		else if (a === "--full-page") out.fullPage = true;
+		if (a === "--run") {out.run = argv[++i];}
+		else if (a === "--compare") {out.compare = argv[++i];}
+		else if (a === "--filter") {out.filter = argv[++i];}
+		else if (a === "--category") {out.category = argv[++i];}
+		else if (a === "--themes" || a === "--theme") {out.themes = argv[++i].split(",").map((s) => s.trim()).filter(Boolean);}
+		else if (a === "--viewports" || a === "--viewport") {out.viewports = argv[++i].split(",").map((s) => s.trim()).filter(Boolean);}
+		else if (a === "--dpr") {out.dpr = Number(argv[++i]);}
+		else if (a === "--video") {out.video = true;}
+		else if (a === "--spec") {out.spec = path.resolve(argv[++i]);}
+		else if (a === "--list") {out.list = true;}
+		else if (a === "--no-build") {out.noBuild = true;}
+		else if (a === "--url") {out.url = argv[++i];}
+		else if (a === "--out") {out.outRoot = path.resolve(argv[++i]);}
+		else if (a === "--no-contact-sheets") {out.contactSheets = false;}
+		else if (a === "--full-page") {out.fullPage = true;}
 		else if (a === "-h" || a === "--help") {
 			printHelp();
 			process.exit(0);
@@ -77,7 +78,7 @@ function parseArgs(argv) {
 		}
 	}
 	for (const t of out.themes) {
-		if (t !== "light" && t !== "dark") throw new Error(`Invalid theme "${t}". Use light or dark.`);
+		if (t !== "light" && t !== "dark") {throw new Error(`Invalid theme "${t}". Use light or dark.`);}
 	}
 	return out;
 }
@@ -104,7 +105,7 @@ Options:
 }
 
 function matchesGlob(value, pattern) {
-	const re = new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`, "i");
+	const re = new RegExp(`^${pattern.replaceAll(/[.+^${}()|[\]\\]/g, String.raw`\$&`).replaceAll('*', ".*")}$`, "i");
 	return re.test(value);
 }
 
@@ -123,7 +124,7 @@ function selectScenarios(all, args) {
 
 function defaultRunName() {
 	const d = new Date();
-	const p = (n) => String(n).padStart(2, "0");
+
 	return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
 
@@ -152,16 +153,16 @@ function runSyncPnpm(args, env = {}) {
 	execFileSync("pnpm", args, { cwd: ROOT, stdio: "inherit", env: { ...process.env, ...env } });
 }
 
-async function waitForServer(url, timeoutMs = 60000) {
+async function waitForServer(url, timeoutMs = 60_000) {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
 		try {
 			const res = await fetch(`${url}/api/clock`);
-			if (res.ok) return;
+			if (res.ok) {return;}
 		} catch {
 			// Server still booting.
 		}
-		await new Promise((r) => setTimeout(r, 250));
+		await new Promise((r) => { setTimeout(r, 250); });
 	}
 	throw new Error(`Timed out waiting for E2E preview server at ${url}`);
 }
@@ -193,12 +194,13 @@ async function startIsolatedServer() {
 	return {
 		url,
 		async stop() {
+			if (typeof child.pid !== "number") {return;}
 			try {
 				process.kill(-child.pid, "SIGTERM");
 			} catch {
 				try { child.kill("SIGTERM"); } catch { /* already exited */ }
 			}
-			await new Promise((r) => setTimeout(r, 250));
+			await new Promise((r) => { setTimeout(r, 250); });
 			try {
 				process.kill(-child.pid, "SIGKILL");
 			} catch {
@@ -231,7 +233,7 @@ async function main() {
 	const shotsDir = path.join(runDir, "shots");
 	const videosDir = path.join(runDir, "videos");
 	fs.mkdirSync(shotsDir, { recursive: true });
-	if (args.video) fs.mkdirSync(videosDir, { recursive: true });
+	if (args.video) {fs.mkdirSync(videosDir, { recursive: true });}
 
 	if (!args.url && !args.noBuild) {
 		console.log("Building isolated E2E bundle (pass --no-build to reuse existing dist/)...");
@@ -254,7 +256,7 @@ async function main() {
 				for (const scenario of selected) {
 					const matrixTag = `${theme}_${viewport.name}`;
 					const rawVideoDir = args.video ? path.join(videosDir, "_raw") : null;
-					if (rawVideoDir) fs.mkdirSync(rawVideoDir, { recursive: true });
+					if (rawVideoDir) {fs.mkdirSync(rawVideoDir, { recursive: true });}
 
 					const context = await createCaptureContext(browser, {
 						baseURL,
@@ -341,10 +343,10 @@ async function main() {
 							});
 						}
 						console.log(`ok (${stepShots.length} shot${stepShots.length === 1 ? "" : "s"})`);
-					} catch (err) {
+					} catch (error) {
 						console.log("FAILED");
-						console.error(`    ${err.message}`);
-						failures.push({ id: scenario.id, theme, viewport: viewport.name, error: err.message });
+						console.error(`    ${error.message}`);
+						failures.push({ id: scenario.id, theme, viewport: viewport.name, error: error.message });
 					} finally {
 						const videoObj = args.video ? page.video() : null;
 						await context.close();
@@ -356,9 +358,9 @@ async function main() {
 								await convertWebmToMp4(webm, mp4Abs);
 								fs.rmSync(webm, { force: true });
 								videoFileRel = `videos/${mp4Name}`;
-								for (const s of stepShots) s.video = videoFileRel;
-							} catch (e) {
-								console.error(`    [video convert failed] ${e.message}`);
+								for (const s of stepShots) {s.video = videoFileRel;}
+							} catch (error) {
+								console.error(`    [video convert failed] ${error.message}`);
 							}
 						}
 					}
@@ -405,15 +407,17 @@ async function main() {
 		if (contactSheets.length) {
 			console.log(`  Contact sheets: ${contactSheets.map((c) => path.join(runDir, c.path)).join(", ")}`);
 		}
-		if (failures.length > 0) process.exitCode = 1;
+		if (failures.length > 0) {process.exitCode = 1;}
 	} finally {
 		await apiRequest.dispose();
 		await browser.close();
-		if (server) await server.stop();
+		if (server) {await server.stop();}
 	}
 }
 
-main().catch((err) => {
-	console.error(err);
+try {
+	await main();
+} catch (error) {
+	console.error(error);
 	process.exit(1);
-});
+}

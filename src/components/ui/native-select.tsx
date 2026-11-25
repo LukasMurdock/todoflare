@@ -1,4 +1,4 @@
-import * as React from "react"
+import type { ComponentProps } from "react"
 import { ChevronsUpDown } from "lucide-react"
 
 import { cn } from "@/lib/utils"
@@ -13,7 +13,7 @@ function NativeSelect({
   dot,
   children,
   ...props
-}: React.ComponentProps<"select"> & {
+}: ComponentProps<"select"> & {
   wrapperClassName?: string
   /** A leading status dot; its classes set the color, e.g. "bg-brand". */
   dot?: string | false

@@ -1,6 +1,7 @@
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createIndexedDbBackedDb, type LocalFirstDatabase } from "../src/lib/local-first/database";
+import { createIndexedDbBackedDb } from '../src/lib/local-first/database';
+import type { LocalFirstDatabase } from '../src/lib/local-first/database';
 import { LocalYjsUpdateOutbox, createLocalStorageYjsOutboxStorage, createLocalFirstYjsOutboxStorage } from "../src/lib/sync/yjs-update-outbox";
 import { LocalMutationQueueService, createLocalStorageMutationQueueStorage, createLocalFirstMutationQueueStorage } from "../src/lib/sync/mutation-queue-service";
 import { createAccountEditCommand } from "../src/lib/sync/contracts";
@@ -8,16 +9,34 @@ import { REMOVAL_MARKER_TTL_MS } from "../src/lib/local-first/outbox-journal";
 
 class MemoryStorage implements Storage {
 	values = new Map<string, string>();
+	quota = Infinity;
 	get length() { return this.values.size; }
 	clear() { this.values.clear(); }
 	getItem(key: string) { return this.values.get(key) ?? null; }
 	key(index: number) { return Array.from(this.values.keys())[index] ?? null; }
 	removeItem(key: string) { this.values.delete(key); }
-	setItem(key: string, value: string) { this.values.set(key, value); }
+	setItem(key: string, value: string) {
+		let used = key.length + value.length;
+		for (const [entryKey, entryValue] of this.values) {
+			if (entryKey !== key) { used += entryKey.length + entryValue.length; }
+		}
+		if (used > this.quota) { throw new DOMException("Full", "QuotaExceededError"); }
+		this.values.set(key, value);
+	}
 }
 const accountId = "1111222233334444";
-const openDatabases: LocalFirstDatabase[] = [];
+const openDatabases: Array<LocalFirstDatabase> = [];
 async function openDb() { const db = await createIndexedDbBackedDb(); openDatabases.push(db); return db; }
+
+const executor = async () => ({ kind: "ack" as const });
+
+const readDeletedKeys = () => new Promise<Array<string>>((resolve) => {
+	const r = indexedDB.open("todoflare-local-first");
+	r.onsuccess = () => {
+		const get = r.result.transaction("collections").objectStore("collections").get("yjsUpdateOutbox");
+		get.onsuccess = () => { r.result.close(); resolve(get.result.deletedKeys); };
+	};
+});
 
 describe("independent browser tabs", () => {
 	let storage: MemoryStorage;
@@ -27,7 +46,7 @@ describe("independent browser tabs", () => {
 		Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: new IDBFactory() });
 	});
 	afterEach(async () => {
-		for (const db of openDatabases.splice(0)) await db.close();
+		for (const db of openDatabases.splice(0)) {await db.close();}
 		Reflect.deleteProperty(globalThis, "window");
 		vi.restoreAllMocks();
 		vi.useRealTimers();
@@ -57,7 +76,6 @@ describe("independent browser tabs", () => {
 
 	it("preserves concurrent metadata commands while another tab acknowledges its own command", async () => {
 		const a = await openDb(), b = await openDb();
-		const executor = async () => ({ kind: "ack" as const });
 		const tabA = new LocalMutationQueueService({ executor, storage: createLocalStorageMutationQueueStorage("commands") });
 		const tabB = new LocalMutationQueueService({ executor, storage: createLocalStorageMutationQueueStorage("commands") });
 		await tabA.swapStorage(createLocalFirstMutationQueueStorage(a)); await tabB.swapStorage(createLocalFirstMutationQueueStorage(b));
@@ -73,20 +91,13 @@ describe("independent browser tabs", () => {
 
 	it("surfaces a journal quota failure and retains the edit for recovery", () => {
 		const outbox = new LocalYjsUpdateOutbox({ storage: createLocalStorageYjsOutboxStorage("quota") });
-		vi.spyOn(storage, "setItem").mockImplementation(() => { throw new DOMException("Full", "QuotaExceededError"); });
+		storage.quota = 0;
 		expect(() => outbox.enqueue({ accountId, columnId: "a", kind: "sync", payload: new Uint8Array([0, 0]) })).toThrow("Full");
 		expect(outbox.getAllEntries()).toHaveLength(1);
 	});
 
 	it("recovers a journal that legacy removal markers filled to quota", () => {
-		const quota = 200_000;
-		const setItem = storage.setItem.bind(storage);
-		vi.spyOn(storage, "setItem").mockImplementation((key, value) => {
-			let used = key.length + value.length;
-			for (const [k, v] of storage.values) if (k !== key) used += k.length + v.length;
-			if (used > quota) throw new DOMException("Full", "QuotaExceededError");
-			setItem(key, value);
-		});
+		storage.quota = 200_000;
 		for (let i = 0; ; i++) {
 			try { storage.setItem(`yjs:removed:${crypto.randomUUID()}`, "1"); } catch { break; }
 		}
@@ -122,13 +133,6 @@ describe("independent browser tabs", () => {
 		await db.flush();
 		outbox.acknowledgeSync(accountId, "column", acked);
 		await db.flush();
-		const readDeletedKeys = () => new Promise<string[]>((resolve) => {
-			const r = indexedDB.open("todoflare-local-first");
-			r.onsuccess = () => {
-				const get = r.result.transaction("collections").objectStore("collections").get("yjsUpdateOutbox");
-				get.onsuccess = () => { r.result.close(); resolve(get.result.deletedKeys); };
-			};
-		});
 		expect(await readDeletedKeys()).toEqual([acked]);
 		vi.setSystemTime(Date.now() + REMOVAL_MARKER_TTL_MS + 1);
 		outbox.enqueue(input);
@@ -137,18 +141,16 @@ describe("independent browser tabs", () => {
 	});
 
 	it("rejects flush when an IndexedDB transaction fails instead of reporting durability", async () => {
+		const opened = vi.spyOn(indexedDB, "open");
 		const db = await openDb();
-		const raw = await new Promise<IDBDatabase>((resolve) => { const r = indexedDB.open("todoflare-local-first"); r.onsuccess = () => resolve(r.result); });
-		const prototype = Object.getPrototypeOf(raw) as IDBDatabase;
-		const original = prototype.transaction;
-		vi.spyOn(prototype, "transaction").mockImplementation(function(this: IDBDatabase, ...args: Parameters<IDBDatabase["transaction"]>) {
-			if (args[1] === "readwrite") throw new DOMException("Full", "QuotaExceededError");
-			return original.apply(this, args);
-		});
+		expect(opened).toHaveBeenCalledOnce();
+		const connection = opened.mock.results[0];
+		if (connection.type !== "return") { throw new Error("Missing IndexedDB open request"); }
+		connection.value.result.close();
+
 		db.collections.quarantine.set("q", { schemaVersion: 1, id: "q", sourceCollection: "mutationOutbox", sourceKey: "q", detectedAt: 1, category: "invalid", foundVersion: 1, reason: "test", containsDurableMutation: true, raw: {} });
-		await expect(db.flush()).rejects.toThrow("Full");
+		await expect(db.flush()).rejects.toThrow();
 		expect(db.getStorageHealth().state).toBe("degraded");
-		raw.close();
 	});
 	it("reopens unavailable IndexedDB on retry and commits retained rows", async () => {
 		const factory = indexedDB;

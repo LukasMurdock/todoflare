@@ -1,12 +1,7 @@
 import { createActor, SimulatedClock } from "xstate";
 import { describe, expect, it } from "vitest";
-import {
-	ColumnSocketAuthorizationError,
-	ColumnSocketProvisioningError,
-	columnSessionConnectionStatus,
-	createColumnSessionMachine,
-	type ColumnSessionDependencies,
-} from "../src/lib/sync/column-session-machine";
+import { ColumnSocketAuthorizationError, ColumnSocketProvisioningError, columnSessionConnectionStatus, createColumnSessionMachine } from '../src/lib/sync/column-session-machine';
+import type { ColumnSessionDependencies } from '../src/lib/sync/column-session-machine';
 import { ColumnSessionManager } from "../src/lib/sync/column-session-manager";
 import type {
 	ColumnSocketFrame,
@@ -23,11 +18,11 @@ class FakeSocket implements ColumnSocketLike {
 		| ((event: { code?: number; reason?: string; wasClean?: boolean }) => void)
 		| null = null;
 	onerror: (() => void) | null = null;
-	readonly sent: ArrayBuffer[] = [];
+	readonly sent: Array<ArrayBuffer> = [];
 	closeCount = 0;
-	readonly log: string[];
+	readonly log: Array<string>;
 
-	constructor(log: string[]) {
+	constructor(log: Array<string>) {
 		this.log = log;
 	}
 
@@ -46,7 +41,7 @@ class FakeSocket implements ColumnSocketLike {
 	}
 
 	send(data: ArrayBuffer) {
-		if (this.readyState !== 1) throw new Error("socket is not open");
+		if (this.readyState !== 1) {throw new Error("socket is not open");}
 		this.log.push("socket.send");
 		this.sent.push(data);
 	}
@@ -59,15 +54,15 @@ class FakeSocket implements ColumnSocketLike {
 }
 
 function createHarness(options?: {
-	replayFrames?: ColumnSocketFrame[];
+	replayFrames?: Array<ColumnSocketFrame>;
 	getSocketUrl?: ColumnSessionDependencies["getSocketUrl"];
 }) {
-	const sockets: FakeSocket[] = [];
-	const persisted: string[] = [];
-	const written: ColumnSocketFrame[] = [];
-	const acknowledged: string[] = [];
+	const sockets: Array<FakeSocket> = [];
+	const persisted: Array<string> = [];
+	const written: Array<ColumnSocketFrame> = [];
+	const acknowledged: Array<string> = [];
 	const pending = new Map<string, Uint8Array>();
-	const log: string[] = [];
+	const log: Array<string> = [];
 	let cleanupResolve: (() => void) | null = null;
 	const cleanup = new Promise<void>((resolve) => {
 		cleanupResolve = resolve;
@@ -149,7 +144,7 @@ describe("column session machine", () => {
 		let authRequests = 0;
 		const harness = createHarness({ getSocketUrl: async () => {
 			authRequests++;
-			if (!authenticated) throw new ColumnSocketAuthorizationError(401);
+			if (!authenticated) {throw new ColumnSocketAuthorizationError(401);}
 			return "ws://test/column";
 		} });
 		harness.actor.send({ type: "SUBSCRIBE", leaseId: "editor" });
@@ -183,12 +178,12 @@ describe("column session machine", () => {
 			"connecting",
 		);
 
-		harness.sockets[0]!.open();
+		harness.sockets[0].open();
 
 		expect(columnSessionConnectionStatus(harness.actor.getSnapshot())).toBe(
 			"connected",
 		);
-		expect(harness.sockets[0]!.sent.map((frame) => [...new Uint8Array(frame)])).toEqual([
+		expect(harness.sockets[0].sent.map((frame) => [...new Uint8Array(frame)])).toEqual([
 			[1],
 			[2],
 		]);
@@ -199,13 +194,13 @@ describe("column session machine", () => {
 		const harness = createHarness();
 		harness.actor.send({ type: "SUBSCRIBE", leaseId: "editor" });
 		await flushSocketAuthorization();
-		harness.sockets[0]!.open();
+		harness.sockets[0].open();
 
 		harness.actor.send({ type: "SEND_SYNC", update: new Uint8Array([7]) });
 
 		expect(harness.log.slice(-2)).toEqual(["outbox.persist", "socket.send"]);
 		expect(harness.persisted).toHaveLength(1);
-		expect(harness.pending.has(harness.persisted[0]!)).toBe(true);
+		expect(harness.pending.has(harness.persisted[0])).toBe(true);
 		expect(harness.written).toEqual([]);
 	});
 
@@ -213,23 +208,23 @@ describe("column session machine", () => {
 		const harness = createHarness();
 		harness.actor.send({ type: "SUBSCRIBE", leaseId: "editor" });
 		await flushSocketAuthorization();
-		harness.sockets[0]!.open();
+		harness.sockets[0].open();
 		harness.actor.send({ type: "SEND_SYNC", update: new Uint8Array([7]) });
-		const outboxId = harness.persisted[0]!;
+		const outboxId = harness.persisted[0];
 
-		harness.sockets[0]!.serverClose();
+		harness.sockets[0].serverClose();
 		expect(harness.pending.has(outboxId)).toBe(true);
 
-		harness.clock.increment(1_000);
+		harness.clock.increment(1000);
 		await flushSocketAuthorization();
 		expect(harness.sockets).toHaveLength(2);
-		harness.sockets[1]!.open();
+		harness.sockets[1].open();
 		expect(
-			harness.sockets[1]!.sent.map((frame) => [...new Uint8Array(frame)]),
+			harness.sockets[1].sent.map((frame) => [...new Uint8Array(frame)]),
 		).toEqual([[7]]);
 		expect(harness.pending.has(outboxId)).toBe(true);
 
-		harness.sockets[1]!.serverMessage(encodeDurableSyncAck(outboxId));
+		harness.sockets[1].serverMessage(encodeDurableSyncAck(outboxId));
 		await Promise.resolve();
 		await Promise.resolve();
 
@@ -255,7 +250,7 @@ describe("column session machine", () => {
 		const harness = createHarness();
 		harness.actor.send({ type: "SUBSCRIBE", leaseId: "editor" });
 		await flushSocketAuthorization();
-		harness.sockets[0]!.serverClose();
+		harness.sockets[0].serverClose();
 		expect(harness.actor.getSnapshot().matches("reconnectDelay")).toBe(true);
 
 		harness.actor.send({ type: "UNSUBSCRIBE", leaseId: "editor" });
@@ -269,7 +264,7 @@ describe("column session machine", () => {
 		const harness = createHarness();
 		harness.actor.send({ type: "SUBSCRIBE", leaseId: "editor" });
 		await flushSocketAuthorization();
-		const staleClose = harness.sockets[0]!.onclose;
+		const staleClose = harness.sockets[0].onclose;
 		harness.actor.send({ type: "UNSUBSCRIBE", leaseId: "editor" });
 
 		staleClose?.({ code: 1006, reason: "stale", wasClean: false });
@@ -282,7 +277,7 @@ describe("column session machine", () => {
 		const harness = createHarness();
 		harness.actor.send({ type: "SUBSCRIBE", leaseId: "editor" });
 		await flushSocketAuthorization();
-		harness.sockets[0]!.serverClose();
+		harness.sockets[0].serverClose();
 		expect(harness.actor.getSnapshot().context.retryAttempt).toBe(1);
 
 		harness.actor.send({ type: "NETWORK_OFFLINE" });
@@ -317,14 +312,14 @@ describe("column session machine", () => {
 		harness.actor.send({ type: "SEND_SYNC", update: new Uint8Array([7]) });
 		expect(harness.persisted).toHaveLength(1);
 
-		harness.clock.increment(1_000);
+		harness.clock.increment(1000);
 		await flushSocketAuthorization();
 		expect(authorizationAttempts).toBe(2);
 		expect(harness.sockets).toHaveLength(1);
 
-		harness.sockets[0]!.open();
+		harness.sockets[0].open();
 		expect(
-			harness.sockets[0]!.sent.map((frame) => [...new Uint8Array(frame)]),
+			harness.sockets[0].sent.map((frame) => [...new Uint8Array(frame)]),
 		).toEqual([[7]]);
 		expect(harness.pending.size).toBe(1);
 		expect(harness.log).not.toContain("cleanup.start");
@@ -356,7 +351,7 @@ describe("column session machine", () => {
 		const harness = createHarness();
 		harness.actor.send({ type: "SUBSCRIBE", leaseId: "editor" });
 		await flushSocketAuthorization();
-		harness.sockets[0]!.open();
+		harness.sockets[0].open();
 
 		harness.actor.send({ type: "ACCESS_REVOKED" });
 
@@ -378,7 +373,7 @@ describe("column session machine", () => {
 
 describe("column session manager", () => {
 	it("returns an idempotent lease cleanup closure", async () => {
-		const sockets: FakeSocket[] = [];
+		const sockets: Array<FakeSocket> = [];
 		const manager = new ColumnSessionManager({
 			accountId: "account",
 			networkOnline: true,

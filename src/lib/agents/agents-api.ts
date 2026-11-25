@@ -1,14 +1,8 @@
 import { z } from "zod";
-import {
-	agentResponseSchema,
-	createAgentResponseSchema,
-	grantableColumnsResponseSchema,
-	listAgentChangesResponseSchema,
-	listAgentsResponseSchema,
-	undoAgentChangeResponseSchema,
-	type AgentGrantLevel,
-} from "../api/agent-contract";
-import { API_ROUTES, routePath, type ApiRoute } from "../api/routes";
+import { agentResponseSchema, createAgentResponseSchema, grantableColumnsResponseSchema, listAgentChangesResponseSchema, listAgentsResponseSchema, undoAgentChangeResponseSchema } from '../api/agent-contract';
+import type { AgentGrantLevel } from '../api/agent-contract';
+import { API_ROUTES, routePath } from '../api/routes';
+import type { ApiRoute } from '../api/routes';
 import { accountRequestHeaders } from "../account-request-headers";
 import { isRecentAuthenticationRequired, RecentAuthenticationRequiredError } from "../auth-client";
 
@@ -28,23 +22,22 @@ async function request<T extends z.ZodType>(
 	schema: T,
 	body?: unknown,
 ): Promise<z.output<T>> {
+	const headers = new Headers(accountId ? accountRequestHeaders(accountId) : undefined);
+	if (body !== undefined) { headers.set("Content-Type", "application/json"); }
 	const response = await fetch(path, {
 		method: route.method,
 		credentials: "same-origin",
-		headers: {
-			...(accountId ? accountRequestHeaders(accountId) : {}),
-			...(body === undefined ? {} : { "Content-Type": "application/json" }),
-		},
+		headers,
 		body: body === undefined ? undefined : JSON.stringify(body),
 	});
-	const json = (await response.json().catch(() => null)) as { error?: string; display?: string; message?: string; code?: string } | null;
-	if (response.status === 404 && json?.code === "not_found" && route === API_ROUTES.listAgents) throw new AgentAccessDisabledError();
+	const json = await response.json<{ error?: string; display?: string; message?: string; code?: string }>().catch(() => null);
+	if (response.status === 404 && json?.code === "not_found" && route === API_ROUTES.listAgents) {throw new AgentAccessDisabledError();}
 	if (!response.ok && isRecentAuthenticationRequired(json)) {
 		throw new RecentAuthenticationRequiredError(agentErrorMessage(response.status, json));
 	}
-	if (!response.ok) throw new AgentApiError(agentErrorMessage(response.status, json));
+	if (!response.ok) {throw new AgentApiError(agentErrorMessage(response.status, json));}
 	const parsed = schema.safeParse(json);
-	if (!parsed.success) throw new AgentApiError("Unexpected response from the server");
+	if (!parsed.success) {throw new AgentApiError("Unexpected response from the server");}
 	return parsed.data;
 }
 
@@ -71,7 +64,10 @@ export const agentsApi = {
 	changes: (accountId: string, columnId: string) =>
 		request(accountId, API_ROUTES.listAgentChanges, routePath(API_ROUTES.listAgentChanges.path, { id: columnId }), listAgentChangesResponseSchema).then((r) => r.changes),
 	/** The person's answer on the OAuth consent page; approving needs a recent sign-in. */
-	decideAuthorization: (accountId: string, decision: Record<string, unknown>) =>
+	decideAuthorization: (accountId: string, decision: { params: Record<string, string> } & (
+		{ decision: "deny" } |
+		{ decision: "approve"; name: string; expiresInDays: number; grants: Array<{ columnId: string; level: AgentGrantLevel }> }
+	)) =>
 		request(accountId, API_ROUTES.decideAuthorization, API_ROUTES.decideAuthorization.path, decisionResponseSchema, decision).then((r) => r.redirectTo),
 	undo: (accountId: string, columnId: string, changeId: string) =>
 		request(accountId, API_ROUTES.undoAgentChange, routePath(API_ROUTES.undoAgentChange.path, { id: columnId, changeId }), undoAgentChangeResponseSchema),

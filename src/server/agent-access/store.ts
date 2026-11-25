@@ -1,10 +1,5 @@
-import {
-	AGENT_CONNECTIONS_PER_ACCOUNT,
-	AGENT_GRANTS_PER_CONNECTION,
-	type AgentConnection,
-	type AgentGrant,
-	type AgentGrantLevel,
-} from "../../lib/api/agent-contract";
+import { AGENT_CONNECTIONS_PER_ACCOUNT, AGENT_GRANTS_PER_CONNECTION } from '../../lib/api/agent-contract';
+import type { AgentConnection, AgentGrant, AgentGrantLevel } from '../../lib/api/agent-contract';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const TOKEN_PREFIX = "tfa_";
@@ -17,8 +12,8 @@ const REFRESH_TOKEN_TTL_MS = 30 * DAY_MS;
 
 function base64Url(bytes: Uint8Array): string {
 	let binary = "";
-	for (const byte of bytes) binary += String.fromCharCode(byte);
-	return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+	for (const byte of bytes) {binary += String.fromCharCode(byte);}
+	return btoa(binary).replaceAll('+', "-").replaceAll('/', "_").replace(/=+$/, "");
 }
 
 function randomId(prefix: string, bytes: number): string {
@@ -69,7 +64,7 @@ function toGrant(row: GrantRow): AgentGrant {
 	};
 }
 
-function toConnection(row: ConnectionRow, grants: GrantRow[]): AgentConnection {
+function toConnection(row: ConnectionRow, grants: Array<GrantRow>): AgentConnection {
 	return {
 		id: row.id,
 		name: row.name,
@@ -87,15 +82,15 @@ export type AgentStoreResult<T> = { ok: true; value: T } | { ok: false; reason: 
 
 /** Agent connections, their bearer tokens and their column grants, in D1. */
 export function agentStore(db: D1Database) {
-	async function grantsFor(connectionIds: string[]): Promise<Map<string, GrantRow[]>> {
-		const byConnection = new Map<string, GrantRow[]>(connectionIds.map((id) => [id, []]));
-		if (connectionIds.length === 0) return byConnection;
+	async function grantsFor(connectionIds: Array<string>): Promise<Map<string, Array<GrantRow>>> {
+		const byConnection = new Map<string, Array<GrantRow>>(connectionIds.map((id) => [id, []]));
+		if (connectionIds.length === 0) {return byConnection;}
 		const placeholders = connectionIds.map(() => "?").join(", ");
 		const { results } = await db
 			.prepare(`SELECT * FROM "agent_grant" WHERE "connectionId" IN (${placeholders}) ORDER BY "createdAt", "columnId"`)
 			.bind(...connectionIds)
 			.all<GrantRow>();
-		for (const row of results) byConnection.get(row.connectionId)?.push(row);
+		for (const row of results) {byConnection.get(row.connectionId)?.push(row);}
 		return byConnection;
 	}
 
@@ -124,7 +119,7 @@ export function agentStore(db: D1Database) {
 			)
 			.bind(input.userId, input.now)
 			.first<{ count: number }>();
-		if ((active?.count ?? 0) >= AGENT_CONNECTIONS_PER_ACCOUNT) return { ok: false, reason: "limit_reached" };
+		if ((active?.count ?? 0) >= AGENT_CONNECTIONS_PER_ACCOUNT) {return { ok: false, reason: "limit_reached" };}
 		const row: ConnectionRow = {
 			id: randomId("agt_", 16),
 			userId: input.userId,
@@ -151,7 +146,7 @@ export function agentStore(db: D1Database) {
 
 	return {
 		/** Live connections only: revoked and expired ones can never be used again. */
-		async list(userId: string, now: number): Promise<AgentConnection[]> {
+		async list(userId: string, now: number): Promise<Array<AgentConnection>> {
 			const { results } = await db
 				.prepare(
 					`SELECT * FROM "agent_connection"
@@ -172,7 +167,7 @@ export function agentStore(db: D1Database) {
 			now: number;
 		}): Promise<AgentStoreResult<{ agent: AgentConnection; token: string }>> {
 			const created = await insertConnection({ ...input, clientId: null });
-			if (!created.ok) return created;
+			if (!created.ok) {return created;}
 			const token = randomId(TOKEN_PREFIX, 32);
 			await db
 				.prepare(
@@ -214,12 +209,12 @@ export function agentStore(db: D1Database) {
 		 * connection, if it is still live and was issued to this client.
 		 */
 		async redeemRefreshToken(token: string, clientId: string, now: number): Promise<{ id: string; expiresAt: number } | null> {
-			if (!REFRESH_PATTERN.test(token)) return null;
+			if (!REFRESH_PATTERN.test(token)) {return null;}
 			const consumed = await db
 				.prepare(`DELETE FROM "agent_token" WHERE "tokenHash" = ? AND "kind" = 'refresh' AND "expiresAt" > ? RETURNING "connectionId"`)
 				.bind(await agentTokenHash(token), now)
 				.first<{ connectionId: string }>();
-			if (!consumed) return null;
+			if (!consumed) {return null;}
 			const connection = await db
 				.prepare(`SELECT "id", "expiresAt" FROM "agent_connection" WHERE "id" = ? AND "clientId" = ? AND "revokedAt" IS NULL AND "expiresAt" > ?`)
 				.bind(consumed.connectionId, clientId, now)
@@ -270,7 +265,7 @@ export function agentStore(db: D1Database) {
 			now: number;
 		}): Promise<AgentStoreResult<AgentConnection>> {
 			const connection = await activeConnection(input.userId, input.connectionId, input.now);
-			if (!connection) return { ok: false, reason: "not_found" };
+			if (!connection) {return { ok: false, reason: "not_found" };}
 			const existing = await db
 				.prepare(`SELECT 1 AS present FROM "agent_grant" WHERE "connectionId" = ? AND "columnId" = ?`)
 				.bind(input.connectionId, input.columnId)
@@ -280,7 +275,7 @@ export function agentStore(db: D1Database) {
 					.prepare(`SELECT COUNT(*) AS count FROM "agent_grant" WHERE "connectionId" = ?`)
 					.bind(input.connectionId)
 					.first<{ count: number }>();
-				if ((count?.count ?? 0) >= AGENT_GRANTS_PER_CONNECTION) return { ok: false, reason: "limit_reached" };
+				if ((count?.count ?? 0) >= AGENT_GRANTS_PER_CONNECTION) {return { ok: false, reason: "limit_reached" };}
 			}
 			await db
 				.prepare(
@@ -301,7 +296,7 @@ export function agentStore(db: D1Database) {
 			now: number;
 		}): Promise<AgentStoreResult<AgentConnection>> {
 			const connection = await activeConnection(input.userId, input.connectionId, input.now);
-			if (!connection) return { ok: false, reason: "not_found" };
+			if (!connection) {return { ok: false, reason: "not_found" };}
 			await db
 				.prepare(`DELETE FROM "agent_grant" WHERE "connectionId" = ? AND "columnId" = ?`)
 				.bind(input.connectionId, input.columnId)
@@ -314,7 +309,7 @@ export function agentStore(db: D1Database) {
 		 * token is malformed, unknown, expired or its connection is unusable.
 		 */
 		async resolveToken(token: string, now: number): Promise<ResolvedAgent | null> {
-			if (!TOKEN_PATTERN.test(token)) return null;
+			if (!TOKEN_PATTERN.test(token)) {return null;}
 			return db
 				.prepare(
 					`SELECT c."id", c."userId", c."name", c."expiresAt", c."revokedAt"
@@ -334,7 +329,7 @@ export function agentStore(db: D1Database) {
 			return row ? toGrant(row) : null;
 		},
 
-		async grants(connectionId: string): Promise<AgentGrant[]> {
+		async grants(connectionId: string): Promise<Array<AgentGrant>> {
 			return ((await grantsFor([connectionId])).get(connectionId) ?? []).map(toGrant);
 		},
 

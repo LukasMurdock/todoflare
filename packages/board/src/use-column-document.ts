@@ -1,6 +1,6 @@
 "use client";
 
-import * as React from "react";
+import React from "react";
 import { Awareness } from "y-protocols/awareness";
 import type { ColumnDocument, DocumentAdapter } from "./documents";
 import { useBoardContext } from "./board-context";
@@ -9,7 +9,7 @@ import { useBoardContext } from "./board-context";
 export type OpenColumnDocument = ColumnDocument & { awareness: Awareness };
 
 function withAwareness(document: ColumnDocument): OpenColumnDocument {
-	if (document.awareness) return document as OpenColumnDocument;
+	if (document.awareness) {return { ...document, awareness: document.awareness };}
 	const awareness = new Awareness(document.doc);
 	return {
 		...document,
@@ -36,7 +36,7 @@ export function useColumnDocument(columnId: string, enabled: boolean): OpenColum
 	const [document, setDocument] = React.useState<OpenColumnDocument | null>(null);
 
 	React.useEffect(() => {
-		if (!adapter || !enabled) return;
+		if (!adapter || !enabled) {return;}
 		const controller = new AbortController();
 		let opened: OpenColumnDocument | null = null;
 		adapter.open(columnId, controller.signal).then(
@@ -49,7 +49,7 @@ export function useColumnDocument(columnId: string, enabled: boolean): OpenColum
 				setDocument(opened);
 			},
 			(error: unknown) => {
-				if (!controller.signal.aborted) reportError(error, { columnId, operation: "open-document" });
+				if (!controller.signal.aborted) {reportError(error, { columnId, operation: "open-document" });}
 			},
 		);
 		return () => {

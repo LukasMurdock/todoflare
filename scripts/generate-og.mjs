@@ -24,10 +24,9 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT = path.resolve(import.meta.dirname, '..');
 const OUT_PNG = path.join(ROOT, 'public', 'og.png');
 const OUT_MP4 = path.join(ROOT, 'public', 'og.mp4');
 const FFMPEG = process.env.FFMPEG ?? 'ffmpeg';
@@ -44,11 +43,11 @@ function parseArgs(argv) {
 	const out = { qa: null, crf: null, preview: null, bench: false };
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i];
-		if (a === '--qa') out.qa = path.resolve(argv[++i]);
-		else if (a === '--crf') out.crf = Number(argv[++i]);
-		else if (a === '--preview') out.preview = argv[++i].split(',').map(Number);
-		else if (a === '--bench') out.bench = true;
-		else throw new Error(`Unknown argument: ${a}`);
+		if (a === '--qa') {out.qa = path.resolve(argv[++i]);}
+		else if (a === '--crf') {out.crf = Number(argv[++i]);}
+		else if (a === '--preview') {out.preview = argv[++i].split(',').map(Number);}
+		else if (a === '--bench') {out.bench = true;}
+		else {throw new Error(`Unknown argument: ${a}`);}
 	}
 	return out;
 }
@@ -57,6 +56,7 @@ function parseArgs(argv) {
 // Everything below `renderer` runs inside Chromium. It must be self-contained.
 // ---------------------------------------------------------------------------
 
+/* oxlint-disable unicorn/consistent-function-scoping -- renderer is serialized as a standalone browser script. */
 function renderer() {
 	const W = 1200;
 	const H = 630;
@@ -97,14 +97,14 @@ function renderer() {
 		const bx = (u) => 3 * (1 - u) * (1 - u) * u * x1 + 3 * (1 - u) * u * u * x2 + u * u * u;
 		const by = (u) => 3 * (1 - u) * (1 - u) * u * y1 + 3 * (1 - u) * u * u * y2 + u * u * u;
 		return (x) => {
-			if (x <= 0) return 0;
-			if (x >= 1) return 1;
+			if (x <= 0) {return 0;}
+			if (x >= 1) {return 1;}
 			let lo = 0;
 			let hi = 1;
 			for (let i = 0; i < 32; i++) {
 				const m = (lo + hi) / 2;
-				if (bx(m) < x) lo = m;
-				else hi = m;
+				if (bx(m) < x) {lo = m;}
+				else {hi = m;}
 			}
 			return by((lo + hi) / 2);
 		};
@@ -122,7 +122,7 @@ function renderer() {
 	const angDeg = (v) => (Math.atan2(v.y, v.x) * 180) / Math.PI;
 
 	function hexRgb(hex) {
-		const n = parseInt(hex.slice(1), 16);
+		const n = Number.parseInt(hex.slice(1), 16);
 		return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 	}
 	function mix(a, b, t) {
@@ -134,11 +134,11 @@ function renderer() {
 	function mulberry32(seed) {
 		let a = seed >>> 0;
 		return () => {
-			a = (a + 0x6d2b79f5) >>> 0;
+			a = (a + 0x6d_2b_79_f5) >>> 0;
 			let t = a;
 			t = Math.imul(t ^ (t >>> 15), t | 1);
 			t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-			return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+			return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
 		};
 	}
 
@@ -231,8 +231,8 @@ function renderer() {
 			const w = wps[i];
 			const auto =
 				i === 0 ? norm(sub(pts[1], pts[0])) : i === n - 1 ? norm(sub(pts[n - 1], pts[n - 2])) : norm(sub(pts[i + 1], pts[i - 1]));
-			tin.push(w.ain != null ? dirDeg(w.ain) : w.a != null ? dirDeg(w.a) : auto);
-			tout.push(w.aout != null ? dirDeg(w.aout) : w.a != null ? dirDeg(w.a) : auto);
+			tin.push((w.ain !== undefined && w.ain !== null) ? dirDeg(w.ain) : (w.a !== undefined && w.a !== null) ? dirDeg(w.a) : auto);
+			tout.push((w.aout !== undefined && w.aout !== null) ? dirDeg(w.aout) : (w.a !== undefined && w.a !== null) ? dirDeg(w.a) : auto);
 		}
 		const xs = [pts[0].x];
 		const ys = [pts[0].y];
@@ -258,10 +258,10 @@ function renderer() {
 			wpIndex.push(xs.length - 1);
 		}
 		const s = new Float64Array(xs.length);
-		for (let i = 1; i < xs.length; i++) s[i] = s[i - 1] + Math.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1]);
+		for (let i = 1; i < xs.length; i++) {s[i] = s[i - 1] + Math.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1]);}
 		const ids = {};
 		wps.forEach((w, i) => {
-			if (w.id) ids[w.id] = s[wpIndex[i]];
+			if (w.id) {ids[w.id] = s[wpIndex[i]];}
 		});
 		return { xs, ys, s, n: xs.length, wpS: wpIndex.map((i) => s[i]), ids, total: s[xs.length - 1] };
 	}
@@ -270,8 +270,8 @@ function renderer() {
 		let hi = path.n - 1;
 		while (hi - lo > 1) {
 			const m = (lo + hi) >> 1;
-			if (path.s[m] <= sv) lo = m;
-			else hi = m;
+			if (path.s[m] <= sv) {lo = m;}
+			else {hi = m;}
 		}
 		return lo;
 	}
@@ -287,7 +287,7 @@ function renderer() {
 	function findS(path, s0, s1, pred) {
 		const i0 = idxAt(path, s0);
 		const i1 = idxAt(path, s1);
-		for (let i = i0; i <= i1; i++) if (pred(path.xs[i], path.ys[i])) return path.s[i];
+		for (let i = i0; i <= i1; i++) {if (pred(path.xs[i], path.ys[i])) {return path.s[i];}}
 		return s1;
 	}
 	function sAtX(path, s0, s1, x) {
@@ -296,8 +296,8 @@ function renderer() {
 		let hi = s1;
 		for (let i = 0; i < 40; i++) {
 			const m = (lo + hi) / 2;
-			if ((pointAt(path, m).x - x) * dir < 0) lo = m;
-			else hi = m;
+			if ((pointAt(path, m).x - x) * dir < 0) {lo = m;}
+			else {hi = m;}
 		}
 		return (lo + hi) / 2;
 	}
@@ -308,13 +308,13 @@ function renderer() {
 		const T = keys.map((k) => k.t);
 		const S = keys.map((k) => k.s);
 		const d = [];
-		for (let i = 0; i < n - 1; i++) d.push((S[i + 1] - S[i]) / (T[i + 1] - T[i]));
+		for (let i = 0; i < n - 1; i++) {d.push((S[i + 1] - S[i]) / (T[i + 1] - T[i]));}
 		const m = keys.map((k, i) => {
-			if (k.v != null) return k.v;
-			if (k.stop || i === 0 || i === n - 1) return 0;
+			if ((k.v !== undefined && k.v !== null)) {return k.v;}
+			if (k.stop || i === 0 || i === n - 1) {return 0;}
 			const d0 = d[i - 1];
 			const d1 = d[i];
-			if (d0 <= 0 || d1 <= 0) return 0;
+			if (d0 <= 0 || d1 <= 0) {return 0;}
 			const h0 = T[i] - T[i - 1];
 			const h1 = T[i + 1] - T[i];
 			const w1 = 2 * h1 + h0;
@@ -322,10 +322,10 @@ function renderer() {
 			return (w1 + w2) / (w1 / d0 + w2 / d1);
 		});
 		const fn = (t) => {
-			if (t <= T[0]) return S[0];
-			if (t >= T[n - 1]) return S[n - 1];
+			if (t <= T[0]) {return S[0];}
+			if (t >= T[n - 1]) {return S[n - 1];}
 			let i = 0;
-			while (t > T[i + 1]) i++;
+			while (t > T[i + 1]) {i++;}
 			const h = T[i + 1] - T[i];
 			const u = (t - T[i]) / h;
 			const u2 = u * u;
@@ -341,8 +341,8 @@ function renderer() {
 		let hi = t1;
 		for (let i = 0; i < 48; i++) {
 			const m = (lo + hi) / 2;
-			if (fn(m) < target) lo = m;
-			else hi = m;
+			if (fn(m) < target) {lo = m;}
+			else {hi = m;}
 		}
 		return (lo + hi) / 2;
 	}
@@ -524,7 +524,7 @@ function renderer() {
 			kernTo,
 			privateW,
 			crossings: G.crossings.map((c) => [Math.round(c.x), Math.round(c.y), c.upper]),
-			checks: rows.filter((r) => r.who).map((r) => [r.label, +r.checkT.toFixed(3), +r.collapseT.toFixed(3)]),
+			checks: rows.values().filter((r) => r.who).map((r) => [r.label, +r.checkT.toFixed(3), +r.collapseT.toFixed(3)]).toArray(),
 			exits: [+you.tExit.toFixed(3), +agent.tExit.toFixed(3)],
 			lengths: [Math.round(you.path.total), Math.round(agent.path.total)],
 		};
@@ -538,7 +538,7 @@ function renderer() {
 			const s = path.wpS[i + 1];
 			keys.push({ t, s, stop: i === 0 || i === times.length - 1 });
 			if (opt.hold && wps[i + 1].id === opt.hold.id) {
-				keys[keys.length - 1].stop = true;
+				keys.at(-1).stop = true;
 				keys.push({ t: opt.hold.until, s, stop: true });
 			}
 		});
@@ -546,11 +546,11 @@ function renderer() {
 		const recoil = opt.recoil
 			? { t0: opt.recoil.apexT, t1: opt.recoil.endT, sApex: path.ids.apex, sBack: path.ids[opt.recoil.backId] }
 			: null;
-		const sEnd = recoil ? recoil.sBack : path.wpS[path.wpS.length - 1];
+		const sEnd = recoil ? recoil.sBack : path.wpS.at(-1);
 
 		const headBoard = (t) => {
 			if (recoil && t > recoil.t0) {
-				if (t >= recoil.t1) return recoil.sBack;
+				if (t >= recoil.t1) {return recoil.sBack;}
 				// Reverse-retract smoothly along its own horizontal track.
 				const u = (t - recoil.t0) / (recoil.t1 - recoil.t0);
 				return lerp(recoil.sApex, recoil.sBack, eOut(u));
@@ -577,8 +577,8 @@ function renderer() {
 			strikes: [],
 			width: null,
 			head(t) {
-				if (t <= T_UN) return L;
-				if (t < T_RB) return headBoard(t);
+				if (t <= T_UN) {return L;}
+				if (t < T_RB) {return headBoard(t);}
 				if (t < T_SNAP) {
 					const u = (t - T_RB) / (T_SNAP - T_RB);
 					return L + (sEnd - L) * (1 - u ** 2.4);
@@ -586,8 +586,8 @@ function renderer() {
 				return L;
 			},
 			tail(t) {
-				if (t <= T_UN) return 0;
-				if (t < T_RB) return anchor * eInOut(seg(t, T_UN, T_UN + 0.25));
+				if (t <= T_UN) {return 0;}
+				if (t < T_RB) {return anchor * eInOut(seg(t, T_UN, T_UN + 0.25));}
 				if (t < T_SNAP) {
 					const u = (t - T_RB) / (T_SNAP - T_RB);
 					return anchor * (1 - seg(u, 0.72, 1) ** 2);
@@ -632,22 +632,22 @@ function renderer() {
 			const ay0 = a.ys[i];
 			const ax1 = a.xs[i + step];
 			const ay1 = a.ys[i + step];
-			if (!outside(ax0, ay0)) continue;
+			if (!outside(ax0, ay0)) {continue;}
 			for (let j = 0; j + step < b.n; j += step) {
 				const bx0 = b.xs[j];
 				const by0 = b.ys[j];
 				const bx1 = b.xs[j + step];
 				const by1 = b.ys[j + step];
-				if (Math.max(bx0, bx1) < Math.min(ax0, ax1) || Math.min(bx0, bx1) > Math.max(ax0, ax1)) continue;
-				if (Math.max(by0, by1) < Math.min(ay0, ay1) || Math.min(by0, by1) > Math.max(ay0, ay1)) continue;
+				if (Math.max(bx0, bx1) < Math.min(ax0, ax1) || Math.min(bx0, bx1) > Math.max(ax0, ax1)) {continue;}
+				if (Math.max(by0, by1) < Math.min(ay0, ay1) || Math.min(by0, by1) > Math.max(ay0, ay1)) {continue;}
 				const d = (ax1 - ax0) * (by1 - by0) - (ay1 - ay0) * (bx1 - bx0);
-				if (Math.abs(d) < 1e-9) continue;
+				if (Math.abs(d) < 1e-9) {continue;}
 				const u = ((bx0 - ax0) * (by1 - by0) - (by0 - ay0) * (bx1 - bx0)) / d;
 				const v = ((bx0 - ax0) * (ay1 - ay0) - (by0 - ay0) * (ax1 - ax0)) / d;
-				if (u < 0 || u > 1 || v < 0 || v > 1) continue;
+				if (u < 0 || u > 1 || v < 0 || v > 1) {continue;}
 				const x = ax0 + u * (ax1 - ax0);
 				const y = ay0 + u * (ay1 - ay0);
-				if (out.some((c) => Math.hypot(c.x - x, c.y - y) < 8)) continue;
+				if (out.some((c) => Math.hypot(c.x - x, c.y - y) < 8)) {continue;}
 				out.push({ x, y, sY: lerp(a.s[i], a.s[i + step], u), sA: lerp(b.s[j], b.s[j + step], v) });
 			}
 		}
@@ -663,21 +663,21 @@ function renderer() {
 	function bumpShape(y) {
 		// Smooth Gaussian bow (sigma ~48px) so the 32px divider dent reads clearly.
 		const dy = y - G.impactY;
-		if (Math.abs(dy) >= BOW_SIGMA * 3.6) return 0;
+		if (Math.abs(dy) >= BOW_SIGMA * 3.6) {return 0;}
 		return Math.exp(-0.5 * (dy / BOW_SIGMA) ** 2);
 	}
 	function stringA(t) {
-		if (t < G.tContact - 0.001) return 0;
-		if (t <= G.tApex) return Math.max(0, pointAt(G.agent.path, G.agent.head(t)).x - WALL);
+		if (t < G.tContact - 0.001) {return 0;}
+		if (t <= G.tApex) {return Math.max(0, pointAt(G.agent.path, G.agent.head(t)).x - WALL);}
 		const dt = t - G.tApex;
-		if (dt > 0.65) return 0;
+		if (dt > 0.65) {return 0;}
 		return BOW * Math.exp(-DAMP * dt) * Math.cos(OMEGA * dt);
 	}
 	const stringX = (y, A) => DIVIDER + A * bumpShape(y);
 
 	// ------------------------------------------------------------- state --
 	function wordmarkP(t) {
-		if (t < 3.5) return eMorph(seg(t, 0.42, 0.96));
+		if (t < 3.5) {return eMorph(seg(t, 0.42, 0.96));}
 		return 1 - eOutBack(seg(t, 4.08, 4.64), 1.15);
 	}
 	function state(t, tt) {
@@ -712,7 +712,7 @@ function renderer() {
 			let shift = 0;
 			for (const r of G.rows.filter((q) => q.ci === col)) {
 				const appear = eOut(seg(t, 0.64 + r.idx * 0.026, 0.88 + r.idx * 0.026));
-				const pres = r.collapseT != null ? 1 - eInOut(seg(t, r.collapseT - 0.05, r.collapseT + 0.08)) : 1;
+				const pres = (r.collapseT !== undefined && r.collapseT !== null) ? 1 - eInOut(seg(t, r.collapseT - 0.05, r.collapseT + 0.08)) : 1;
 				const fade = r.who ? 0 : smooth(seg(t, 4.02 + 0.03 * col, 4.28 + 0.03 * col));
 				const dim = t > 3.5 ? st.boardDim : 1;
 				st.rows[r.idx] = { y: r.y - shift + 10 * (1 - appear), alpha: appear * (1 - fade) * pres ** 1.5 * dim, sy: Math.max(pres, 0.001) };
@@ -725,16 +725,16 @@ function renderer() {
 	}
 	function iconScale(t) {
 		const d = t - T_SNAP;
-		if (d < 0 || d >= 0.56) return 1;
+		if (d < 0 || d >= 0.56) {return 1;}
 		// Crisp pop: 1 → 0.96 → 1.06 → 0.99 → 1 over ~16 frames, then rest.
-		if (d < 0.04) return lerp(1, 0.96, eOut(d / 0.04));
-		if (d < 0.14) return lerp(0.96, 1.06, eInOut((d - 0.04) / 0.1));
-		if (d < 0.26) return lerp(1.06, 0.99, eInOut((d - 0.14) / 0.12));
+		if (d < 0.04) {return lerp(1, 0.96, eOut(d / 0.04));}
+		if (d < 0.14) {return lerp(0.96, 1.06, eInOut((d - 0.04) / 0.1));}
+		if (d < 0.26) {return lerp(1.06, 0.99, eInOut((d - 0.14) / 0.12));}
 		return lerp(0.99, 1, eOut((d - 0.26) / 0.14));
 	}
 	function iconLift(t) {
 		const d = t - T_SNAP;
-		if (d < 0 || d >= 0.45) return 0;
+		if (d < 0 || d >= 0.45) {return 0;}
 		return Math.sin(Math.PI * clamp(d / 0.34)) * Math.exp(-d * 3.5);
 	}
 
@@ -756,7 +756,7 @@ function renderer() {
 		// Static seeded monochrome grain, ~1.2%, baked once for every frame.
 		const img = b.getImageData(0, 0, W * SS, H * SS);
 		const d = img.data;
-		const rnd = mulberry32(0x7d0f1a2e);
+		const rnd = mulberry32(0x7d_0f_1a_2e);
 		const amp = 0.012 * 255;
 		for (let i = 0; i < d.length; i += 4) {
 			const n = (rnd() - 0.5) * 2 * amp;
@@ -780,7 +780,7 @@ function renderer() {
 		const dim = st.t > 3.5 ? st.boardDim : 1;
 		RULES.forEach((x, c) => {
 			const e = st.rule[c];
-			if (e <= 0.001) return;
+			if (e <= 0.001) {return;}
 			ctx.save();
 			const yEnd = lerp(0, H + 4, e);
 			const g = ctx.createLinearGradient(0, 0, 0, H);
@@ -790,7 +790,7 @@ function renderer() {
 			g.addColorStop(clamp((yEnd + 28) / H), 'rgba(0,0,0,0)');
 			ctx.strokeStyle = g;
 			ctx.lineWidth = 1;
-			if (x === DIVIDER && Math.abs(st.A) > 0.01) bowPath(ctx, x + 0.5, st.A);
+			if (x === DIVIDER && Math.abs(st.A) > 0.01) {bowPath(ctx, x + 0.5, st.A);}
 			else {
 				ctx.beginPath();
 				ctx.moveTo(x + 0.5, -4);
@@ -844,11 +844,11 @@ function renderer() {
 	const gripDots = (cx, cy, color) => {
 		ctx.fillStyle = color;
 		for (const dx of [-2.7, 2.7])
-			for (const dy of [-5.2, 0, 5.2]) {
+			{for (const dy of [-5.2, 0, 5.2]) {
 				ctx.beginPath();
 				ctx.arc(cx + dx, cy + dy, 1.35, 0, Math.PI * 2);
 				ctx.fill();
-			}
+			}}
 	};
 	const chevronLeft = (c) => {
 		c.beginPath();
@@ -902,7 +902,7 @@ function renderer() {
 
 	function drawChrome(st) {
 		const a = st.chrome * (st.t > 3.5 ? st.boardDim : 1);
-		if (a <= 0.001) return;
+		if (a <= 0.001) {return;}
 		const mutedA = 0.42 * a;
 		ctx.fillStyle = `rgba(0,0,0,${0.025 * a})`;
 		ctx.fillRect(420, 0, 780, 46);
@@ -916,7 +916,7 @@ function renderer() {
 			ctx.globalAlpha = clamp(a * 1.3 - ci * 0.1);
 			glyph(col.left + 38, 23, 16, icon, 1.7, chevronLeft);
 			const sc = lerp(0.6, 1, pop);
-			if (ci === 0) glyph(col.right - 24, 23, 16 * sc, icon, 1.6, share);
+			if (ci === 0) {glyph(col.right - 24, 23, 16 * sc, icon, 1.6, share);}
 			if (ci === 1) {
 				glyph(col.right - 26, 23, 17 * sc, icon, 1.6, bot);
 				ctx.beginPath();
@@ -928,7 +928,7 @@ function renderer() {
 				ctx.fillStyle = C.sky;
 				ctx.fill();
 			}
-			if (ci === 2) glyph(col.left + 62, 23, 15 * sc, icon, 1.7, lock);
+			if (ci === 2) {glyph(col.left + 62, 23, 15 * sc, icon, 1.7, lock);}
 			ctx.restore();
 		});
 	}
@@ -967,7 +967,7 @@ function renderer() {
 		const t = st.t;
 		[1, 2].forEach((ci, k) => {
 			const h = st.heads[k];
-			if (h.a <= 0) return;
+			if (h.a <= 0) {return;}
 			const col = COLS[ci];
 			ctx.save();
 			ctx.globalAlpha = h.a;
@@ -1001,7 +1001,7 @@ function renderer() {
 	function drawRowsText(st) {
 		for (const r of G.rows) {
 			const lay = st.rows[r.idx];
-			if (lay.alpha <= 0.001) continue;
+			if (lay.alpha <= 0.001) {continue;}
 			ctx.save();
 			ctx.globalAlpha = lay.alpha;
 			ctx.translate(0, lay.y);
@@ -1021,7 +1021,7 @@ function renderer() {
 					ctx.fill();
 				}
 			}
-			const m = r.muteT != null ? smooth(seg(st.t, r.muteT, r.muteT + 0.22)) : 0;
+			const m = (r.muteT !== undefined && r.muteT !== null) ? smooth(seg(st.t, r.muteT, r.muteT + 0.22)) : 0;
 			ctx.font = F(500, 22);
 			ctx.letterSpacing = '0px';
 			ctx.fillStyle = m > 0 ? mix(C.text, C.done, m) : C.text;
@@ -1033,17 +1033,17 @@ function renderer() {
 	function drawCheckboxes(st) {
 		for (const r of G.rows) {
 			const lay = st.rows[r.idx];
-			if (lay.alpha <= 0.001) continue;
-			const dt = r.checkT != null ? st.t - r.checkT : -1;
+			if (lay.alpha <= 0.001) {continue;}
+			const dt = (r.checkT !== undefined && r.checkT !== null) ? st.t - r.checkT : -1;
 			let sc = 1;
 			let fill = 0;
 			let draw = 0;
 			if (dt >= 0) {
 				fill = clamp(dt / 0.025);
 				draw = eOut(seg(dt, 0.04, 0.16));
-				if (dt < 0.06) sc = lerp(1, 0.82, eOut(dt / 0.06));
-				else if (dt < 0.15) sc = lerp(0.82, 1.1, eInOut((dt - 0.06) / 0.09));
-				else if (dt < 0.3) sc = lerp(1.1, 1, eInOut((dt - 0.15) / 0.15));
+				if (dt < 0.06) {sc = lerp(1, 0.82, eOut(dt / 0.06));}
+				else if (dt < 0.15) {sc = lerp(0.82, 1.1, eInOut((dt - 0.06) / 0.09));}
+				else if (dt < 0.3) {sc = lerp(1.1, 1, eInOut((dt - 0.15) / 0.15));}
 			}
 			ctx.save();
 			ctx.globalAlpha = lay.alpha;
@@ -1091,7 +1091,7 @@ function renderer() {
 	// ----------------------------------------------------------- threads --
 	let porcelain = null;
 	function visible(th, sT, sH, clampWall, A) {
-		if (sH - sT < 0.3) return null;
+		if (sH - sT < 0.3) {return null;}
 		const p = th.path;
 		const i0 = idxAt(p, sT);
 		const i1 = idxAt(p, sH);
@@ -1100,7 +1100,7 @@ function renderer() {
 		const ss = [];
 		const ws = [];
 		const push = (x, y, sv, w) => {
-			if (clampWall && x > WALL - 20) x = Math.min(x, stringX(y, A) - 2.4);
+			if (clampWall && x > WALL - 20) {x = Math.min(x, stringX(y, A) - 2.4);}
 			xs.push(x);
 			ys.push(y);
 			ss.push(sv);
@@ -1108,7 +1108,7 @@ function renderer() {
 		};
 		const a = pointAt(p, sT);
 		push(a.x, a.y, sT, th.width[i0]);
-		for (let i = i0 + 1; i <= i1; i++) push(p.xs[i], p.ys[i], p.s[i], th.width[i]);
+		for (let i = i0 + 1; i <= i1; i++) {push(p.xs[i], p.ys[i], p.s[i], th.width[i]);}
 		const b = pointAt(p, sH);
 		push(b.x, b.y, sH, th.width[Math.min(i1 + 1, p.n - 1)]);
 		return { xs, ys, ss, ws };
@@ -1118,10 +1118,10 @@ function renderer() {
 		c.lineJoin = 'round';
 		let start = from;
 		const flush = (a, b) => {
-			if (b <= a) return;
+			if (b <= a) {return;}
 			c.beginPath();
 			c.moveTo(v.xs[a], v.ys[a]);
-			for (let i = a + 1; i <= b; i++) c.lineTo(v.xs[i], v.ys[i]);
+			for (let i = a + 1; i <= b; i++) {c.lineTo(v.xs[i], v.ys[i]);}
 			c.lineWidth = v.ws[a] + extra;
 			c.strokeStyle = colorAt(a);
 			c.stroke();
@@ -1135,8 +1135,8 @@ function renderer() {
 		flush(start, to);
 	}
 	function blueness(m, t, L) {
-		if (t < T_UN) return 0;
-		if (t < T_SNAP) return clamp((((t - T_UN) / 0.08) * (L + 12) - m) / 6);
+		if (t < T_UN) {return 0;}
+		if (t < T_SNAP) {return clamp((((t - T_UN) / 0.08) * (L + 12) - m) / 6);}
 		return 1 - clamp((((t - T_SNAP) / 0.18) * (L + 12) - m) / 6);
 	}
 	function renderThreads(st) {
@@ -1156,11 +1156,11 @@ function renderer() {
 			const isAgent = th.key === 'agent';
 			const v = visible(th, s.sT, s.sH, isAgent, st.A);
 			res[th.key] = v;
-			if (!v) continue;
+			if (!v) {continue;}
 			const n = v.xs.length - 1;
 			// Inside the icon (only the part before the squircle edge matters).
 			let inTo = n;
-			while (inTo > 0 && v.ss[inTo] > th.sExit + 12) inTo--;
+			while (inTo > 0 && v.ss[inTo] > th.sExit + 12) {inTo--;}
 			if (v.ss[0] < th.sExit + 12) {
 				const inColor = isAgent
 					? (i) => {
@@ -1172,21 +1172,21 @@ function renderer() {
 			}
 			// On paper.
 			let outFrom = 0;
-			while (outFrom < n && v.ss[outFrom] < th.sExit - 12) outFrom++;
-			if (outFrom < n) strokeRuns(outX, v, outFrom, n, () => (isAgent ? C.blue : C.ink));
+			while (outFrom < n && v.ss[outFrom] < th.sExit - 12) {outFrom++;}
+			if (outFrom < n) {strokeRuns(outX, v, outFrom, n, () => (isAgent ? C.blue : C.ink));}
 		}
 		// Woven crossings: a bold 5.5px knockout on each side so the weave reads like fabric.
 		for (const cr of G.crossings) {
 			const vy = res.you;
 			const va = res.agent;
-			if (!vy || !va) continue;
-			if (cr.sY < st.you.sT || cr.sY > st.you.sH || cr.sA < st.agent.sT || cr.sA > st.agent.sH) continue;
+			if (!vy || !va) {continue;}
+			if (cr.sY < st.you.sT || cr.sY > st.you.sH || cr.sA < st.agent.sT || cr.sA > st.agent.sH) {continue;}
 			const v = cr.upper === 'you' ? vy : va;
 			const sC = cr.upper === 'you' ? cr.sY : cr.sA;
 			let a = 0;
-			while (a < v.ss.length - 1 && v.ss[a] < sC - 26) a++;
+			while (a < v.ss.length - 1 && v.ss[a] < sC - 26) {a++;}
 			let b = a;
-			while (b < v.ss.length - 1 && v.ss[b] < sC + 26) b++;
+			while (b < v.ss.length - 1 && v.ss[b] < sC + 26) {b++;}
 			const color = cr.upper === 'you' ? C.ink : C.blue;
 			outX.save();
 			outX.beginPath();
@@ -1303,8 +1303,8 @@ function renderer() {
 	function drawIconFX(st) {
 		const t = st.t;
 		const d = t - T_SNAP;
-		if (d < 0 || d > 0.68) return;
-		const sc = st.iconMorphScale * st.iconScale;
+		if (d < 0 || d > 0.68) {return;}
+
 		ctx.save();
 		iconTransform(ctx, st);
 		// Diagonal glass specular sweep across the squircle over ~10 frames.
@@ -1316,7 +1316,7 @@ function renderer() {
 			const f = (o) => amp * Math.max(0, 1 - Math.abs(o - p) / 0.12);
 			const stops = [0, 1, p - 0.12, p, p + 0.12].filter((o) => o >= 0 && o <= 1).sort((a, b) => a - b);
 			const g = ctx.createLinearGradient(IC.x, IC.y, IC.x + BOARD_SIZE, IC.y + BOARD_SIZE);
-			for (const o of stops) g.addColorStop(o, `rgba(255,255,255,${f(o).toFixed(4)})`);
+			for (const o of stops) {g.addColorStop(o, `rgba(255,255,255,${f(o).toFixed(4)})`);}
 			ctx.save();
 			squirclePath(ctx);
 			ctx.clip();
@@ -1394,34 +1394,13 @@ function renderer() {
 		}
 		ctx.restore();
 	}
-	function drawDeflection(st) {
-		const u = seg(st.t, G.tApex - 0.01, G.tApex + 0.24);
-		if (u <= 0 || u >= 1) return;
-		const x0 = WALL + 0.5;
-		const y0 = G.impactY;
-		ctx.save();
-		ctx.strokeStyle = C.blue;
-		ctx.lineCap = 'round';
-		ctx.lineWidth = 2;
-		ctx.globalAlpha = (1 - u) ** 1.4;
-		for (const a of [148, 180, 212]) {
-			const d = dirDeg(a);
-			const r0 = 8 + 18 * eOut(u);
-			const r1 = r0 + 8 * (1 - u) + 2;
-			ctx.beginPath();
-			ctx.moveTo(x0 + d.x * r0, y0 + d.y * r0);
-			ctx.lineTo(x0 + d.x * r1, y0 + d.y * r1);
-			ctx.stroke();
-		}
-		ctx.restore();
-	}
 
 	// ------------------------------------------------------------ cursors --
 	// Show pill labels cleanly on entrance (~0.55s) and again for the Private
 	// bounce + glide-through contrast (~2.32s–3.05s), with placement tuned to
 	// avoid occluding row text or checkboxes.
 	function drawCursor(x, y, kind, alpha, scale, pillAlpha, pillAbove) {
-		if (alpha <= 0.001) return;
+		if (alpha <= 0.001) {return;}
 		const color = kind === 'you' ? C.ink : C.blue;
 		const label = kind === 'you' ? 'You' : 'Agent';
 		ctx.save();
@@ -1507,10 +1486,10 @@ function renderer() {
 			const pin = seg(t, th.tExit - 0.01, th.tExit + 0.14);
 			const pout = seg(t, T_CURSOR_OUT, T_CURSOR_OUT + 0.12);
 			const alpha = clamp(pin * 1.6) * (1 - pout);
-			if (alpha <= 0) continue;
+			if (alpha <= 0) {continue;}
 			const scale = lerp(0.55, 1, eOutBack(pin, 1.8)) * (1 - 0.35 * eIn(pout));
 			let h = pointAt(th.path, th.head(t));
-			if (th.key === 'agent' && h.x > WALL - 20) h = P(Math.min(h.x, stringX(h.y, st.A) - 2.4), h.y);
+			if (th.key === 'agent' && h.x > WALL - 20) {h = P(Math.min(h.x, stringX(h.y, st.A) - 2.4), h.y);}
 			// Intro pill (clear air between icon & Col 1, crisp pop-in, gone before touching any text)
 			// + Private beat pill (clear air for blocked-vs-allowed contrast).
 			const introPill = smooth(seg(t, th.tExit + 0.06, th.tExit + 0.12)) * (1 - smooth(seg(t, 1.31, 1.39)));
@@ -1556,15 +1535,15 @@ function renderer() {
 	function renderFrame(i) {
 		const t = i / FPS;
 		if (i >= BLUR_FROM && i <= BLUR_TO) {
-			if (!acc) acc = new Uint16Array(W * SS * H * SS * 4);
+			if (!acc) {acc = new Uint16Array(W * SS * H * SS * 4);}
 			acc.fill(0);
 			for (let k = 0; k < 4; k++) {
 				drawScene(t, t - (k / 3) * (0.5 / FPS));
 				const d = ctx.getImageData(0, 0, W * SS, H * SS).data;
-				for (let j = 0; j < d.length; j++) acc[j] += d[j];
+				for (let j = 0; j < d.length; j++) {acc[j] += d[j];}
 			}
 			const out = new Uint8ClampedArray(acc.length);
-			for (let j = 0; j < acc.length; j++) out[j] = (acc[j] + 2) >> 2;
+			for (let j = 0; j < acc.length; j++) {out[j] = (acc[j] + 2) >> 2;}
 			return out;
 		}
 		drawScene(t, t);
@@ -1622,7 +1601,7 @@ function renderer() {
 			const data = renderFrame(i);
 			// A Blob body is ~40× faster to upload than a typed array in Chromium.
 			const res = await fetch(`/frame?tag=${encodeURIComponent(tag)}&i=${i}`, { method: 'POST', body: new Blob([data]) });
-			if (!res.ok) throw new Error(`post failed ${res.status}`);
+			if (!res.ok) {throw new Error(`post failed ${res.status}`);}
 		},
 		async postSheet(frames) {
 			// frames: [{src, label}] → 4×4 labelled contact sheet.
@@ -1647,9 +1626,9 @@ function renderer() {
 				s.fillStyle = '#f4f4f5';
 				s.fillText(frames[k].label, cx + 2, cy + 23);
 			}
-			const blob = await new Promise((r) => sheet.toBlob(r, 'image/png'));
+			const blob = await new Promise((r) => { sheet.toBlob(r, 'image/png'); });
 			const res = await fetch('/frame?tag=sheet', { method: 'POST', body: blob });
-			if (!res.ok) throw new Error('sheet post failed');
+			if (!res.ok) {throw new Error('sheet post failed');}
 		},
 	};
 	window.drawFrame = (i) => window.__og.drawFrame(i);
@@ -1660,6 +1639,7 @@ function renderer() {
 // Node side
 // ---------------------------------------------------------------------------
 
+/* oxlint-enable unicorn/consistent-function-scoping */
 const PAGE = `<!doctype html>
 <html><head><meta charset="utf-8"><title>og</title>
 <style>html,body{margin:0;background:#000}canvas{display:block;width:1200px;height:630px}</style>
@@ -1672,11 +1652,11 @@ function run(cmd, argv, { input, capture } = {}) {
 		const p = spawn(cmd, argv, { stdio: [input ? 'pipe' : 'ignore', capture ? 'pipe' : 'ignore', 'pipe'] });
 		let out = '';
 		let err = '';
-		if (capture) p.stdout.on('data', (d) => (out += d));
+		if (capture) {p.stdout.on('data', (d) => (out += d));}
 		p.stderr.on('data', (d) => (err += d));
 		p.on('error', reject);
 		p.on('close', (code) => (code === 0 ? resolve({ out, err }) : reject(new Error(`${cmd} exited ${code}\n${err.slice(-2000)}`))));
-		if (input) p.stdin.end(input);
+		if (input) {p.stdin.end(input);}
 	});
 }
 
@@ -1692,15 +1672,18 @@ function write(stream, buf) {
 			stream.off('error', onError);
 			resolve();
 		};
-		if (stream.write(buf)) done();
-		else stream.once('drain', done);
+		if (stream.write(buf)) {done();}
+		else {stream.once('drain', done);}
 	});
 }
 
+const fontFile = (name) => FONT_DIRS.map((d) => path.join(d, name)).find((f) => fs.existsSync(f));
+const discardFrame = async () => {};
+
 async function main() {
-	const fontFile = (name) => FONT_DIRS.map((d) => path.join(d, name)).find((f) => fs.existsSync(f));
-	let sink = async () => {};
-	const server = http.createServer(async (req, res) => {
+
+	let sink = discardFrame;
+	async function handleRequest(req, res) {
 		try {
 			const url = new URL(req.url, 'http://localhost');
 			if (req.method === 'GET' && url.pathname === '/') {
@@ -1728,7 +1711,7 @@ async function main() {
 			}
 			if (req.method === 'POST' && url.pathname === '/frame') {
 				const chunks = [];
-				for await (const c of req) chunks.push(c);
+				for await (const c of req) {chunks.push(c);}
 				await sink(Buffer.concat(chunks), url.searchParams.get('tag'), Number(url.searchParams.get('i')));
 				res.writeHead(204);
 				res.end();
@@ -1736,14 +1719,15 @@ async function main() {
 			}
 			res.writeHead(404);
 			res.end();
-		} catch (e) {
-			console.error(e);
+		} catch (error) {
+			console.error(error);
 			res.writeHead(500);
-			res.end(String(e));
+			res.end(String(error));
 		}
-	});
+	}
+	const server = http.createServer((req, res) => { void handleRequest(req, res); });
 	let qaFrameDir = os.tmpdir();
-	await new Promise((r) => server.listen(0, '127.0.0.1', r));
+	await new Promise((r) => { server.listen(0, '127.0.0.1', r); });
 	const origin = `http://127.0.0.1:${server.address().port}`;
 
 	const browser = await chromium.launch();
@@ -1751,7 +1735,7 @@ async function main() {
 		const page = await browser.newPage({ viewport: { width: 1200, height: 630 }, deviceScaleFactor: 1 });
 		page.on('pageerror', (e) => console.error('[page]', e));
 		page.on('console', (m) => {
-			if (m.type() === 'error') console.error('[page]', m.text());
+			if (m.type() === 'error') {console.error('[page]', m.text());}
 		});
 		await page.goto(origin);
 		const info = await page.evaluate(() => window.__og.init());
@@ -1766,18 +1750,18 @@ async function main() {
 		if (args.bench) {
 			console.log(await page.evaluate(() => window.__og.bench([0, 0, 100, 150, 216, 236, 285])));
 			const a = Date.now();
-			sink = async () => {};
-			for (const i of [100, 101, 102, 103, 104]) await page.evaluate(([i]) => window.__og.post(i, 'bench'), [i]);
+			sink = discardFrame;
+			for (const i of [100, 101, 102, 103, 104]) {await page.evaluate(([i]) => window.__og.post(i, 'bench'), [i]);}
 			console.log('post round-trip per frame:', (Date.now() - a) / 5, 'ms');
 			return;
 		}
 		const qa = args.qa;
-		if (qa) fs.mkdirSync(qa, { recursive: true });
+		if (qa) {fs.mkdirSync(qa, { recursive: true });}
 
 		if (args.preview) {
 			const dir = qa ?? fs.mkdtempSync(path.join(os.tmpdir(), 'og-preview-'));
 			sink = async (buf, tag, i) => rawToPng(buf, path.join(dir, `preview-${String(i).padStart(3, '0')}.png`));
-			for (const i of args.preview) await page.evaluate(([i]) => window.__og.post(i, 'preview'), [i]);
+			for (const i of args.preview) {await page.evaluate(([i]) => window.__og.post(i, 'preview'), [i]);}
 			console.log('preview frames written to', dir);
 			return;
 		}
@@ -1838,17 +1822,17 @@ async function main() {
 			);
 			let ffErr = '';
 			ff.stderr.on('data', (d) => (ffErr += d));
-			const closed = new Promise((resolve, reject) => ff.on('close', (c) => (c === 0 ? resolve() : reject(new Error(`ffmpeg exited ${c}\n${ffErr}`)))));
+			const closed = new Promise((resolve, reject) => { ff.on('close', (c) => (c === 0 ? resolve() : reject(new Error(`ffmpeg exited ${c}\n${ffErr}`)))); });
 			sink = async (buf) => write(ff.stdin, buf);
 			for (let i = 0; i < FRAMES; i++) {
 				await page.evaluate(([i]) => window.__og.post(i, 'video'), [i]);
-				if (i % 30 === 29) process.stdout.write(`  frames ${i + 1}/${FRAMES}\r`);
+				if (i % 30 === 29) {process.stdout.write(`  frames ${i + 1}/${FRAMES}\r`);}
 			}
 			ff.stdin.end();
 			await closed;
 			const size = fs.statSync(OUT_MP4).size;
 			console.log(`wrote ${path.relative(ROOT, OUT_MP4)} (${size} bytes, crf ${crf}) in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
-			if (size <= MAX_MP4_BYTES || crf >= 23 || args.crf != null) break;
+			if (size <= MAX_MP4_BYTES || crf >= 23 || (args.crf !== undefined && args.crf !== null)) {break;}
 			crf += 1;
 			console.log(`  over ${MAX_MP4_BYTES} bytes, retrying at crf ${crf}`);
 		}
@@ -1856,7 +1840,7 @@ async function main() {
 		const probe = await run(FFPROBE, ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=codec_name,profile,width,height,pix_fmt,r_frame_rate,nb_frames,color_space,color_primaries,color_transfer:format=duration,size', '-of', 'default=noprint_wrappers=1', OUT_MP4], { capture: true });
 		console.log(probe.out.trim());
 
-		if (!qa) return;
+		if (!qa) {return;}
 		// QA: frame 0 vs frame 300 (one loop later) must match.
 		const f0 = path.join(qa, 'og-frame-000.png');
 		const f300 = path.join(qa, 'og-frame-300.png');
@@ -1901,7 +1885,9 @@ async function main() {
 	}
 }
 
-main().catch((e) => {
-	console.error(e);
+try {
+	await main();
+} catch (error) {
+	console.error(error);
 	process.exit(1);
-});
+}

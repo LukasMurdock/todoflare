@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { normalizeAccountId } from "../src/lib/account";
@@ -70,7 +71,7 @@ describe("metadata consistency under competing writers", () => {
 
 		const sharedKey = `shared:${normalizeAccountId(collaborator.id)}`;
 		const shared = await coordinatorRequest(collaborator.id, "get", { key: sharedKey });
-		expect(new Set(JSON.parse(shared.value as string) as string[])).toEqual(
+		expect(new Set(z.array(z.string()).parse(JSON.parse(shared.value ?? "null")))).toEqual(
 			new Set(columns),
 		);
 	});
@@ -95,7 +96,7 @@ describe("metadata consistency under competing writers", () => {
 			),
 		);
 
-		expect(responses.map((response: Response) => response.status).sort()).toEqual([200, 400]);
+		expect(responses.map((response: Response) => response.status).sort((left, right) => left - right)).toEqual([200, 400]);
 		expect((await loadAuthoritativeAccount(account.id)).columnOrder).toHaveLength(100);
 	});
 
@@ -117,7 +118,7 @@ describe("metadata consistency under competing writers", () => {
 			),
 		);
 
-		expect(responses.map((response: Response) => response.status).sort()).toEqual([
+		expect(responses.map((response: Response) => response.status).sort((left, right) => left - right)).toEqual([
 			200,
 			409,
 		]);

@@ -59,7 +59,7 @@ describe("llms.txt", () => {
 		expect(text).toContain(`(${BASE}/api/mcp)`);
 		expect(text).toContain(`(${BASE}/.well-known/oauth-protected-resource/api/mcp)`);
 		expect(text).toContain(`(${BASE}/.well-known/mcp/server-card.json)`);
-		for (const tool of agentToolDescriptors()) expect(text).toContain(`\`${tool.name}\``);
+		for (const tool of agentToolDescriptors()) {expect(text).toContain(`\`${tool.name}\``);}
 	});
 
 	it("says nothing about connecting when agent access is off", () => {
@@ -73,18 +73,18 @@ describe("MCP server card", () => {
 	it("describes the endpoint, its OAuth discovery and its tools", async () => {
 		const response = await fetchRoute(API_ROUTES.mcpServerCard);
 		expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
-		const card = (await response.json()) as Record<string, unknown>;
+		const card = (await response.json<{ tools: Array<{ name: string }> }>());
 		expect(card).toMatchObject({
 			protocolVersion: "2026-07-28",
 			serverInfo: { name: "todoflare" },
 			transport: { type: "streamable-http", endpoint: `${BASE}/api/mcp` },
 			authentication: { required: true, protectedResourceMetadata: `${BASE}/.well-known/oauth-protected-resource/api/mcp` },
 		});
-		expect((card.tools as { name: string }[]).map((tool) => tool.name)).toEqual(agentToolDescriptors().map((tool) => tool.name));
+		expect(card.tools.map((tool) => tool.name)).toEqual(agentToolDescriptors().map((tool) => tool.name));
 	});
 
 	it("matches what the 401 challenge points at", async () => {
-		const card = (await (await fetchRoute(API_ROUTES.mcpServerCard)).json()) as { authentication: { protectedResourceMetadata: string } };
+		const card = (await (await fetchRoute(API_ROUTES.mcpServerCard)).json<{ authentication: { protectedResourceMetadata: string } }>());
 		const challenge = (await SELF.fetch(`${BASE}${API_ROUTES.mcp.path}`, { method: "POST", body: "{}" })).headers.get("WWW-Authenticate")!;
 		expect(challenge).toContain(`resource_metadata="${card.authentication.protectedResourceMetadata}"`);
 	});
@@ -95,7 +95,7 @@ describe("API catalog", () => {
 		const response = await fetchRoute(API_ROUTES.apiCatalog);
 		expect(response.headers.get("Content-Type")).toContain("application/linkset+json");
 		expect(response.headers.get("Link")).toBe(`<${BASE}/.well-known/api-catalog>; rel="api-catalog"`);
-		const { linkset } = (await response.json()) as { linkset: Record<string, unknown>[] };
+		const { linkset } = (await response.json<{ linkset: Array<{ anchor: string }> }>());
 		expect(linkset[0]).toMatchObject({ anchor: `${BASE}/.well-known/api-catalog`, item: [{ href: `${BASE}/api/mcp` }] });
 		expect(linkset[1]).toMatchObject({
 			anchor: `${BASE}/api/mcp`,

@@ -1,4 +1,5 @@
-import { isApiErrorCode, type ApiErrorCode } from "../api/errors";
+import { isApiErrorCode } from '../api/errors';
+import type { ApiErrorCode } from '../api/errors';
 import type { TerminalReplayReason } from "./contracts";
 import type { MutationReplayResult } from "./mutation-queue-service";
 
@@ -30,15 +31,12 @@ function errorMessage(payload: ErrorPayload | null, fallback: string): string {
 export async function mutationResultFromResponse(
 	response: Response,
 ): Promise<MutationReplayResult> {
-	if (response.status === 401) return { kind: "authentication_required" };
+	if (response.status === 401) {return { kind: "authentication_required" };}
 	if (response.ok) {
 		return { kind: "ack" };
 	}
 
-	const payload = (await response
-		.clone()
-		.json()
-		.catch(() => null)) as ErrorPayload | null;
+	const payload = await response.clone().json<ErrorPayload>().catch(() => null);
 	const code = isApiErrorCode(payload?.code) ? payload.code : null;
 	const hasExplicitCode = typeof payload?.code === "string";
 

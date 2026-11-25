@@ -1,6 +1,6 @@
 "use client";
 
-import * as React from "react";
+import React from "react";
 import type { Value } from "platejs";
 import type { AnyPluginConfig } from "platejs";
 import type { PlatePlugin } from "platejs/react";
@@ -13,12 +13,12 @@ export interface OpenEditor {
 
 /** Host hooks and the registry of open editors, shared by every column of one board. */
 export interface BoardContextValue {
-	openLink(url: string): void;
-	reportError(error: unknown, context: { columnId?: string; operation: string }): void;
-	editorPlugins: readonly PlatePlugin<AnyPluginConfig>[];
-	registerEditor(columnId: string, editor: OpenEditor): () => void;
+	openLink: (url: string) => void;
+	reportError: (error: unknown, context: { columnId?: string; operation: string }) => void;
+	editorPlugins: ReadonlyArray<PlatePlugin<AnyPluginConfig>>;
+	registerEditor: (columnId: string, editor: OpenEditor) => () => void;
 	/** The column's live content, or null while its editor is not open. */
-	getEditorContent(columnId: string): Value | null;
+	getEditorContent: (columnId: string) => Value | null;
 }
 
 export function defaultOpenLink(url: string) {
@@ -29,7 +29,7 @@ function defaultReportError(error: unknown) {
 	console.error(error);
 }
 
-const noPlugins: readonly PlatePlugin<AnyPluginConfig>[] = [];
+const noPlugins: ReadonlyArray<PlatePlugin<AnyPluginConfig>> = [];
 
 const BoardContext = React.createContext<BoardContextValue>({
 	openLink: defaultOpenLink,
@@ -53,13 +53,13 @@ export function useBoardContextValue({
 }: {
 	onOpenLink?: (url: string) => void;
 	onError?: (error: unknown, context: { columnId?: string; operation: string }) => void;
-	editorPlugins?: readonly PlatePlugin<AnyPluginConfig>[];
-}): { value: BoardContextValue; editors: Map<string, OpenEditor> } {
+	editorPlugins?: ReadonlyArray<PlatePlugin<AnyPluginConfig>>;
+}) {
 	const [editors] = React.useState(() => new Map<string, OpenEditor>());
 	const hooks = React.useRef({ onOpenLink, onError });
 	React.useEffect(() => {
 		hooks.current = { onOpenLink, onError };
-	});
+	}, [onOpenLink, onError]);
 	const value = React.useMemo<BoardContextValue>(
 		() => ({
 			openLink: (url) => (hooks.current.onOpenLink ?? defaultOpenLink)(url),
@@ -68,7 +68,7 @@ export function useBoardContextValue({
 			registerEditor(columnId, editor) {
 				editors.set(columnId, editor);
 				return () => {
-					if (editors.get(columnId) === editor) editors.delete(columnId);
+					if (editors.get(columnId) === editor) {editors.delete(columnId);}
 				};
 			},
 			getEditorContent: (columnId) => editors.get(columnId)?.getContent() ?? null,

@@ -1,4 +1,5 @@
-import { createAuth, type AuthBindings } from "./auth";
+import { createAuth } from './auth';
+import type { AuthBindings } from './auth';
 
 // A request can cross several authentication boundaries. Resolve and refresh it
 // once, and retain Better Auth's cookies for the outer HTTP response.
@@ -20,7 +21,7 @@ export async function getRequestSession(request: Request, env: AuthBindings) {
 	return (await pending).response;
 }
 
-export async function sessionResponseCookies(request: Request): Promise<string[]> {
+export async function sessionResponseCookies(request: Request): Promise<Array<string>> {
 	const pending = sessions.get(request);
 	return pending ? (await pending).headers.getSetCookie() : [];
 }

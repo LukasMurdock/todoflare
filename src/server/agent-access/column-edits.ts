@@ -1,6 +1,8 @@
-import * as Y from "yjs";
+import { z } from "zod";
+import type { Doc as YDoc } from "yjs";
+import { XmlText as YXmlText } from "yjs";
 import { AGENT_ITEM_STYLES } from "../../lib/api/agent-contract";
-import { columnContentRoot, readColumnContent } from "./column-content";
+import { columnContentRoot, isXmlText, readColumnContent, readXmlDelta } from "./column-content";
 
 /**
  * Agent edits to one column's Yjs document, and their undo.
@@ -46,34 +48,33 @@ export interface ItemChanges {
 }
 
 export type AgentEdit =
-	| { kind: "append"; items: NewItem[]; afterId: string | null }
+	| { kind: "append"; items: Array<NewItem>; afterId: string | null }
 	| { kind: "update"; itemId: string; changes: ItemChanges; expectedVersion?: string }
-	| { kind: "delete"; itemIds: string[]; expectedVersion: string }
-	| { kind: "replace"; items: NewItem[]; expectedVersion: string };
+	| { kind: "delete"; itemIds: Array<string>; expectedVersion: string }
+	| { kind: "replace"; items: Array<NewItem>; expectedVersion: string };
 
 /** The block attributes the editor reads, plus the block's text. */
 const FIELDS = ["type", "listStyleType", "indent", "checked", "listStart", "text"] as const;
-type Field = (typeof FIELDS)[number];
-export type FieldValues = Partial<Record<Field, unknown>>;
+const attributesSchema = z.record(z.string(), z.json());
+const fieldValue = z.unknown().optional();
+const fieldsSchema = z.object({
+	type: fieldValue, listStyleType: fieldValue, indent: fieldValue,
+	checked: fieldValue, listStart: fieldValue, text: fieldValue,
+});
+const snapshotSchema = z.object({
+	attributes: attributesSchema,
+	runs: z.array(z.object({ insert: z.string(), attributes: attributesSchema.optional() })),
+});
+export type FieldValues = z.output<typeof fieldsSchema>;
+export type BlockSnapshot = z.output<typeof snapshotSchema>;
 
-/** A whole block as Plate stores it, enough to recreate it exactly. */
-export interface BlockSnapshot {
-	attributes: Record<string, unknown>;
-	runs: Array<{ insert: string; attributes?: Record<string, unknown> }>;
-}
-
-export type UndoRecord =
-	| { kind: "remove-inserted"; items: Array<{ id: string; written: FieldValues }> }
-	| {
-			kind: "restore-fields";
-			id: string;
-			before: FieldValues;
-			after: FieldValues;
-			/** Every field of the item before the change, to show it in context. Absent from older records. */
-			context?: FieldValues;
-		}
-	| { kind: "reinsert"; items: Array<{ snapshot: BlockSnapshot; afterId: string | null; index: number }> }
-	| { kind: "restore-column"; before: BlockSnapshot[]; after: Array<FieldValues & { id: string }> };
+export const undoRecordSchema = z.discriminatedUnion("kind", [
+	z.object({ kind: z.literal("remove-inserted"), items: z.array(z.object({ id: z.string(), written: fieldsSchema })) }),
+	z.object({ kind: z.literal("restore-fields"), id: z.string(), before: fieldsSchema, after: fieldsSchema, context: fieldsSchema.optional() }),
+	z.object({ kind: z.literal("reinsert"), items: z.array(z.object({ snapshot: snapshotSchema, afterId: z.string().nullable(), index: z.number() })) }),
+	z.object({ kind: z.literal("restore-column"), before: z.array(snapshotSchema), after: z.array(fieldsSchema.extend({ id: z.string() })) }),
+]);
+export type UndoRecord = z.output<typeof undoRecordSchema>;
 
 export type EditFailure =
 	| { code: "stale_version"; message: string; version: string }
@@ -82,7 +83,7 @@ export type EditFailure =
 	| { code: "invalid_edit"; message: string };
 
 export type EditOutcome =
-	| { ok: true; version: string; itemIds: string[]; summary: string; undo: UndoRecord; changed: boolean }
+	| { ok: true; version: string; itemIds: Array<string>; summary: string; undo: UndoRecord; changed: boolean }
 	| { ok: false; failure: EditFailure };
 
 export interface UndoOutcome {
@@ -98,17 +99,17 @@ export const MAX_ITEM_TEXT = 2000;
 const ID_ALPHABET = "useandom-26T198340PX75pxJACKVERYMINDBUSHWOLF_GQZbfghjklqvwyzrict";
 
 interface BlockEntry {
-	xml: Y.XmlText;
+	xml: YXmlText;
 	offset: number;
 	id: string | null;
 }
 
-function blockEntries(doc: Y.Doc): BlockEntry[] {
-	const entries: BlockEntry[] = [];
+function blockEntries(doc: YDoc): Array<BlockEntry> {
+	const entries: Array<BlockEntry> = [];
 	let offset = 0;
-	for (const op of columnContentRoot(doc).toDelta() as Array<{ insert: unknown }>) {
-		if (op.insert instanceof Y.XmlText) {
-			const id = op.insert.getAttribute("id");
+	for (const op of readXmlDelta(columnContentRoot(doc))) {
+		if (isXmlText(op.insert)) {
+			const id: unknown = op.insert.getAttribute("id");
 			entries.push({ xml: op.insert, offset, id: typeof id === "string" && id ? id : null });
 			offset += 1;
 		} else if (typeof op.insert === "string") {
@@ -118,14 +119,14 @@ function blockEntries(doc: Y.Doc): BlockEntry[] {
 	return entries;
 }
 
-function plainText(xml: Y.XmlText): string {
-	return (xml.toDelta() as Array<{ insert: unknown }>).map((op) => (typeof op.insert === "string" ? op.insert : "")).join("");
+function plainText(xml: YXmlText): string {
+	return readXmlDelta(xml).map((op) => (typeof op.insert === "string" ? op.insert : "")).join("");
 }
 
-function fieldValues(xml: Y.XmlText): FieldValues {
-	const attributes = xml.getAttributes() as Record<string, unknown>;
+function fieldValues(xml: YXmlText): FieldValues {
+	const attributes = fieldsSchema.parse(xml.getAttributes());
 	const values: FieldValues = {};
-	for (const field of FIELDS) values[field] = field === "text" ? plainText(xml) : attributes[field];
+	for (const field of FIELDS) {values[field] = field === "text" ? plainText(xml) : attributes[field];}
 	return values;
 }
 
@@ -134,32 +135,42 @@ function sameValue(left: unknown, right: unknown): boolean {
 }
 
 /** Every item's current fields, by ID. */
-export function currentItemFields(doc: Y.Doc): Map<string, FieldValues> {
+export function currentItemFields(doc: YDoc): Map<string, FieldValues> {
 	const items = new Map<string, FieldValues>();
-	for (const entry of blockEntries(doc)) if (entry.id) items.set(entry.id, fieldValues(entry.xml));
+	for (const entry of blockEntries(doc)) {if (entry.id) {items.set(entry.id, fieldValues(entry.xml));}}
 	return items;
 }
 
-function snapshot(xml: Y.XmlText): BlockSnapshot {
+// Undo records are stored as JSON. Preserve the same representation for
+// opaque Yjs attributes (including typed arrays and omitted undefined keys).
+function savedAttributes(attributes: unknown) {
+	const persisted = JSON.stringify(attributes);
+	return attributesSchema.parse(JSON.parse(persisted));
+}
+
+function snapshot(xml: YXmlText): BlockSnapshot {
 	return {
-		attributes: { ...(xml.getAttributes() as Record<string, unknown>) },
-		runs: (xml.toDelta() as Array<{ insert: unknown; attributes?: Record<string, unknown> }>)
-			.filter((op): op is { insert: string; attributes?: Record<string, unknown> } => typeof op.insert === "string")
-			.map((op) => (op.attributes ? { insert: op.insert, attributes: op.attributes } : { insert: op.insert })),
+		attributes: savedAttributes(xml.getAttributes()),
+		runs: readXmlDelta(xml).flatMap(({ insert, attributes }) =>
+			typeof insert === "string" ? [attributes ? { insert, attributes: savedAttributes(attributes) } : { insert }] : [],
+		),
 	};
 }
 
-function blockFromSnapshot(saved: BlockSnapshot): Y.XmlText {
-	const xml = new Y.XmlText();
-	for (const [key, value] of Object.entries(saved.attributes)) xml.setAttribute(key, value as never);
+function blockFromSnapshot(saved: BlockSnapshot): YXmlText {
+	const xml = new YXmlText();
+	for (const [key, value] of Object.entries(saved.attributes)) {xml.setAttribute(key, value);}
 	xml.applyDelta(saved.runs, { sanitize: false });
 	return xml;
 }
 
 /** The attributes Plate uses for each item style, with null meaning "absent". */
-function styleAttributes(style: ItemStyle, depth: number, checked: boolean): Record<string, unknown> {
-	const list = { todo: "todo", bullet: "disc", numbered: "decimal" }[style as "todo" | "bullet" | "numbered"];
-	const heading = { heading1: "h1", heading2: "h2", heading3: "h3" }[style as "heading1" | "heading2" | "heading3"];
+const listStyles: Partial<Record<ItemStyle, string>> = { todo: "todo", bullet: "disc", numbered: "decimal" };
+const headingStyles: Partial<Record<ItemStyle, string>> = { heading1: "h1", heading2: "h2", heading3: "h3" };
+
+function styleAttributes(style: ItemStyle, depth: number, checked: boolean) {
+	const list = listStyles[style];
+	const heading = headingStyles[style];
 	return {
 		type: heading ?? "p",
 		listStyleType: list ?? null,
@@ -170,7 +181,7 @@ function styleAttributes(style: ItemStyle, depth: number, checked: boolean): Rec
 	};
 }
 
-export function currentStyle(values: FieldValues): { style: ItemStyle; depth: number; checked: boolean } {
+export function currentStyle(values: FieldValues) {
 	const list = values.listStyleType;
 	const indent = typeof values.indent === "number" ? values.indent : 0;
 	const style: ItemStyle =
@@ -179,12 +190,12 @@ export function currentStyle(values: FieldValues): { style: ItemStyle; depth: nu
 	return { style, depth: list ? Math.max(indent - 1, 0) : indent, checked: values.checked === true };
 }
 
-function setAttributes(xml: Y.XmlText, attributes: Record<string, unknown>) {
+function setAttributes(xml: YXmlText, attributes: FieldValues) {
 	for (const [key, value] of Object.entries(attributes)) {
 		if (value === null || value === undefined) {
-			if (xml.getAttribute(key) !== undefined) xml.removeAttribute(key);
+			if (xml.getAttribute(key) !== undefined) {xml.removeAttribute(key);}
 		} else if (xml.getAttribute(key) !== value) {
-			xml.setAttribute(key, value as never);
+			xml.setAttribute(key, value);
 		}
 	}
 }
@@ -193,21 +204,21 @@ function setAttributes(xml: Y.XmlText, attributes: Record<string, unknown>) {
  * Rewrites a block's text by replacing only the span that differs, so
  * concurrent typing elsewhere in the same block survives the merge.
  */
-function setText(xml: Y.XmlText, next: string) {
+function setText(xml: YXmlText, next: string) {
 	const current = plainText(xml);
-	if (current === next) return;
+	if (current === next) {return;}
 	let start = 0;
-	while (start < current.length && start < next.length && current[start] === next[start]) start++;
+	while (start < current.length && start < next.length && current[start] === next[start]) {start++;}
 	let end = 0;
 	while (
 		end < current.length - start &&
 		end < next.length - start &&
 		current[current.length - 1 - end] === next[next.length - 1 - end]
-	) end++;
+	) {end++;}
 	const removed = current.length - start - end;
-	if (removed > 0) xml.delete(start, removed);
+	if (removed > 0) {xml.delete(start, removed);}
 	const inserted = next.slice(start, next.length - end);
-	if (inserted) xml.insert(start, inserted);
+	if (inserted) {xml.insert(start, inserted);}
 }
 
 function newId(taken: Set<string>): string {
@@ -225,12 +236,12 @@ function newId(taken: Set<string>): string {
  * A new block, not yet in any document. Yjs forbids reading a type before it
  * is integrated, so attributes are only set here, never compared.
  */
-function createBlock(item: NewItem, id: string): Y.XmlText {
-	const xml = new Y.XmlText();
+function createBlock(item: NewItem, id: string): YXmlText {
+	const xml = new YXmlText();
 	for (const [key, value] of Object.entries({ id, ...styleAttributes(item.style, item.depth ?? 0, item.checked ?? false) })) {
-		if (value !== null) xml.setAttribute(key, value as never);
+		if (value !== null) {xml.setAttribute(key, value);}
 	}
-	if (item.text) xml.insert(0, item.text);
+	if (item.text) {xml.insert(0, item.text);}
 	return xml;
 }
 
@@ -258,21 +269,20 @@ function quote(text: string): string {
 }
 
 /** Applies one agent edit in a single transaction tagged with `origin`. */
-export function applyAgentEdit(doc: Y.Doc, edit: AgentEdit, origin: unknown): EditOutcome {
+export function applyAgentEdit(doc: YDoc, edit: AgentEdit, origin: unknown): EditOutcome {
 	const { version } = readColumnContent(doc);
 	if ("expectedVersion" in edit && edit.expectedVersion !== undefined && edit.expectedVersion !== version) {
 		return staleVersion(version);
 	}
 	const entries = blockEntries(doc);
-	const byId = new Map(entries.filter((entry) => entry.id).map((entry) => [entry.id!, entry]));
-	const missing = (id: string) => failure({ code: "item_not_found", message: `No item ^${id} in this column. Read the column again for current IDs.` });
+	const byId = new Map(entries.flatMap((entry) => entry.id ? [[entry.id, entry] as const] : []));
 	const root = columnContentRoot(doc);
 
 	switch (edit.kind) {
 		case "append": {
 			for (const item of edit.items) {
 				const invalid = validateItem(item);
-				if (invalid) return failure(invalid);
+				if (invalid) {return failure(invalid);}
 			}
 			if (entries.length + edit.items.length > MAX_COLUMN_BLOCKS) {
 				return failure({ code: "invalid_edit", message: `A column holds at most ${MAX_COLUMN_BLOCKS} items.` });
@@ -280,17 +290,17 @@ export function applyAgentEdit(doc: Y.Doc, edit: AgentEdit, origin: unknown): Ed
 			let at: number;
 			if (edit.afterId !== null) {
 				const after = byId.get(edit.afterId);
-				if (!after) return missing(edit.afterId);
+				if (!after) {return missing(edit.afterId);}
 				at = after.offset + 1;
 			} else {
 				// Land above trailing blank lines, where a person would type next.
 				let last = entries.length;
-				while (last > 0 && plainText(entries[last - 1]!.xml) === "" && fieldValues(entries[last - 1]!.xml).listStyleType == null) last--;
-				at = last < entries.length ? entries[last]!.offset : root.length;
+				while (last > 0 && plainText(entries[last - 1].xml) === "" && (fieldValues(entries[last - 1].xml).listStyleType ?? null) === null) {last--;}
+				at = last < entries.length ? entries[last].offset : root.length;
 			}
 			const taken = new Set(byId.keys());
 			const ids = edit.items.map(() => newId(taken));
-			const blocks = edit.items.map((item, index) => createBlock(item, ids[index]!));
+			const blocks = edit.items.map((item, index) => createBlock(item, ids[index]));
 			doc.transact(() => {
 				root.applyDelta([...(at > 0 ? [{ retain: at }] : []), ...blocks.map((block) => ({ insert: block }))], { sanitize: false });
 			}, origin);
@@ -299,14 +309,14 @@ export function applyAgentEdit(doc: Y.Doc, edit: AgentEdit, origin: unknown): Ed
 				changed: true,
 				version: readColumnContent(doc).version,
 				itemIds: ids,
-				summary: edit.items.length === 1 ? `Added ${quote(edit.items[0]!.text)}` : `Added ${edit.items.length} items`,
-				undo: { kind: "remove-inserted", items: blocks.map((block, index) => ({ id: ids[index]!, written: fieldValues(block) })) },
+				summary: edit.items.length === 1 ? `Added ${quote(edit.items[0].text)}` : `Added ${edit.items.length} items`,
+				undo: { kind: "remove-inserted", items: blocks.map((block, index) => ({ id: ids[index], written: fieldValues(block) })) },
 			};
 		}
 
 		case "update": {
 			const entry = byId.get(edit.itemId);
-			if (!entry) return missing(edit.itemId);
+			if (!entry) {return missing(edit.itemId);}
 			const before = fieldValues(entry.xml);
 			const current = currentStyle(before);
 			const { text: wholeText, expectedText, find, replaceWith } = edit.changes;
@@ -328,7 +338,7 @@ export function applyAgentEdit(doc: Y.Doc, edit: AgentEdit, origin: unknown): Ed
 				}
 				nextText = wholeText;
 			} else if (find !== undefined || replaceWith !== undefined) {
-				if (!find || replaceWith === undefined) return failure({ code: "invalid_edit", message: "find and replaceWith go together, and find cannot be empty." });
+				if (!find || replaceWith === undefined) {return failure({ code: "invalid_edit", message: "find and replaceWith go together, and find cannot be empty." });}
 				const at = currentText.indexOf(find);
 				if (at === -1) {
 					return failure({ code: "item_changed", message: `${JSON.stringify(find)} is not in the item. Its text is now: ${JSON.stringify(currentText)}.`, currentText });
@@ -345,15 +355,14 @@ export function applyAgentEdit(doc: Y.Doc, edit: AgentEdit, origin: unknown): Ed
 			if (edit.changes.checked !== undefined && style !== "todo") {
 				return failure({ code: "invalid_edit", message: "Only todo items can be checked." });
 			}
-			const target: FieldValues = {
-				...(edit.changes.style !== undefined || edit.changes.depth !== undefined || edit.changes.checked !== undefined
-					? styleAttributes(style, edit.changes.depth ?? current.depth, edit.changes.checked ?? (style === "todo" ? current.checked : false))
-					: {}),
-				...(nextText !== undefined ? { text: nextText } : {}),
-			};
+			const target: FieldValues = {};
+			if (edit.changes.style !== undefined || edit.changes.depth !== undefined || edit.changes.checked !== undefined) {
+				Object.assign(target, styleAttributes(style, edit.changes.depth ?? current.depth, edit.changes.checked ?? (style === "todo" ? current.checked : false)));
+			}
+			if (nextText !== undefined) {target.text = nextText;}
 			// A numbered list's start only matters while it stays numbered at the same place.
-			if (edit.changes.style === undefined || edit.changes.style === current.style) delete target.listStart;
-			const changed = (Object.keys(target) as Field[]).filter((field) => !sameValue(before[field], target[field]));
+			if (edit.changes.style === undefined || edit.changes.style === current.style) {delete target.listStart;}
+			const changed = FIELDS.filter(field => Object.hasOwn(target, field)).filter((field) => !sameValue(before[field], target[field]));
 			if (changed.length === 0) {
 				return {
 					ok: true,
@@ -367,7 +376,7 @@ export function applyAgentEdit(doc: Y.Doc, edit: AgentEdit, origin: unknown): Ed
 			doc.transact(() => {
 				const { text, ...attributes } = Object.fromEntries(changed.map((field) => [field, target[field]]));
 				setAttributes(entry.xml, attributes);
-				if (text !== undefined) setText(entry.xml, String(text));
+				if (text !== undefined) {setText(entry.xml, String(text));}
 			}, origin);
 			const after = fieldValues(entry.xml);
 			const onlyChecked = changed.length === 1 && changed[0] === "checked";
@@ -389,10 +398,13 @@ export function applyAgentEdit(doc: Y.Doc, edit: AgentEdit, origin: unknown): Ed
 
 		case "delete": {
 			const unique = [...new Set(edit.itemIds)];
-			const targets = unique.map((id) => byId.get(id));
-			const absent = unique.find((_id, index) => !targets[index]);
-			if (absent) return missing(absent);
-			const items = (targets as BlockEntry[])
+			const targets: Array<BlockEntry> = [];
+			for (const id of unique) {
+				const entry = byId.get(id);
+				if (!entry) {return missing(id);}
+				targets.push(entry);
+			}
+			const items = targets
 				.sort((left, right) => left.offset - right.offset)
 				.map((entry) => {
 					const index = entries.indexOf(entry);
@@ -400,7 +412,7 @@ export function applyAgentEdit(doc: Y.Doc, edit: AgentEdit, origin: unknown): Ed
 					// change: undo reinserts in order, so a deleted run rebuilds itself.
 					let anchor: string | null = null;
 					for (let previous = index - 1; previous >= 0; previous--) {
-						const candidate = entries[previous]!;
+						const candidate = entries[previous];
 						if (candidate.id) {
 							anchor = candidate.id;
 							break;
@@ -409,14 +421,14 @@ export function applyAgentEdit(doc: Y.Doc, edit: AgentEdit, origin: unknown): Ed
 					return { snapshot: snapshot(entry.xml), afterId: anchor, index };
 				});
 			doc.transact(() => {
-				for (const entry of [...(targets as BlockEntry[])].sort((left, right) => right.offset - left.offset)) root.delete(entry.offset, 1);
+				for (const entry of [...targets].sort((left, right) => right.offset - left.offset)) {root.delete(entry.offset, 1);}
 			}, origin);
 			return {
 				ok: true,
 				changed: true,
 				version: readColumnContent(doc).version,
 				itemIds: unique,
-				summary: unique.length === 1 ? `Deleted ${quote(items[0]!.snapshot.runs.map((run) => run.insert).join(""))}` : `Deleted ${unique.length} items`,
+				summary: unique.length === 1 ? `Deleted ${quote(items[0].snapshot.runs.map((run) => run.insert).join(""))}` : `Deleted ${unique.length} items`,
 				undo: { kind: "reinsert", items },
 			};
 		}
@@ -424,20 +436,20 @@ export function applyAgentEdit(doc: Y.Doc, edit: AgentEdit, origin: unknown): Ed
 		case "replace": {
 			for (const item of edit.items) {
 				const invalid = validateItem(item);
-				if (invalid) return failure(invalid);
+				if (invalid) {return failure(invalid);}
 			}
 			if (edit.items.length > MAX_COLUMN_BLOCKS) {
 				return failure({ code: "invalid_edit", message: `A column holds at most ${MAX_COLUMN_BLOCKS} items.` });
 			}
 			const kept = edit.items.map((item) => item.id).filter((id): id is string => id !== undefined);
-			if (new Set(kept).size !== kept.length) return failure({ code: "invalid_edit", message: "Each item ID may appear only once." });
+			if (new Set(kept).size !== kept.length) {return failure({ code: "invalid_edit", message: "Each item ID may appear only once." });}
 			const unknown = kept.find((id) => !byId.has(id));
-			if (unknown) return missing(unknown);
+			if (unknown) {return missing(unknown);}
 			const before = entries.map((entry) => snapshot(entry.xml));
 			const taken = new Set(byId.keys());
 			const blocks = edit.items.map((item) => createBlock(item, item.id ?? newId(taken)));
 			doc.transact(() => {
-				if (root.length > 0) root.delete(0, root.length);
+				if (root.length > 0) {root.delete(0, root.length);}
 				root.applyDelta(blocks.map((block) => ({ insert: block })), { sanitize: false });
 			}, origin);
 			const after = blocks.map((block) => ({ id: String(block.getAttribute("id")), ...fieldValues(block) }));
@@ -454,27 +466,27 @@ export function applyAgentEdit(doc: Y.Doc, edit: AgentEdit, origin: unknown): Ed
 }
 
 /** Reverts what an agent change wrote, wherever it is still what the agent left. */
-export function undoAgentChange(doc: Y.Doc, record: UndoRecord, origin: unknown): UndoOutcome {
+export function undoAgentChange(doc: YDoc, record: UndoRecord, origin: unknown): UndoOutcome {
 	let restored = 0;
 	let kept = 0;
 	const root = columnContentRoot(doc);
 
 	doc.transact(() => {
 		const entries = blockEntries(doc);
-		const byId = new Map(entries.filter((entry) => entry.id).map((entry) => [entry.id!, entry]));
+		const byId = new Map(entries.flatMap((entry) => entry.id ? [[entry.id, entry] as const] : []));
 
 		switch (record.kind) {
 			case "remove-inserted": {
 				const removable = record.items
 					.map(({ id, written }) => ({ entry: byId.get(id), written }))
 					.filter(({ entry, written }) => {
-						if (!entry) return false; // Already gone: nothing to undo.
+						if (!entry) {return false;} // Already gone: nothing to undo.
 						const now = fieldValues(entry.xml);
 						const untouched = FIELDS.every((field) => sameValue(now[field], written[field]));
-						if (!untouched) kept++;
+						if (!untouched) {kept++;}
 						return untouched;
 					})
-					.map(({ entry }) => entry!);
+					.map(({ entry }) => entry).filter(entry => entry !== undefined);
 				for (const entry of removable.sort((left, right) => right.offset - left.offset)) {
 					root.delete(entry.offset, 1);
 					restored++;
@@ -484,7 +496,7 @@ export function undoAgentChange(doc: Y.Doc, record: UndoRecord, origin: unknown)
 
 			case "restore-fields": {
 				const entry = byId.get(record.id);
-				const fields = Object.keys(record.after) as Field[];
+				const fields = FIELDS.filter(field => Object.hasOwn(record.after, field));
 				if (!entry) {
 					kept += fields.length;
 					break;
@@ -501,7 +513,7 @@ export function undoAgentChange(doc: Y.Doc, record: UndoRecord, origin: unknown)
 				}
 				const { text, ...attributes } = revert;
 				setAttributes(entry.xml, attributes);
-				if (text !== undefined) setText(entry.xml, String(text ?? ""));
+				if (text !== undefined) {setText(entry.xml, String(text ?? ""));}
 				break;
 			}
 
@@ -528,14 +540,14 @@ export function undoAgentChange(doc: Y.Doc, record: UndoRecord, origin: unknown)
 				const untouched =
 					now.length === record.after.length &&
 					now.every((block, index) => {
-						const written = record.after[index]!;
+						const written = record.after[index];
 						return block.id === written.id && FIELDS.every((field) => sameValue(block[field], written[field]));
 					});
 				if (!untouched) {
 					kept++;
 					break;
 				}
-				if (root.length > 0) root.delete(0, root.length);
+				if (root.length > 0) {root.delete(0, root.length);}
 				root.applyDelta(record.before.map((saved) => ({ insert: blockFromSnapshot(saved) })), { sanitize: false });
 				restored++;
 				break;
@@ -545,3 +557,5 @@ export function undoAgentChange(doc: Y.Doc, record: UndoRecord, origin: unknown)
 
 	return { restored, kept, version: readColumnContent(doc).version };
 }
+
+const missing = (id: string) => failure({ code: "item_not_found", message: `No item ^${id} in this column. Read the column again for current IDs.` });

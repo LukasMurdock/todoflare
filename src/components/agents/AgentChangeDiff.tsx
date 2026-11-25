@@ -8,8 +8,8 @@ function Marker({ item }: { item: AgentDiffItem }) {
 		const Icon = item.checked ? CheckSquare : Square;
 		return <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-label={item.checked ? "checked" : "unchecked"} />;
 	}
-	if (item.style === "bullet") return <span className="w-3.5 shrink-0 text-center" aria-hidden>•</span>;
-	if (item.style === "numbered") return <span className="w-3.5 shrink-0 text-center" aria-hidden>1.</span>;
+	if (item.style === "bullet") {return <span className="w-3.5 shrink-0 text-center" aria-hidden>•</span>;}
+	if (item.style === "numbered") {return <span className="w-3.5 shrink-0 text-center" aria-hidden>1.</span>;}
 	return null;
 }
 
@@ -91,7 +91,7 @@ function Changed({ before, after }: { before: AgentDiffItem; after: AgentDiffIte
 
 /** An agent change as items: what it added, removed and changed. */
 export function AgentChangeDiffView({ diff, muted }: { diff: AgentChangeDiff; muted?: boolean }) {
-	if (diff.entries.length === 0) return null;
+	if (diff.entries.length === 0) {return null;}
 	return (
 		<div
 			className={cn("overflow-hidden rounded-md border border-border/60 bg-muted/20 py-0.5 text-xs leading-5 text-foreground", muted && "opacity-60")}

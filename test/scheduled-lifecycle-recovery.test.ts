@@ -8,7 +8,7 @@ import { displayAccountId, normalizeAccountId } from "../src/lib/account";
 import { beginLifecycleOperation, registerColumn } from "../src/server/lifecycle-journal";
 import { reconcileColumnLifecycle } from "../src/server/workflows/reconcile-column-lifecycle";
 import type { ColumnMeta } from "../src/types/account";
-import { headers, createAccount, createColumn, coordinatorRequest, loadAuthoritativeAccount } from "./helpers/metadata-fixtures";
+import { createAccount, createColumn, coordinatorRequest, loadAuthoritativeAccount } from "./helpers/metadata-fixtures";
 
 describe("scheduled lifecycle recovery", () => {
 	it("does not resurrect columns when the owner's trash record is malformed", async () => {

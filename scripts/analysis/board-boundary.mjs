@@ -20,14 +20,13 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { BOARD_PACKAGE, BOARD_ROOT, zoneOf } from "./board-zones.mjs";
 
 const args = process.argv.slice(2);
 const root = args.includes("--root")
 	? path.resolve(args[args.indexOf("--root") + 1])
-	: path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+	: path.resolve(import.meta.dirname, "../..");
 const asJson = args.includes("--json");
 const check = args.includes("--check");
 
@@ -39,8 +38,8 @@ function walk(dir) {
 	const out = [];
 	for (const entry of readdirSync(path.join(root, dir), { withFileTypes: true })) {
 		const rel = `${dir}/${entry.name}`;
-		if (entry.isDirectory()) out.push(...walk(rel));
-		else if (/\.(ts|tsx)$/.test(entry.name)) out.push(rel);
+		if (entry.isDirectory()) {out.push(...walk(rel));}
+		else if (/\.(ts|tsx)$/.test(entry.name)) {out.push(rel);}
 	}
 	return out;
 }
@@ -59,12 +58,12 @@ const sources = new Map(
 
 function resolveImport(from, specifier) {
 	let base;
-	if (specifier === BOARD_PACKAGE) base = `${BOARD_ROOT}/index`;
-	else if (specifier.startsWith("@/")) base = `src/${specifier.slice(2)}`;
-	else if (specifier.startsWith(".")) base = path.posix.normalize(path.posix.join(path.posix.dirname(from), specifier));
-	else return null;
+	if (specifier === BOARD_PACKAGE) {base = `${BOARD_ROOT}/index`;}
+	else if (specifier.startsWith("@/")) {base = `src/${specifier.slice(2)}`;}
+	else if (specifier.startsWith(".")) {base = path.posix.normalize(path.posix.join(path.posix.dirname(from), specifier));}
+	else {return null;}
 	for (const candidate of [base, `${base}.ts`, `${base}.tsx`, `${base}/index.ts`, `${base}/index.tsx`]) {
-		if (sources.has(candidate)) return candidate;
+		if (sources.has(candidate)) {return candidate;}
 	}
 	return null;
 }
@@ -72,16 +71,16 @@ function resolveImport(from, specifier) {
 function importsOf(file) {
 	const out = [];
 	for (const statement of sources.get(file).statements) {
-		if (!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) continue;
-		if (!statement.moduleSpecifier) continue;
+		if (!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) {continue;}
+		if (!statement.moduleSpecifier) {continue;}
 		const specifier = statement.moduleSpecifier.text;
 		const clause = ts.isImportDeclaration(statement) ? statement.importClause : null;
 		const names = [];
-		if (clause?.name) names.push("default");
+		if (clause?.name) {names.push("default");}
 		const bindings = clause?.namedBindings;
 		if (bindings && ts.isNamedImports(bindings)) {
-			for (const element of bindings.elements) names.push((element.propertyName ?? element.name).text);
-		} else if (bindings) names.push("*");
+			for (const element of bindings.elements) {names.push((element.propertyName ?? element.name).text);}
+		} else if (bindings) {names.push("*");}
 		out.push({
 			specifier,
 			target: resolveImport(file, specifier),
@@ -111,12 +110,12 @@ function hazardsOf(file) {
 	}
 
 	for (const statement of sf.statements) {
-		if (ts.isExpressionStatement(statement) && ts.isStringLiteral(statement.expression)) continue; // "use client"
+		if (ts.isExpressionStatement(statement) && ts.isStringLiteral(statement.expression)) {continue;} // "use client"
 		if (ts.isVariableStatement(statement)) {
 			const isLet = (statement.declarationList.flags & ts.NodeFlags.Let) !== 0;
 			for (const declaration of statement.declarationList.declarations) {
 				const init = declaration.initializer;
-				if (isLet) add("mutable module state", declaration, declaration.name.getText(sf));
+				if (isLet) {add("mutable module state", declaration, declaration.name.getText(sf));}
 				else if (init && ts.isNewExpression(init) && /^(Set|Map|WeakMap|EventTarget)$/.test(init.expression.getText(sf))) {
 					add("module singleton", declaration, `${declaration.name.getText(sf)} = new ${init.expression.getText(sf)}`);
 				}
@@ -124,7 +123,7 @@ function hazardsOf(file) {
 			continue;
 		}
 		const isDisplayName = ts.isExpressionStatement(statement) && /^\w+\.displayName\s*=/.test(statement.getText(sf));
-		if (isDisplayName) continue;
+		if (isDisplayName) {continue;}
 		if (ts.isExpressionStatement(statement) || ts.isIfStatement(statement) || ts.isForStatement(statement)) {
 			add("top-level statement", statement, statement.getText(sf).split("\n")[0].slice(0, 70));
 		}
@@ -133,34 +132,34 @@ function hazardsOf(file) {
 	const visit = (node, depth) => {
 		if (ts.isCallExpression(node)) {
 			const callee = node.expression.getText(sf);
-			if (/^(window|document)\.addEventListener$/.test(callee)) add("global listener", node, `${callee}("${node.arguments[0]?.getText(sf).replace(/["']/g, "")}")`);
-			if (/^(fetch|window\.fetch)$/.test(callee)) add("network", node, callee);
-			if (/^(toast)(\.|$)/.test(callee)) add("global UI singleton", node, callee);
-			if (/^register[A-Z]/.test(callee) && packageImports.has(callee)) add("global registry", node, callee);
-			if (callee === "window.open") add("navigation", node, callee);
+			if (/^(window|document)\.addEventListener$/.test(callee)) {add("global listener", node, `${callee}("${node.arguments[0]?.getText(sf).replaceAll(/["']/g, "")}")`);}
+			if (/^(fetch|window\.fetch)$/.test(callee)) {add("network", node, callee);}
+			if (/^(toast)(\.|$)/.test(callee)) {add("global UI singleton", node, callee);}
+			if (/^register[A-Z]/.test(callee) && packageImports.has(callee)) {add("global registry", node, callee);}
+			if (callee === "window.open") {add("navigation", node, callee);}
 		}
-		if (ts.isIdentifier(node) && /^(localStorage|sessionStorage|indexedDB)$/.test(node.text)) add("direct storage", node, node.text);
-		if (depth === 0 && ts.isIdentifier(node) && GLOBAL_OBJECTS.has(node.text)) add("global at import time", node, node.text);
+		if (ts.isIdentifier(node) && /^(localStorage|sessionStorage|indexedDB)$/.test(node.text)) {add("direct storage", node, node.text);}
+		if (depth === 0 && ts.isIdentifier(node) && GLOBAL_OBJECTS.has(node.text)) {add("global at import time", node, node.text);}
 		const nested = ts.isFunctionLike(node) || ts.isClassLike(node);
 		ts.forEachChild(node, (child) => visit(child, nested ? depth + 1 : depth));
 	};
 	for (const statement of sf.statements) {
-		if (ts.isImportDeclaration(statement)) continue;
+		if (ts.isImportDeclaration(statement)) {continue;}
 		visit(statement, 0);
 	}
 	// Dedupe storage/global hits to one per name per file.
 	const seen = new Set();
 	return hazards.filter((h) => {
 		const key = ["direct storage", "global at import time", "global UI singleton", "network"].includes(h.kind) ? `${h.kind}:${h.detail}` : `${h.kind}:${h.line}:${h.detail}`;
-		if (seen.has(key)) return false;
+		if (seen.has(key)) {return false;}
 		seen.add(key);
 		return true;
 	});
 }
 
 const lines = (file) => sources.get(file).text.split("\n").length;
-const boardFiles = files.filter((f) => zoneOf(f) === "board").sort();
-const hostFiles = files.filter((f) => zoneOf(f) === "host").sort();
+const boardFiles = files.filter((f) => zoneOf(f) === "board").sort((a, b) => a.localeCompare(b));
+const hostFiles = files.filter((f) => zoneOf(f) === "host").sort((a, b) => a.localeCompare(b));
 
 // 1. Direct board -> host edges.
 const crossings = [];
@@ -186,10 +185,10 @@ const visited = new Set(stack);
 while (stack.length) {
 	const file = stack.pop();
 	for (const imp of importsOf(file)) {
-		if (!imp.target || imp.typeOnly || visited.has(imp.target)) continue;
+		if (!imp.target || imp.typeOnly || visited.has(imp.target)) {continue;}
 		visited.add(imp.target);
 		stack.push(imp.target);
-		if (zoneOf(imp.target) === "host") reachable.add(imp.target);
+		if (zoneOf(imp.target) === "host") {reachable.add(imp.target);}
 	}
 }
 
@@ -210,7 +209,7 @@ const report = {
 	crossingCount: crossings.length,
 	deepImports,
 	valueCrossingCount: crossings.filter((c) => !c.typeOnly).length,
-	reachableHost: [...reachable].sort().map((file) => ({ file, lines: lines(file) })),
+	reachableHost: [...reachable].sort((a, b) => a.localeCompare(b)).map((file) => ({ file, lines: lines(file) })),
 	reachableHostLines: [...reachable].reduce((n, f) => n + lines(f), 0),
 	hazards,
 	hostImportTimeHazards: hostHazards,
@@ -219,8 +218,8 @@ const report = {
 if (check) {
 	if (report.crossingCount > 0 || report.reachableHost.length > 0 || deepImports.length > 0) {
 		console.error(`The board package must not import app modules, and the app must import the board only as "${BOARD_PACKAGE}".`);
-		for (const c of crossings) console.error(`  ${c.from} -> ${c.to}`);
-		for (const d of deepImports) console.error(`  ${d.from} imports "${d.specifier}"`);
+		for (const c of crossings) {console.error(`  ${c.from} -> ${c.to}`);}
+		for (const d of deepImports) {console.error(`  ${d.from} imports "${d.specifier}"`);}
 		process.exit(1);
 	}
 	console.log(`Board boundary holds: ${report.zones.board.files} board modules import no host module.`);
@@ -234,9 +233,9 @@ if (check) {
 		console.log(`  ${c.from} -> ${c.to}${c.typeOnly ? " (type)" : ""}${c.sideEffectOnly ? " (side effect)" : ""}: ${c.names.join(", ") || "-"}`);
 	}
 	console.log(`\n## Host modules the board pulls in (${report.reachableHost.length} files, ${report.reachableHostLines} lines)`);
-	for (const r of report.reachableHost) console.log(`  ${r.file} (${r.lines})`);
+	for (const r of report.reachableHost) {console.log(`  ${r.file} (${r.lines})`);}
 	console.log(`\n## Embedding hazards in board modules (${hazards.length})`);
-	for (const h of hazards) console.log(`  ${h.file}:${h.line} ${h.kind}: ${h.detail}`);
+	for (const h of hazards) {console.log(`  ${h.file}:${h.line} ${h.kind}: ${h.detail}`);}
 	console.log(`\n## Import-time hazards in host modules (${hostHazards.length})`);
-	for (const h of hostHazards) console.log(`  ${h.file}:${h.line} ${h.kind}: ${h.detail}`);
+	for (const h of hostHazards) {console.log(`  ${h.file}:${h.line} ${h.kind}: ${h.detail}`);}
 }

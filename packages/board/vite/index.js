@@ -12,7 +12,7 @@ export function excludeUnusedYjsProviders() {
 		name: "todoflare-board:exclude-unused-yjs-providers",
 		enforce: "pre",
 		resolveId(source) {
-			if (source === "y-webrtc" || source === "@hocuspocus/provider" || source === "y-indexeddb") return stub;
+			if (source === "y-webrtc" || source === "@hocuspocus/provider" || source === "y-indexeddb") {return stub;}
 			return null;
 		},
 	};

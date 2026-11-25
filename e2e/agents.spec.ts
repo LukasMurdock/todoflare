@@ -1,5 +1,7 @@
+import { z } from "zod";
 import { createHash, randomBytes } from "node:crypto";
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { expect, test } from '@playwright/test';
+import type { APIRequestContext, Page } from '@playwright/test';
 import { createAccount } from "./helpers/account-api";
 import { getYjsOutboxCountForColumn } from "./helpers/local-first-readers";
 import { addColumnAndGetId, bootstrapAuthenticatedPage } from "./helpers/ui-session";
@@ -7,17 +9,17 @@ import { addColumnAndGetId, bootstrapAuthenticatedPage } from "./helpers/ui-sess
 const REDIRECT = "http://127.0.0.1:33418/callback";
 
 function shortId(accountId: string): string {
-	const compact = accountId.replace(/\D/g, "");
+	const compact = accountId.replaceAll(/\D/g, "");
 	return `${compact.slice(0, 4)}...${compact.slice(-4)}`;
 }
 
-async function mcpCall(request: APIRequestContext, baseURL: string, token: string, name: string, args: Record<string, unknown>) {
+async function mcpCall(request: APIRequestContext, baseURL: string, token: string, name: string, args: { columnId?: string; items?: Array<{ text: string }> }) {
 	const response = await request.post(`${baseURL}/api/mcp`, {
 		headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
 		data: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } },
 	});
 	expect(response.status()).toBe(200);
-	return ((await response.json()) as { result: { isError?: boolean; content: Array<{ text: string }>; structuredContent?: Record<string, unknown> } }).result;
+	return z.object({ result: z.object({ isError: z.boolean().optional(), content: z.array(z.object({ text: z.string() })), structuredContent: z.looseObject({ markdown: z.string().optional() }).optional() }) }).parse(await response.json()).result;
 }
 
 /** Types into the first column and waits until the server has the edit, not just the page. */
@@ -56,7 +58,7 @@ test.describe("agents", () => {
 		const command = (await dialog.getByTestId("agent-token").locator("code").first().textContent())!.trim();
 		// User scope, so the connection works in every folder, not only where the command ran.
 		expect(command).toContain(`claude mcp add --scope user --transport http todoflare ${appUrl}/api/mcp`);
-		const token = /Bearer (tfa_[A-Za-z0-9_-]+)"/.exec(command)![1]!;
+		const token = /Bearer (tfa_[A-Za-z0-9_-]+)"/.exec(command)![1];
 		await dialog.getByRole("button", { name: "Done" }).click();
 		await expect(dialog.getByRole("combobox", { name: "Test agent access to Groceries" })).toHaveValue("read");
 		await page.keyboard.press("Escape");
@@ -111,18 +113,18 @@ test.describe("agents", () => {
 		// The client discovers the server and registers itself, as Claude does.
 		const challenge401 = await request.post(`${appUrl}/api/mcp`, { data: {} });
 		expect(challenge401.status()).toBe(401);
-		const resourceMetadataUrl = /resource_metadata="([^"]+)"/.exec(challenge401.headers()["www-authenticate"]!)![1]!;
-		const issuer = ((await (await request.get(resourceMetadataUrl)).json()) as { authorization_servers: string[] }).authorization_servers[0]!;
-		const metadata = (await (await request.get(`${issuer}/.well-known/oauth-authorization-server`)).json()) as Record<string, string>;
-		const registration = await request.post(metadata.registration_endpoint!, {
+		const resourceMetadataUrl = /resource_metadata="([^"]+)"/.exec(challenge401.headers()["www-authenticate"])![1];
+		const issuer = z.object({ authorization_servers: z.array(z.string()).min(1) }).parse(await (await request.get(resourceMetadataUrl)).json()).authorization_servers[0];
+		const metadata = z.object({ registration_endpoint: z.url(), authorization_endpoint: z.url(), token_endpoint: z.url() }).parse(await (await request.get(`${issuer}/.well-known/oauth-authorization-server`)).json());
+		const registration = await request.post(metadata.registration_endpoint, {
 			headers: { "X-Forwarded-For": `10.20.${Math.floor(Math.random() * 200)}.1` },
 			data: { client_name: "Claude", redirect_uris: [REDIRECT], token_endpoint_auth_method: "none" },
 		});
-		const { client_id: clientId } = (await registration.json()) as { client_id: string };
+		const { client_id: clientId } = z.object({ client_id: z.string() }).parse(await registration.json());
 
 		const verifier = randomBytes(32).toString("base64url");
 		const challenge = createHash("sha256").update(verifier).digest("base64url");
-		const authorize = new URL(metadata.authorization_endpoint!);
+		const authorize = new URL(metadata.authorization_endpoint);
 		for (const [key, value] of Object.entries({
 			response_type: "code",
 			client_id: clientId,
@@ -131,12 +133,10 @@ test.describe("agents", () => {
 			code_challenge_method: "S256",
 			state: "state-123",
 			resource: `${appUrl}/api/mcp`,
-		})) authorize.searchParams.set(key, value);
+		})) {authorize.searchParams.set(key, value);}
 
 		// The client's local callback server, standing in for Claude Code's.
-		let callback: URL | null = null;
 		await page.route("http://127.0.0.1:33418/**", async (route) => {
-			callback = new URL(route.request().url());
 			await route.fulfill({ status: 200, contentType: "text/plain", body: "You can close this tab." });
 		});
 
@@ -148,14 +148,16 @@ test.describe("agents", () => {
 		await page.getByRole("combobox", { name: "Access to Launch plan" }).selectOption("edit");
 		await page.getByRole("button", { name: "Allow 1 column" }).click();
 
-		await expect.poll(() => callback?.searchParams.get("code") ?? null).not.toBeNull();
-		expect(callback!.searchParams.get("state")).toBe("state-123");
-		expect(callback!.searchParams.get("iss")).toBe(issuer);
+		await page.waitForURL(url => url.origin + url.pathname === REDIRECT);
+		const callback = new URL(page.url());
+		expect(callback.searchParams.get("code")).toBeTruthy();
+		expect(callback.searchParams.get("state")).toBe("state-123");
+		expect(callback.searchParams.get("iss")).toBe(issuer);
 
-		const tokenResponse = await request.post(metadata.token_endpoint!, {
+		const tokenResponse = await request.post(metadata.token_endpoint, {
 			form: {
 				grant_type: "authorization_code",
-				code: callback!.searchParams.get("code")!,
+				code: callback.searchParams.get("code")!,
 				client_id: clientId,
 				redirect_uri: REDIRECT,
 				code_verifier: verifier,
@@ -163,7 +165,7 @@ test.describe("agents", () => {
 			},
 		});
 		expect(tokenResponse.status()).toBe(200);
-		const { access_token: accessToken } = (await tokenResponse.json()) as { access_token: string };
+		const { access_token: accessToken } = z.object({ access_token: z.string() }).parse(await tokenResponse.json());
 		const listed = await mcpCall(request, appUrl, accessToken, "list_columns", {});
 		expect(listed.structuredContent).toEqual({ columns: [{ columnId, title: "Launch plan", level: "edit" }] });
 
@@ -184,18 +186,18 @@ test.describe("agents", () => {
 			headers: { "X-Forwarded-For": `10.30.${Math.floor(Math.random() * 200)}.1` },
 			data: { client_name: "Some app", redirect_uris: [REDIRECT] },
 		});
-		const { client_id: clientId } = (await registration.json()) as { client_id: string };
-		let callback: URL | null = null;
+		const { client_id: clientId } = z.object({ client_id: z.string() }).parse(await registration.json());
 		await page.route("http://127.0.0.1:33418/**", async (route) => {
-			callback = new URL(route.request().url());
 			await route.fulfill({ status: 200, body: "ok" });
 		});
 		const challenge = createHash("sha256").update(randomBytes(32).toString("base64url")).digest("base64url");
 		await page.goto(`/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(REDIRECT)}&code_challenge=${challenge}&code_challenge_method=S256&state=s1`);
 		await page.getByRole("button", { name: "Cancel" }).click();
-		await expect.poll(() => callback?.searchParams.get("error") ?? null).toBe("access_denied");
-		expect(callback!.searchParams.get("state")).toBe("s1");
-		expect(callback!.searchParams.has("code")).toBe(false);
+		await page.waitForURL(url => url.origin + url.pathname === REDIRECT);
+		const callback = new URL(page.url());
+		expect(callback.searchParams.get("error")).toBe("access_denied");
+		expect(callback.searchParams.get("state")).toBe("s1");
+		expect(callback.searchParams.has("code")).toBe(false);
 
 		await page.goto("/");
 		await openAgentsDialog(page, accountId);
@@ -218,7 +220,7 @@ test.describe("agents", () => {
 		expect(count).toBeGreaterThan(1);
 
 		await all.selectOption("edit");
-		for (let index = 0; index < count; index++) await expect(perColumn.nth(index)).toHaveValue("edit");
+		for (let index = 0; index < count; index++) {await expect(perColumn.nth(index)).toHaveValue("edit");}
 		await expect(dialog.getByRole("button", { name: `Connect with ${count} columns` })).toBeEnabled();
 
 		// Changing one column afterwards still works, and the shared control says so.

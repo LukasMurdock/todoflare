@@ -1,9 +1,8 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 const repositoryRoot = path.resolve(
-	path.dirname(fileURLToPath(import.meta.url)),
+	import.meta.dirname,
 	"..",
 );
 
@@ -16,7 +15,7 @@ const [packageJson, playwrightConfig, viteConfig, resetScript] =
 	]);
 
 const verify = packageJson.scripts?.verify;
-if (typeof verify !== "string") throw new Error("Missing verify script");
+if (typeof verify !== "string") {throw new Error("Missing verify script");}
 if (verify.includes("verify:fast")) {
 	throw new Error("Full verification must not invoke the build-owning fast gate");
 }

@@ -2,13 +2,13 @@ import { useCallback } from "react";
 import { toast } from "sonner";
 import { accountRequestHeaders } from "@/lib/account-request-headers";
 import { API_ROUTES } from "@/lib/api/routes";
-import type { AccountExportPayload } from "@/types/account";
+import type { Account, AccountExportPayload } from "@/types/account";
 
 interface AccountDataTransferDependencies {
 	accountId: string | null;
 	/** Re-reads the account after an import so the UI reflects it. */
-	fetchAccount(accountId: string): Promise<unknown>;
-	setError(message: string): void;
+	fetchAccount: (accountId: string) => Promise<Account | null>;
+	setError: (message: string) => void;
 }
 
 /** Account export and import through the server's export/import routes. */
@@ -18,7 +18,7 @@ export function useAccountDataTransfer({
 	setError,
 }: AccountDataTransferDependencies) {
 	const exportAccountData = useCallback(async () => {
-		if (!accountId) return null;
+		if (!accountId) {return null;}
 
 		try {
 			const response = await fetch(API_ROUTES.exportAccount.path, {
@@ -30,17 +30,17 @@ export function useAccountDataTransfer({
 				throw new Error("Failed to export account data");
 			}
 
-			return (await response.json()) as AccountExportPayload;
-		} catch (err) {
-			setError(err instanceof Error ? err.message : "Unknown error");
+			return await response.json<AccountExportPayload>();
+		} catch (error) {
+			setError(error instanceof Error ? error.message : "Unknown error");
 			toast.error("Failed to export data");
 			return null;
 		}
 	}, [accountId, setError]);
 
 	const importAccountData = useCallback(
-		async (payload: AccountExportPayload) => {
-			if (!accountId) return false;
+		async (payload: unknown) => {
+			if (!accountId) {return false;}
 
 			try {
 				const response = await fetch(API_ROUTES.importAccount.path, {
@@ -59,8 +59,8 @@ export function useAccountDataTransfer({
 				await fetchAccount(accountId);
 				toast.success("Data imported successfully");
 				return true;
-			} catch (err) {
-				setError(err instanceof Error ? err.message : "Unknown error");
+			} catch (error) {
+				setError(error instanceof Error ? error.message : "Unknown error");
 				toast.error("Failed to import data");
 				return false;
 			}

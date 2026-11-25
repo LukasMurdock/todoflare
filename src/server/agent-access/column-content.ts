@@ -1,4 +1,6 @@
-import * as Y from "yjs";
+import { z } from "zod";
+import type { Doc as YDoc } from "yjs";
+import { XmlText as YXmlText } from "yjs";
 
 /**
  * A column's content as agents see it. The editor's model is flat: every
@@ -24,39 +26,51 @@ export interface ColumnBlock {
 }
 
 export interface ColumnContent {
-	blocks: ColumnBlock[];
+	blocks: Array<ColumnBlock>;
 	/** Changes whenever any block's content, kind or order changes. */
 	version: string;
 }
 
 /** The shared type slate-yjs binds the editor to. */
-export function columnContentRoot(doc: Y.Doc): Y.XmlText {
-	return doc.get("content", Y.XmlText) as Y.XmlText;
+export function columnContentRoot(doc: YDoc): YXmlText {
+	return doc.get("content", YXmlText);
 }
 
 function asBlockType(value: unknown): BlockType {
-	return BLOCK_TYPES.includes(value as BlockType) ? (value as BlockType) : "p";
+	return BLOCK_TYPES.find(candidate => candidate === value) ?? "p";
 }
 
 function asListStyle(value: unknown): ListStyle | null {
-	return LIST_STYLES.includes(value as ListStyle) ? (value as ListStyle) : null;
+	return LIST_STYLES.find(candidate => candidate === value) ?? null;
 }
 
-function blockText(element: Y.XmlText): string {
+const xmlTextSchema = z.instanceof(YXmlText);
+export function isXmlText(value: unknown): value is YXmlText {
+	return xmlTextSchema.safeParse(value).success;
+}
+
+const deltaSchema = z.array(z.object({
+	insert: z.unknown(), attributes: z.unknown().optional(),
+}));
+export function readXmlDelta(element: YXmlText) {
+	return deltaSchema.parse(element.toDelta());
+}
+
+function blockText(element: YXmlText): string {
 	let text = "";
-	for (const op of element.toDelta() as Array<{ insert: unknown }>) {
-		if (typeof op.insert === "string") text += op.insert;
+	for (const op of readXmlDelta(element)) {
+		if (typeof op.insert === "string") {text += op.insert;}
 		// Inline elements do not exist in this editor; flatten any that appear.
-		else if (op.insert instanceof Y.XmlText) text += blockText(op.insert);
+		else if (isXmlText(op.insert)) {text += blockText(op.insert);}
 	}
 	return text;
 }
 
-export function readColumnBlocks(doc: Y.Doc): ColumnBlock[] {
-	const blocks: ColumnBlock[] = [];
-	for (const op of columnContentRoot(doc).toDelta() as Array<{ insert: unknown }>) {
-		if (!(op.insert instanceof Y.XmlText)) continue;
-		const attributes = op.insert.getAttributes() as Record<string, unknown>;
+export function readColumnBlocks(doc: YDoc): Array<ColumnBlock> {
+	const blocks: Array<ColumnBlock> = [];
+	for (const op of readXmlDelta(columnContentRoot(doc))) {
+		if (!isXmlText(op.insert)) {continue;}
+		const attributes = op.insert.getAttributes();
 		const list = asListStyle(attributes.listStyleType);
 		const indent = typeof attributes.indent === "number" && attributes.indent > 0 ? Math.floor(attributes.indent) : 0;
 		blocks.push({
@@ -73,10 +87,10 @@ export function readColumnBlocks(doc: Y.Doc): ColumnBlock[] {
 
 /** 64-bit FNV-1a over UTF-16 code units. */
 function fnv1a64(text: string): bigint {
-	let hash = 0xcbf29ce484222325n;
+	let hash = 0xcb_f2_9c_e4_84_22_23_25n;
 	for (let index = 0; index < text.length; index++) {
 		hash ^= BigInt(text.charCodeAt(index));
-		hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
+		hash = (hash * 0x1_00_00_00_01_b3n) & 0xff_ff_ff_ff_ff_ff_ff_ffn;
 	}
 	return hash;
 }
@@ -87,12 +101,12 @@ function fnv1a64(text: string): bigint {
  * check against an agent's expected version and the write it guards must run
  * without yielding.
  */
-export function columnContentVersion(blocks: readonly ColumnBlock[]): string {
+export function columnContentVersion(blocks: ReadonlyArray<ColumnBlock>): string {
 	const canonical = JSON.stringify(blocks.map((b) => [b.id, b.type, b.list, b.depth, b.checked, b.text]));
 	return fnv1a64(canonical).toString(36).padStart(13, "0");
 }
 
-export function readColumnContent(doc: Y.Doc): ColumnContent {
+export function readColumnContent(doc: YDoc): ColumnContent {
 	const blocks = readColumnBlocks(doc);
 	return { blocks, version: columnContentVersion(blocks) };
 }
@@ -102,7 +116,7 @@ export function isEmptyBlock(block: ColumnBlock): boolean {
 }
 
 /** The first line with text, which is how people name a column. */
-export function columnTitle(blocks: readonly ColumnBlock[]): string {
+export function columnTitle(blocks: ReadonlyArray<ColumnBlock>): string {
 	const first = blocks.find((block) => block.text.trim() !== "")?.text.trim() ?? "";
 	return first.length > 80 ? `${first.slice(0, 79)}…` : first;
 }
@@ -111,15 +125,15 @@ export function columnTitle(blocks: readonly ColumnBlock[]): string {
  * Markdown with each block's ID as a trailing ` ^id` reference, which agents
  * pass back to address an item. Blocks without an ID cannot be addressed.
  */
-export function columnBlocksToMarkdown(blocks: readonly ColumnBlock[]): string {
-	const lines: string[] = [];
-	const ordinals: number[] = [];
+export function columnBlocksToMarkdown(blocks: ReadonlyArray<ColumnBlock>): string {
+	const lines: Array<string> = [];
+	const ordinals: Array<number> = [];
 	for (const block of blocks) {
 		const pad = "  ".repeat(block.depth);
 		let prefix = "";
-		if (block.type !== "p") prefix = `${"#".repeat(Number(block.type.slice(1)))} `;
-		if (block.list === "disc") prefix = "- " + prefix;
-		if (block.list === "todo") prefix = `- [${block.checked ? "x" : " "}] ` + prefix;
+		if (block.type !== "p") {prefix = `${"#".repeat(Number(block.type.slice(1)))} `;}
+		if (block.list === "disc") {prefix = "- " + prefix;}
+		if (block.list === "todo") {prefix = `- [${block.checked ? "x" : " "}] ` + prefix;}
 		if (block.list === "decimal") {
 			ordinals.length = block.depth + 1;
 			ordinals[block.depth] = (ordinals[block.depth] ?? 0) + 1;
@@ -130,5 +144,5 @@ export function columnBlocksToMarkdown(blocks: readonly ColumnBlock[]): string {
 		const ref = block.id ? ` ^${block.id}` : "";
 		lines.push(isEmptyBlock(block) ? "" : `${pad}${prefix}${block.text}${ref}`);
 	}
-	return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+	return lines.join("\n").replaceAll(/\n{3,}/g, "\n\n").trim();
 }

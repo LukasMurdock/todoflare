@@ -1,3 +1,4 @@
+declare global { interface Window { confirmedSignIns: number } }
 import { expect, test } from "@playwright/test";
 import { signInWithNewPasskey } from "./helpers/passkey-session";
 
@@ -9,7 +10,7 @@ test("confirms a refused credential change with a passkey and retries it", async
 	const accountId = await signInWithNewPasskey(page, context, origin);
 	let refusals = 0;
 	await page.route("**/api/auth/recovery-code/generate", (route) => {
-		if (refusals++ > 0) return route.continue();
+		if (refusals++ > 0) {return route.continue();}
 		return route.fulfill({
 			status: 401,
 			contentType: "application/json",
@@ -44,11 +45,11 @@ test("drops a refused change abandoned while its confirmation is in flight", asy
 	// reauthenticate() names the account to the password manager just before
 	// the hook decides whether to retry: a barrier this test can observe.
 	await page.addInitScript(() => {
-		(window as unknown as { confirmedSignIns: number }).confirmedSignIns = 0;
+		window.confirmedSignIns = 0;
 		Object.defineProperty(PublicKeyCredential, "signalCurrentUserDetails", {
 			configurable: true,
 			value: () => {
-				(window as unknown as { confirmedSignIns: number }).confirmedSignIns++;
+				window.confirmedSignIns++;
 				return Promise.resolve();
 			},
 		});
@@ -64,7 +65,7 @@ test("drops a refused change abandoned while its confirmation is in flight", asy
 		});
 	});
 	// Hold the passkey sign-in so the dialog can be closed while it runs.
-	let release: () => void = () => undefined;
+	let release!: () => void;
 	const held = new Promise<void>((resolve) => { release = resolve; });
 	await page.route("**/api/auth/passkey/verify-authentication", async (route) => {
 		await held;
@@ -82,7 +83,7 @@ test("drops a refused change abandoned while its confirmation is in flight", asy
 	await expect(page.getByRole("dialog")).toBeHidden();
 	release();
 	expect((await signIn).status()).toBe(200);
-	await expect.poll(() => page.evaluate(() => (window as unknown as { confirmedSignIns: number }).confirmedSignIns)).toBe(1);
+	await expect.poll(() => page.evaluate(() => window.confirmedSignIns)).toBe(1);
 	// A retry would be under way by now; let the page settle a full round trip.
 	await page.getByRole("button", { name: `${accountId.slice(0, 4)}...${accountId.slice(12)}` }).click();
 	await page.getByRole("menuitem", { name: "Passkeys and recovery" }).click();

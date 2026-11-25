@@ -152,7 +152,7 @@ export function loadSpecScenarios(specPath) {
 								...(call.args ?? {}),
 							});
 						}
-						if ((acc.agent.mcpCalls ?? []).length > 0) await page.waitForTimeout(400);
+
 						needsReload = true;
 					}
 
@@ -175,7 +175,7 @@ export function loadSpecScenarios(specPath) {
 
 					if (needsReload && !def.route) {
 						await page.reload();
-						await page.waitForTimeout(600);
+						await page.waitForLoadState("domcontentloaded");
 					}
 
 					if (acc.offline) {
@@ -204,30 +204,30 @@ export function loadSpecScenarios(specPath) {
 }
 
 function describeAccount(acc) {
-	if (!acc) return "Guest";
+	if (!acc) {return "Guest";}
 	const parts = [acc.mode ?? "guest"];
-	if (acc.columns?.length) parts.push(`${acc.columns.length} col(s)`);
-	if (acc.agent) parts.push(`agent: ${acc.agent.name ?? "Claude Code"}`);
-	if (acc.offline) parts.push("offline");
-	if (acc.expiredSession) parts.push("session expired");
+	if (acc.columns?.length) {parts.push(`${acc.columns.length} col(s)`);}
+	if (acc.agent) {parts.push(`agent: ${acc.agent.name ?? "Claude Code"}`);}
+	if (acc.offline) {parts.push("offline");}
+	if (acc.expiredSession) {parts.push("session expired");}
 	return parts.join(" · ");
 }
 
 function interpolate(str, vars) {
-	return String(str).replace(/\{\{(\w+)\}\}/g, (_, k) => vars[k] ?? "");
+	return String(str).replaceAll(/\{\{(\w+)\}\}/g, (_, k) => vars[k] ?? "");
 }
 
 function locate(page, step, vars) {
 	if (step.role) {
 		const opts = {};
-		if (step.name != null) opts.name = interpolate(step.name, vars);
-		if (step.exact != null) opts.exact = step.exact;
+		if ((step.name !== undefined && step.name !== null)) {opts.name = interpolate(step.name, vars);}
+		if ((step.exact !== undefined && step.exact !== null)) {opts.exact = step.exact;}
 		const loc = page.getByRole(step.role, opts);
-		return step.nth != null ? loc.nth(step.nth) : loc.first();
+		return (step.nth !== undefined && step.nth !== null) ? loc.nth(step.nth) : loc.first();
 	}
-	if (step.testId) return page.getByTestId(interpolate(step.testId, vars)).first();
-	if (step.text) return page.getByText(interpolate(step.text, vars)).first();
-	if (step.selector) return page.locator(interpolate(step.selector, vars)).first();
+	if (step.testId) {return page.getByTestId(interpolate(step.testId, vars)).first();}
+	if (step.text) {return page.getByText(interpolate(step.text, vars)).first();}
+	if (step.selector) {return page.locator(interpolate(step.selector, vars)).first();}
 	throw new Error(`Step action "${step.action}" needs role, testId, text, or selector.`);
 }
 
@@ -252,10 +252,11 @@ async function executeStep(page, step, vars, captureStep) {
 			await page.keyboard.press(step.key);
 			break;
 		case "wait":
+			// oxlint-disable-next-line landmines/no-fixed-sleep -- Capture scripts expose an explicit user-authored delay step.
 			await page.waitForTimeout(step.ms ?? 300);
 			break;
 		case "waitForText":
-			await expect(page.getByText(interpolate(step.text, vars)).first()).toBeVisible({ timeout: step.timeout ?? 15000 });
+			await expect(page.getByText(interpolate(step.text, vars)).first()).toBeVisible({ timeout: step.timeout ?? 15_000 });
 			break;
 		case "goto":
 			await page.goto(interpolate(step.url, vars));

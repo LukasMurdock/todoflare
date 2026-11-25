@@ -1,4 +1,6 @@
-import { lazy, Suspense, useRef, useState, type ChangeEvent, type ReactNode } from "react";
+import { useCurrentMinute } from "@/hooks/use-current-minute";
+import { lazy, Suspense, useRef, useState } from 'react';
+import type { ChangeEvent, ReactNode } from 'react';
 import {
 	Copy,
 	LogOut,
@@ -44,7 +46,39 @@ import { CredentialManager } from "./CredentialManager";
 // Most visits never open it: fetched on first use, not with the board.
 const AgentsDialog = lazy(() => import("@/components/agents/AgentsDialog").then((module) => ({ default: module.AgentsDialog })));
 
+const formatColumnId = (columnId: string) => {
+	if (columnId.length <= 12) {return columnId;}
+	return `${columnId.slice(0, 6)}...${columnId.slice(-4)}`;
+};
+
+const formatSyncTimestamp = (value: number | null) => {
+	if (!value) {return "Never";}
+	return new Date(value).toLocaleString();
+};
+
+const formatRelativeTime = (value: number | null, now: number) => {
+	if (!value) {return "Never";}
+	const seconds = Math.round((now - value) / 1000);
+	if (seconds < 45) {return "Just now";}
+	const minutes = Math.round(seconds / 60);
+	if (minutes < 60) {return `${minutes}m ago`;}
+	const hours = Math.round(minutes / 60);
+	if (hours < 24) {return `${hours}h ago`;}
+	return new Date(value).toLocaleDateString();
+};
+
+const formatLatencyMs = (value: number | null) => {
+	if (value === null) {return "n/a";}
+	return `${value} ms`;
+};
+
+const redactColumnIdForSnapshot = (columnId: string) => {
+	if (columnId.length <= 8) {return "[redacted]";}
+	return `${columnId.slice(0, 4)}...[redacted]...${columnId.slice(-4)}`;
+};
+
 export function AccountBadge() {
+	const now = useCurrentMinute();
 	const {
 		accountId,
 		connectionStatus,
@@ -77,15 +111,15 @@ export function AccountBadge() {
 			});
 			const url = URL.createObjectURL(blob);
 			const link = document.createElement("a");
-			const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+			const timestamp = new Date().toISOString().replaceAll(/[:.]/g, "-");
 			link.href = url;
 			link.download = `todoflare-storage-recovery-${timestamp}.json`;
-			document.body.appendChild(link);
+			document.body.insertBefore(link, null);
 			link.click();
 			link.remove();
 			URL.revokeObjectURL(url);
-		} catch (err) {
-			console.error("Failed to download storage recovery data:", err);
+		} catch (error) {
+			console.error("Failed to download storage recovery data:", error);
 		}
 	};
 
@@ -102,7 +136,7 @@ export function AccountBadge() {
 				variant="outline"
 				size="sm"
 				className="h-7 gap-1.5 rounded-full border-red-500/30 bg-background/85 px-2.5 text-xs text-red-600 shadow-raised backdrop-blur-md hover:bg-red-500/10 hover:text-red-600 dark:text-red-400 dark:hover:text-red-400"
-				onClick={handleDownloadStorageRecovery}
+				onClick={() => void handleDownloadStorageRecovery()}
 				title={syncStateSummary.storageLastError ?? "Browser storage needs attention"}
 			>
 				<FileDown className="size-3.5" />
@@ -116,8 +150,8 @@ export function AccountBadge() {
 			await navigator.clipboard.writeText(displayAccountId(accountId));
 			setCopied(true);
 			setTimeout(() => setCopied(false), 2000);
-		} catch (err) {
-			console.error("Failed to copy:", err);
+		} catch (error) {
+			console.error("Failed to copy:", error);
 		}
 	};
 
@@ -156,7 +190,7 @@ export function AccountBadge() {
 	const hasPendingYjsOutbox = yjsOutboxSummary.totalPending > 0;
 	const topYjsOutboxColumns = Object.entries(yjsOutboxSummary.columnPending)
 		.sort((a, b) => {
-			if (b[1] === a[1]) return a[0].localeCompare(b[0]);
+			if (b[1] === a[1]) {return a[0].localeCompare(b[0]);}
 			return b[1] - a[1];
 		})
 		.slice(0, 3);
@@ -164,37 +198,6 @@ export function AccountBadge() {
 		0,
 		yjsOutboxSummary.activeColumns - topYjsOutboxColumns.length,
 	);
-
-	const formatColumnId = (columnId: string) => {
-		if (columnId.length <= 12) return columnId;
-		return `${columnId.slice(0, 6)}...${columnId.slice(-4)}`;
-	};
-
-	const formatSyncTimestamp = (value: number | null) => {
-		if (!value) return "Never";
-		return new Date(value).toLocaleString();
-	};
-
-	const formatRelativeTime = (value: number | null) => {
-		if (!value) return "Never";
-		const seconds = Math.round((Date.now() - value) / 1000);
-		if (seconds < 45) return "Just now";
-		const minutes = Math.round(seconds / 60);
-		if (minutes < 60) return `${minutes}m ago`;
-		const hours = Math.round(minutes / 60);
-		if (hours < 24) return `${hours}h ago`;
-		return new Date(value).toLocaleDateString();
-	};
-
-	const formatLatencyMs = (value: number | null) => {
-		if (value === null) return "n/a";
-		return `${value} ms`;
-	};
-
-	const redactColumnIdForSnapshot = (columnId: string) => {
-		if (columnId.length <= 8) return "[redacted]";
-		return `${columnId.slice(0, 4)}...[redacted]...${columnId.slice(-4)}`;
-	};
 
 	const buildSyncDebugSnapshot = () => {
 		const displayedAccountId = displayAccountId(accountId);
@@ -265,8 +268,8 @@ export function AccountBadge() {
 			await navigator.clipboard.writeText(JSON.stringify(buildSyncDebugSnapshot(), null, 2));
 			setCopiedSyncDebug(true);
 			setTimeout(() => setCopiedSyncDebug(false), 2000);
-		} catch (err) {
-			console.error("Failed to copy sync debug snapshot:", err);
+		} catch (error) {
+			console.error("Failed to copy sync debug snapshot:", error);
 		}
 	};
 
@@ -277,18 +280,18 @@ export function AccountBadge() {
 			});
 			const url = URL.createObjectURL(blob);
 			const link = document.createElement("a");
-			const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+			const timestamp = new Date().toISOString().replaceAll(/[:.]/g, "-");
 			link.href = url;
 			link.download = `todoflare-sync-debug-${timestamp}.json`;
-			document.body.appendChild(link);
+			document.body.insertBefore(link, null);
 			link.click();
 			link.remove();
 			URL.revokeObjectURL(url);
 
 			setDownloadedSyncDebug(true);
 			setTimeout(() => setDownloadedSyncDebug(false), 2000);
-		} catch (err) {
-			console.error("Failed to download sync debug snapshot:", err);
+		} catch (error) {
+			console.error("Failed to download sync debug snapshot:", error);
 		}
 	};
 
@@ -298,17 +301,17 @@ export function AccountBadge() {
 
 	const handleExport = async () => {
 		const payload = await exportAccountData();
-		if (!payload) return;
+		if (!payload) {return;}
 
 		const blob = new Blob([JSON.stringify(payload, null, 2)], {
 			type: "application/json",
 		});
 		const url = URL.createObjectURL(blob);
 		const link = document.createElement("a");
-		const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+		const timestamp = new Date().toISOString().replaceAll(/[:.]/g, "-");
 		link.href = url;
 		link.download = `todoflare-export-${timestamp}.json`;
-		document.body.appendChild(link);
+		document.body.insertBefore(link, null);
 		link.click();
 		link.remove();
 		URL.revokeObjectURL(url);
@@ -317,18 +320,17 @@ export function AccountBadge() {
 	const handleImportSelect = async (event: ChangeEvent<HTMLInputElement>) => {
 		const file = event.target.files?.[0];
 		event.target.value = "";
-		if (!file) return;
+		if (!file) {return;}
 
 		try {
 			const text = await file.text();
-			const payload = JSON.parse(text);
+			const payload: unknown = JSON.parse(text);
 			await importAccountData(payload);
-		} catch (err) {
-			console.error("Failed to import file:", err);
+		} catch (error) {
+			console.error("Failed to import file:", error);
 		}
 	};
 
-	const now = Date.now();
 	const DAY_MS = 24 * 60 * 60 * 1000;
 	const menuIcon = "size-4 stroke-[1.75]";
 	const sectionLabel = "px-2 pt-2 pb-1 text-[10.5px] font-medium tracking-[0.08em] text-muted-foreground uppercase";
@@ -359,7 +361,7 @@ export function AccountBadge() {
 								<Trash2 className="size-5 stroke-[1.75]" />
 							</div>
 							<p className="text-sm font-medium">No recently deleted columns.</p>
-							<p className="text-xs text-muted-foreground">Deleted columns stay here for 30 days before they're removed for good.</p>
+							<p className="text-xs text-muted-foreground">Deleted columns stay here for 30 days before they’re removed for good.</p>
 						</div>
 					) : (
 						<ul className="min-h-0 divide-y divide-border/60 overflow-y-auto rounded-lg border border-border/70">
@@ -388,7 +390,7 @@ export function AccountBadge() {
 												</p>
 											</div>
 										</div>
-										<Button variant="ghost" size="sm" onClick={handleRestore} className="h-7 gap-1.5 px-2">
+										<Button variant="ghost" size="sm" onClick={() => void handleRestore()} className="h-7 gap-1.5 px-2">
 											<RotateCcw className="size-3.5" />
 											Restore
 										</Button>
@@ -405,7 +407,7 @@ export function AccountBadge() {
 					ref={fileInputRef}
 					type="file"
 					accept="application/json"
-					onChange={handleImportSelect}
+					onChange={(event) => void handleImportSelect(event)}
 					className="hidden"
 				/>
 				<Tooltip>
@@ -454,8 +456,8 @@ export function AccountBadge() {
 							) : null}
 						</TooltipSection>
 						<TooltipSection title="Last sync">
-							<TooltipRow label="Server hydration" value={formatRelativeTime(syncStateSummary.lastServerHydrationAt)} title={formatSyncTimestamp(syncStateSummary.lastServerHydrationAt)} />
-							<TooltipRow label="Replay" value={formatRelativeTime(syncStateSummary.lastReplayAt)} title={formatSyncTimestamp(syncStateSummary.lastReplayAt)} />
+							<TooltipRow label="Server hydration" value={formatRelativeTime(syncStateSummary.lastServerHydrationAt, now)} title={formatSyncTimestamp(syncStateSummary.lastServerHydrationAt)} />
+							<TooltipRow label="Replay" value={formatRelativeTime(syncStateSummary.lastReplayAt, now)} title={formatSyncTimestamp(syncStateSummary.lastReplayAt)} />
 							<TooltipRow label="Replay latency" value={formatLatencyMs(syncStateSummary.lastReplayLatencyMs)} />
 						</TooltipSection>
 						<TooltipSection title="Health" last>
@@ -477,7 +479,7 @@ export function AccountBadge() {
 
 					<DropdownMenuGroup>
 						<DropdownMenuLabel className={sectionLabel}>Account</DropdownMenuLabel>
-						<DropdownMenuItem onClick={handleCopy}>
+						<DropdownMenuItem onClick={() => void handleCopy()}>
 							{copied ? (
 								<Check className={cn(menuIcon, "text-emerald-500")} />
 							) : (
@@ -501,7 +503,7 @@ export function AccountBadge() {
 
 					<DropdownMenuGroup>
 						<DropdownMenuLabel className={sectionLabel}>Data</DropdownMenuLabel>
-						<DropdownMenuItem onClick={handleExport}>
+						<DropdownMenuItem onClick={() => void handleExport()}>
 							<Download className={menuIcon} />
 							Export Data
 						</DropdownMenuItem>
@@ -517,7 +519,7 @@ export function AccountBadge() {
 							</span>
 						</DropdownMenuItem>
 						{syncStateSummary.quarantinedRecords > 0 ? (
-							<DropdownMenuItem onClick={handleDownloadStorageRecovery}>
+							<DropdownMenuItem onClick={() => void handleDownloadStorageRecovery()}>
 								<FileDown className={menuIcon} />
 								Download Unsent Changes Recovery
 							</DropdownMenuItem>
@@ -528,7 +530,7 @@ export function AccountBadge() {
 
 					<DropdownMenuGroup>
 						<DropdownMenuLabel className={sectionLabel}>Diagnostics</DropdownMenuLabel>
-						<DropdownMenuItem onClick={handleCopySyncDebugSnapshot}>
+						<DropdownMenuItem onClick={() => void handleCopySyncDebugSnapshot()}>
 							{copiedSyncDebug ? (
 								<Check className={cn(menuIcon, "text-emerald-500")} />
 							) : (

@@ -1,8 +1,9 @@
-import * as React from 'react';
+import React from 'react';
 
 import type { SlateElementProps } from 'platejs/static';
 
-import { type VariantProps, cva } from 'class-variance-authority';
+import { cva } from 'class-variance-authority';
+import type { VariantProps } from 'class-variance-authority';
 import { SlateElement } from 'platejs/static';
 
 // Editorial scale for a 320px column: tight tracking on the large sizes,
@@ -26,7 +27,7 @@ export function HeadingElementStatic({
 }: SlateElementProps & VariantProps<typeof headingVariants>) {
   return (
     <SlateElement
-      as={variant!}
+      as={variant ?? 'h1'}
       className={headingVariants({ variant })}
       {...props}
     >

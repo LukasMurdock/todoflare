@@ -23,13 +23,13 @@ export interface AccountColumnExportBindings<TColumnRoomId> {
 }
 
 export type ExportAccountColumnsResult =
-	| { ok: true; columns: AccountExportColumn[] }
-	| { ok: false; failures: AccountColumnExportFailure[] };
+	| { ok: true; columns: Array<AccountExportColumn> }
+	| { ok: false; failures: Array<AccountColumnExportFailure> };
 
 /** Exports every expected owned column or returns no artifact at all. */
 export async function exportAccountColumns<TColumnRoomId>(input: {
 	columnRooms: AccountColumnExportBindings<TColumnRoomId>;
-	columnIds: readonly string[];
+	columnIds: ReadonlyArray<string>;
 	accountId: string;
 	concurrency?: number;
 }): Promise<ExportAccountColumnsResult> {
@@ -103,12 +103,12 @@ export async function exportAccountColumns<TColumnRoomId>(input: {
 	);
 
 	const failures = results.flatMap((result) => result.ok ? [] : [result.failure]);
-	if (failures.length > 0) return { ok: false, failures };
+	if (failures.length > 0) {return { ok: false, failures };}
 
 	return {
 		ok: true,
 		columns: results.map((result) => {
-			if (!result.ok) throw new Error("Unreachable incomplete account export");
+			if (!result.ok) {throw new Error("Unreachable incomplete account export");}
 			return result.column;
 		}),
 	};

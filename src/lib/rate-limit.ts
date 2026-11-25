@@ -64,7 +64,7 @@ export async function checkRateLimit<Id>(
 	if (!response.ok) {
 		throw new Error(`Rate limit coordinator failed: ${response.status}`);
 	}
-	return (await response.json()) as RateLimitResult;
+	return response.json<RateLimitResult>();
 }
 
 /** Clears a rate-limit window. Used only by staging recovery controls. */

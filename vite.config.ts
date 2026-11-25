@@ -1,5 +1,5 @@
-import { execFileSync } from "child_process";
-import path from "path";
+import { execFileSync } from "node:child_process";
+import path from "node:path";
 import { defineConfig } from "vite";
 import { cloudflare } from "@cloudflare/vite-plugin";
 import tailwindcss from "@tailwindcss/vite";
@@ -7,11 +7,13 @@ import { excludeUnusedYjsProviders } from "@todoflare/board/vite";
 
 const isE2e = process.env.TODOFLARE_E2E === "true";
 
+const git = (...args: Array<string>) =>
+		execFileSync("git", args, { cwd: import.meta.dirname, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+
 // Only commit facts, never the build time: `pnpm deploy` rebuilds and requires
 // the artifact hashes of the verified frozen build.
 function readBuildInfo() {
-	const git = (...args: string[]) =>
-		execFileSync("git", args, { cwd: __dirname, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+
 	try {
 		return {
 			commit: git("rev-parse", "--short=12", "HEAD"),
@@ -47,7 +49,7 @@ export default defineConfig({
 	],
 	resolve: {
 		alias: {
-			"@": path.resolve(__dirname, "./src"),
+			"@": path.resolve(import.meta.dirname, "./src"),
 		},
 	},
 });

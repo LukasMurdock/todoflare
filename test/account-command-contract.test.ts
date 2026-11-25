@@ -5,10 +5,7 @@ import {
 	recordSyncFailure,
 	summarizeReplayReport,
 } from "../src/lib/sync/account-command-reconciliation";
-import type {
-	AccountCommandPayloadMap,
-	AccountCommandType,
-} from "../src/lib/sync/contracts";
+import type { AccountCommandPayloadMap } from "../src/lib/sync/contracts";
 import { createAccountEditCommand } from "../src/lib/sync/contracts";
 
 function assertCompileTimePayloadCorrelation() {
@@ -44,10 +41,7 @@ const validPayloads = {
 	"column.hide_shared": { hiddenSharedColumns: ["00000000-0000-4000-8000-000000000001"] },
 } satisfies AccountCommandPayloadMap;
 
-function storedCommand<T extends AccountCommandType>(
-	opType: T,
-	payload: AccountCommandPayloadMap[T],
-) {
+function storedCommand(opType: string, payload: unknown) {
 	return {
 		queueId: `queue:${opType}`,
 		idempotencyKey: `key:${opType}`,
@@ -62,11 +56,11 @@ function storedCommand<T extends AccountCommandType>(
 
 describe("persisted account command parsing", () => {
 	it("accepts every operation and preserves its typed payload", () => {
-		for (const opType of Object.keys(validPayloads) as AccountCommandType[]) {
+		for (const [opType, payload] of Object.entries(validPayloads)) {
 			const parsed = parseQueuedMutation(
-				storedCommand(opType, validPayloads[opType]),
+				storedCommand(opType, payload),
 			);
-			expect(parsed).toMatchObject({ opType, payload: validPayloads[opType] });
+			expect(parsed).toMatchObject({ opType, payload });
 		}
 	});
 
@@ -85,10 +79,7 @@ describe("persisted account command parsing", () => {
 		["column.reorder", { columnOrder: ["column-1"] }],
 	] as const)("rejects a malformed %s payload", (opType, payload) => {
 		expect(
-			parseQueuedMutation({
-				...storedCommand(opType, validPayloads[opType]),
-				payload,
-			}),
+			parseQueuedMutation(storedCommand(opType, payload)),
 		).toBeNull();
 	});
 
@@ -116,7 +107,7 @@ describe("persisted account command parsing", () => {
 		);
 		expect(created).not.toBeNull();
 		expect(revoked).not.toBeNull();
-		if (!created || !revoked) throw new Error("Expected valid commands");
+		if (!created || !revoked) {throw new Error("Expected valid commands");}
 
 		expect(
 			summarizeReplayReport({
@@ -140,7 +131,7 @@ describe("persisted account command parsing", () => {
 		const deleted = parseQueuedMutation(
 			storedCommand("column.delete", validPayloads["column.delete"]),
 		);
-		if (!deleted) throw new Error("Expected a valid command");
+		if (!deleted) {throw new Error("Expected a valid command");}
 
 		const recorded = recordSyncFailure(
 			{

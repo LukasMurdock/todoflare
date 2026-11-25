@@ -10,13 +10,12 @@
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 const args = process.argv.slice(2);
 const root = args.includes("--root")
 	? path.resolve(args[args.indexOf("--root") + 1])
-	: path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+	: path.resolve(import.meta.dirname, "../..");
 const asJson = args.includes("--json");
 const familyFilter = args.includes("--family") ? args[args.indexOf("--family") + 1] : null;
 
@@ -28,9 +27,9 @@ function walk(dir) {
 	const out = [];
 	for (const entry of readdirSync(path.join(root, dir), { withFileTypes: true })) {
 		const rel = `${dir}/${entry.name}`;
-		if (skip.test(rel)) continue;
-		if (entry.isDirectory()) out.push(...walk(rel));
-		else if (extensions.has(path.extname(entry.name))) out.push(rel);
+		if (skip.test(rel)) {continue;}
+		if (entry.isDirectory()) {out.push(...walk(rel));}
+		else if (extensions.has(path.extname(entry.name))) {out.push(rel);}
 	}
 	return out;
 }
@@ -56,7 +55,7 @@ function constArrayMembers(file, name) {
 	visit(sources.get(file), (node) => {
 		if (ts.isVariableDeclaration(node) && node.name.getText() === name && node.initializer) {
 			visit(node.initializer, (inner) => {
-				if (ts.isStringLiteral(inner)) members.push(inner.text);
+				if (ts.isStringLiteral(inner)) {members.push(inner.text);}
 			});
 		}
 	});
@@ -66,7 +65,7 @@ function constArrayMembers(file, name) {
 function unionMembers(file, typeName, property = null) {
 	const members = [];
 	visit(sources.get(file), (node) => {
-		if (!ts.isTypeAliasDeclaration(node) || node.name.text !== typeName) return;
+		if (!ts.isTypeAliasDeclaration(node) || node.name.text !== typeName) {return;}
 		visit(node.type, (inner) => {
 			if (property === null && ts.isLiteralTypeNode(inner) && ts.isStringLiteral(inner.literal)) {
 				members.push(inner.literal.text);
@@ -96,7 +95,7 @@ function objectKeys(file, name) {
 			ts.isObjectLiteralExpression(node.initializer)
 		) {
 			for (const property of node.initializer.properties) {
-				if (property.name && ts.isStringLiteral(property.name)) keys.push(property.name.text);
+				if (property.name && ts.isStringLiteral(property.name)) {keys.push(property.name.text);}
 			}
 		}
 	});
@@ -106,9 +105,9 @@ function objectKeys(file, name) {
 /** Tries canonical declarations in order, so older revisions stay measurable. */
 function firstDeclared(...candidates) {
 	for (const [file, read] of candidates) {
-		if (!sources.has(file)) continue;
+		if (!sources.has(file)) {continue;}
 		const members = read(file);
-		if (members.length) return { declaredIn: file, members };
+		if (members.length) {return { declaredIn: file, members };}
 	}
 	return { declaredIn: "(not found)", members: [] };
 }
@@ -124,7 +123,7 @@ function recordKeys(name) {
 	let keys = interfaceKeys("src/types/account.ts", name);
 	if (!keys.length) {
 		visit(sources.get("src/lib/api/account-contract.ts"), (node) => {
-			if (!ts.isVariableDeclaration(node) || node.name.getText() !== contractSchemaFor[name]) return;
+			if (!ts.isVariableDeclaration(node) || node.name.getText() !== contractSchemaFor[name]) {return;}
 			visit(node.initializer, (inner) => {
 				if (
 					!keys.length &&
@@ -138,7 +137,7 @@ function recordKeys(name) {
 			});
 		});
 	}
-	if (!keys.length) throw new Error(`No declaration found for record shape ${name}`);
+	if (!keys.length) {throw new Error(`No declaration found for record shape ${name}`);}
 	return keys;
 }
 
@@ -159,19 +158,19 @@ function interfaceKeys(file, name) {
 function serverRoutes(entryFile) {
 	const routes = [];
 	visit(sources.get(entryFile), (node) => {
-		if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) return;
+		if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) {return;}
 		const method = node.expression.name.text;
-		if (node.expression.expression.getText() !== "app") return;
-		if (!["get", "post", "put", "delete", "patch"].includes(method)) return;
+		if (node.expression.expression.getText() !== "app") {return;}
+		if (!["get", "post", "put", "delete", "patch"].includes(method)) {return;}
 		const [first] = node.arguments;
 		if (first && ts.isStringLiteral(first) && first.text.startsWith("/")) {
 			routes.push(`${method.toUpperCase()} ${first.text}`);
 		}
 	});
 	for (const [file, source] of sources) {
-		if (!file.startsWith("src/")) continue;
+		if (!file.startsWith("src/")) {continue;}
 		visit(source, (node) => {
-			if (!ts.isObjectLiteralExpression(node)) return;
+			if (!ts.isObjectLiteralExpression(node)) {return;}
 			const value = (name) => {
 				const property = node.properties.find(
 					(p) => ts.isPropertyAssignment(p) && p.name.getText() === name,
@@ -180,7 +179,7 @@ function serverRoutes(entryFile) {
 			};
 			const method = value("method");
 			const routePath = value("path") ?? value("pattern");
-			if (method && routePath?.startsWith("/api/")) routes.push(`${method.toUpperCase()} ${routePath}`);
+			if (method && routePath?.startsWith("/api/")) {routes.push(`${method.toUpperCase()} ${routePath}`);}
 		});
 	}
 	return [...new Set(routes)];
@@ -212,20 +211,20 @@ function exactSites(member) {
 	const sites = [];
 	for (const [file, literals] of literalCache) {
 		const lines = literals.filter((literal) => literal.text === member).map((literal) => literal.line);
-		if (lines.length) sites.push({ file, lines });
+		if (lines.length) {sites.push({ file, lines });}
 	}
 	return sites;
 }
 
 function routeSites(route) {
 	const [, pattern] = route.split(" ");
-	const regex = new RegExp(`^${pattern.replace(/:[A-Za-z]+/g, "[^/?]+")}(\\?.*)?$`);
+	const regex = new RegExp(`^${pattern.replaceAll(/:[A-Za-z]+/g, "[^/?]+")}(\\?.*)?$`);
 	const sites = [];
 	for (const [file, literals] of literalCache) {
 		const lines = literals
 			.filter((literal) => literal.text.startsWith("/api") && regex.test(literal.text))
 			.map((literal) => literal.line);
-		if (lines.length) sites.push({ file, lines });
+		if (lines.length) {sites.push({ file, lines });}
 	}
 	return sites;
 }
@@ -251,9 +250,9 @@ function shapeSites(keys) {
 			) {
 				names = node.arguments[0].properties.filter((p) => p.name).map((p) => p.name.getText());
 			}
-			if (names && [...required].every((key) => names.includes(key))) lines.push(lineOf(file, node));
+			if (names && [...required].every((key) => names.includes(key))) {lines.push(lineOf(file, node));}
 		});
-		if (lines.length) sites.push({ file, lines });
+		if (lines.length) {sites.push({ file, lines });}
 	}
 	return sites;
 }
@@ -310,7 +309,7 @@ const families = [
 	},
 ];
 
-const report = families
+const report = families.values()
 	.filter((family) => !familyFilter || family.name === familyFilter)
 	.map((family) => {
 		const members = family.members.map((member) => {
@@ -333,10 +332,10 @@ const report = families
 			medianSrcFilesPerMember: median(members.map((m) => m.srcFiles)),
 			members,
 		};
-	});
+	}).toArray();
 
 function median(values) {
-	if (!values.length) return 0;
+	if (!values.length) {return 0;}
 	const sorted = [...values].sort((a, b) => a - b);
 	const mid = Math.floor(sorted.length / 2);
 	return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;

@@ -15,7 +15,7 @@ interface BoardColumn {
 }
 
 interface ColumnDocument {
-    doc: Y.Doc;
+    doc: Doc;
     awareness?: Awareness;
     release(): void;
 }
@@ -41,28 +41,28 @@ interface TodoBoardApi {
 }
 
 interface TodoBoardProps {
-    columns: readonly BoardColumn[];
+    columns: ReadonlyArray<BoardColumn>;
     documents: DocumentAdapter;
     status?: "loading" | "ready";
-    onCreateColumn?(): unknown;
-    onRemoveColumn?(column: BoardColumn): unknown;
-    onReorderColumns?(columnIds: string[]): unknown;
-    onCollapsedChange?(column: BoardColumn, collapsed: boolean): void;
-    onContentChange?(columnId: string, content: Value): void;
-    onError?(error: unknown, context: {
+    onCreateColumn?: () => unknown;
+    onRemoveColumn?: (column: BoardColumn) => unknown;
+    onReorderColumns?: (columnIds: Array<string>) => unknown;
+    onCollapsedChange?: (column: BoardColumn, collapsed: boolean) => void;
+    onContentChange?: (columnId: string, content: Value) => void;
+    onError?: (error: unknown, context: {
         columnId?: string;
         operation: string;
-    }): void;
-    onOpenLink?(url: string): void;
+    }) => void;
+    onOpenLink?: (url: string) => void;
     identity?: {
         name: string;
         color: string;
     };
-    editorPlugins?: readonly PlatePlugin<AnyPluginConfig>[];
+    editorPlugins?: ReadonlyArray<PlatePlugin<AnyPluginConfig>>;
     shortcutsButton?: "board" | "viewport" | "none";
     layout?: "fill" | "page";
-    renderColumnActions?(column: BoardColumn): ReactNode;
-    renderTopBar?(): ReactNode;
+    renderColumnActions?: (column: BoardColumn) => ReactNode;
+    renderTopBar?: () => ReactNode;
     className?: string;
     id?: string;
     ref?: Ref<TodoBoardApi>;

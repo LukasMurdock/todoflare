@@ -1,19 +1,14 @@
-import { describe, expect, it } from "vitest";
-import {
-	LocalYjsUpdateOutbox,
-	createMemoryYjsOutboxStorage,
-	type YjsOutboxEntry,
-} from "../src/lib/sync/yjs-update-outbox";
+import { describe, expect, it, vi } from "vitest";
+import { LocalYjsUpdateOutbox, createMemoryYjsOutboxStorage } from '../src/lib/sync/yjs-update-outbox';
+import type { YjsOutboxEntry } from '../src/lib/sync/yjs-update-outbox';
 
 function withMockedNow<T>(startAt: number, run: () => T): T {
-	const originalNow = Date.now;
-	let now = startAt;
-	Date.now = () => now++;
+	vi.useFakeTimers({ toFake: ["Date"], now: startAt });
 
 	try {
 		return run();
 	} finally {
-		Date.now = originalNow;
+		vi.useRealTimers();
 	}
 }
 
@@ -47,6 +42,7 @@ describe("LocalYjsUpdateOutbox", () => {
 				kind: "sync",
 				payload: new Uint8Array([1]),
 			});
+			vi.setSystemTime(1001);
 			outbox.enqueue({
 				accountId: "1111 1111 1111 1111",
 				columnId: "col-1",
@@ -100,7 +96,7 @@ describe("LocalYjsUpdateOutbox", () => {
 					columnId: "col-1",
 					kind: "awareness",
 					updateBytes: [9],
-					createdAt: 1_000,
+					createdAt: 1000,
 				}),
 				makeEntry({
 					id: "sync-entry",
@@ -108,7 +104,7 @@ describe("LocalYjsUpdateOutbox", () => {
 					columnId: "col-1",
 					kind: "sync",
 					updateBytes: [7],
-					createdAt: 9_900,
+					createdAt: 9900,
 				}),
 			]);
 			const outbox = new LocalYjsUpdateOutbox({ storage });
@@ -116,7 +112,7 @@ describe("LocalYjsUpdateOutbox", () => {
 			const replayable = outbox.getReplayableForColumn(
 				"1111 1111 1111 1111",
 				"col-1",
-				{ awarenessMaxAgeMs: 2_000 },
+				{ awarenessMaxAgeMs: 2000 },
 			);
 
 			expect(replayable.map((entry) => entry.id)).toEqual(["sync-entry"]);

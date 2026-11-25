@@ -6,18 +6,18 @@ export default defineConfig({
 	testIgnore: ["agents-staging.spec.ts"],
 	fullyParallel: true,
 	forbidOnly: true,
-	retries: process.env.CI ? 2 : 0,
+	retries: 0,
 	workers: 2,
 	reporter: "list",
 	use: {
 		baseURL: "http://127.0.0.1:4173",
-		trace: "on-first-retry",
+		trace: "retain-on-failure",
 	},
 	webServer: {
 		command: "pnpm e2e:serve",
 		url: "http://127.0.0.1:4173",
 		reuseExistingServer: false,
-		timeout: 120000,
+		timeout: 120_000,
 	},
 	projects: [
 		{

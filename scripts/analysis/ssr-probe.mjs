@@ -9,11 +9,10 @@
 
 import { readdirSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { BOARD_ROOT } from "./board-zones.mjs";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const root = path.resolve(import.meta.dirname, "../..");
 const asJson = process.argv.includes("--json");
 
 function walk(dir) {
@@ -82,10 +81,10 @@ await tryRender(
 
 await server.close();
 const report = { imports, importFailures: imports.filter((i) => !i.ok).length, renders };
-if (asJson) console.log(JSON.stringify(report, null, 2));
+if (asJson) {console.log(JSON.stringify(report, null, 2));}
 else {
 	console.log(`## Import in Node (${imports.length - report.importFailures}/${imports.length} ok)`);
-	for (const i of imports.filter((i) => !i.ok)) console.log(`  FAIL ${i.file}: ${i.error}`);
+	for (const i of imports.filter((i) => !i.ok)) {console.log(`  FAIL ${i.file}: ${i.error}`);}
 	console.log("\n## Server render");
-	for (const r of renders) console.log(`  ${r.ok ? "ok  " : "FAIL"} ${r.name}${r.ok ? ` (${r.htmlBytes} bytes)` : `: ${r.error}`}`);
+	for (const r of renders) {console.log(`  ${r.ok ? "ok  " : "FAIL"} ${r.name}${r.ok ? ` (${r.htmlBytes} bytes)` : `: ${r.error}`}`);}
 }

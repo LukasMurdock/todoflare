@@ -9,7 +9,7 @@ import { oauthClients } from "../src/server/oauth/authorization-server";
 
 function request(path: string, token?: string, body: unknown = {}) {
 	return new Request(`https://staging.todo.tamesystems.org/api/admin/staging/${path}`, {
-		method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body),
+		method: "POST", headers: { "Content-Type": "application/json", ...(token && { Authorization: `Bearer ${token}` }) }, body: JSON.stringify(body),
 	});
 }
 
@@ -55,7 +55,7 @@ describe("staging recovery controls", () => {
 		const bindings = { ...env, ENVIRONMENT: "staging", BACKUP_ADMIN_TOKEN: "secret" };
 		const createAccount = { limit: 5, windowSeconds: 3600 };
 		const exhaust = async (key: string) => {
-			for (let i = 0; i < createAccount.limit; i++) await checkRateLimit(env.RATE_LIMIT_COORDINATOR, key, createAccount);
+			for (let i = 0; i < createAccount.limit; i++) {await checkRateLimit(env.RATE_LIMIT_COORDINATOR, key, createAccount);}
 			return (await checkRateLimit(env.RATE_LIMIT_COORDINATOR, key, createAccount)).allowed;
 		};
 		const callerKey = ipRateLimitKey("create-account", "203.0.113.9");
@@ -84,10 +84,10 @@ describe("staging recovery controls", () => {
 	it("resets agent connections, tokens, grants and OAuth clients with the accounts", async () => {
 		const store = agentStore(env.AUTH_DB);
 		const created = await store.create({ userId: "1234567890123456", name: "agent", expiresInDays: 1, now: Date.now() });
-		if (!created.ok) throw new Error("setup");
+		if (!created.ok) {throw new Error("setup");}
 		await store.setGrant({ userId: "1234567890123456", connectionId: created.value.agent.id, columnId: crypto.randomUUID(), level: "read", expiresAt: null, now: Date.now() });
 		await oauthClients(env.AUTH_DB, () => Promise.reject(new Error("no fetch"))).register({ redirect_uris: ["https://app.example/cb"] }, Date.now());
-		for (let done = false; !done; ) done = (await resetStagingData(env, 50)).done;
+		for (let done = false; !done; ) {done = (await resetStagingData(env, 50)).done;}
 		for (const table of ["agent_connection", "agent_token", "agent_grant", "oauth_client", "oauth_code"]) {
 			const row = await env.AUTH_DB.prepare(`SELECT COUNT(*) AS count FROM "${table}"`).first<{ count: number }>();
 			expect([table, row?.count]).toEqual([table, 0]);
@@ -95,27 +95,27 @@ describe("staging recovery controls", () => {
 		expect(await store.resolveToken(created.value.token, Date.now())).toBeNull();
 	});
 	it("resets every account, column, record, backup and credential, in bounded batches", async () => {
-		const accounts: string[] = [];
-		const columns: string[] = [];
+		const accounts: Array<string> = [];
+		const columns: Array<string> = [];
 		for (let i = 0; i < 3; i++) {
 			const created = await production.fetch(new Request("http://localhost/api/account", {
 				method: "POST", headers: { "X-Forwarded-For": `10.20.${i}.1` },
 			}), env, createExecutionContext());
-			const accountId = ((await created.json()) as { account: { id: string } }).account.id.replace(/\D/g, "");
+			const accountId = ((await created.json<{ account: { id: string } }>())).account.id.replaceAll(/\D/g, "");
 			accounts.push(accountId);
 			const column = await production.fetch(new Request("http://localhost/api/column", {
 				method: "POST", headers: { "X-Todoflare-Test-Account": accountId, "Content-Type": "application/json" }, body: "{}",
 			}), env, createExecutionContext());
-			columns.push(((await column.json()) as { column: { id: string } }).column.id);
+			columns.push(((await column.json<{ column: { id: string } }>())).column.id);
 		}
 		await env.BACKUPS.put("columns/example/1.json", "{}");
 		await env.AUTH_DB.prepare('INSERT INTO "user" (id, name, email, emailVerified, createdAt, updatedAt) VALUES (?, ?, ?, 0, 0, 0)').bind("u1", "n", "u1@example.com").run();
 
-		const rounds: boolean[] = [];
+		const rounds: Array<boolean> = [];
 		for (let round = 0; round < 20; round++) {
 			const { done } = await resetStagingData(env, 2);
 			rounds.push(done);
-			if (done) break;
+			if (done) {break;}
 		}
 
 		expect(rounds.at(-1)).toBe(true);

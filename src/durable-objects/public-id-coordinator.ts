@@ -42,16 +42,22 @@ export class PublicIdCoordinatorSql extends DurableObject<PublicIdCoordinatorEnv
 		);
 	}
 
+	private requireRow(): PublicIdRow {
+		const row = this.load();
+		if (!row) {throw new Error("Missing persisted coordinator row");}
+		return row;
+	}
+
 	private async bootstrap(publicId: string): Promise<PublicIdRow> {
 		const row = this.load();
-		if (row) return row;
+		if (row) {return row;}
 		const columnId = await this.env.ACCOUNTS.get(`public:${publicId}`);
 		this.ctx.storage.sql.exec(
 			"INSERT INTO public_id_claim (id, public_id, column_id, dirty) VALUES (1, ?, ?, 0)",
 			publicId,
 			columnId,
 		);
-		return this.load() as PublicIdRow;
+		return this.requireRow();
 	}
 
 	private async project(row: PublicIdRow): Promise<void> {
@@ -67,22 +73,22 @@ export class PublicIdCoordinatorSql extends DurableObject<PublicIdCoordinatorEnv
 				publicId: row.public_id,
 				error: error instanceof Error ? error.message : String(error),
 			});
-			await this.ctx.storage.setAlarm(Date.now() + 5_000);
+			await this.ctx.storage.setAlarm(Date.now() + 5000);
 		}
 	}
 
 	private async handle(request: Request): Promise<Response> {
-		if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
-		const body = (await request.json().catch(() => null)) as {
+		if (request.method !== "POST") {return new Response("Method Not Allowed", { status: 405 });}
+		const body = (await request.json<{
 			publicId?: unknown;
 			columnId?: unknown;
-		} | null;
+		} | null>().catch(() => null));
 		if (!body || typeof body.publicId !== "string") {
 			return Response.json({ error: "Invalid public ID" }, { status: 400 });
 		}
 		const row = await this.bootstrap(body.publicId);
 		const pathname = new URL(request.url).pathname;
-		if (pathname === "/resolve") return Response.json({ columnId: row.column_id });
+		if (pathname === "/resolve") {return Response.json({ columnId: row.column_id });}
 		if (typeof body.columnId !== "string") {
 			return Response.json({ error: "Invalid column ID" }, { status: 400 });
 		}
@@ -95,7 +101,7 @@ export class PublicIdCoordinatorSql extends DurableObject<PublicIdCoordinatorEnv
 				"UPDATE public_id_claim SET column_id = ?, dirty = 1 WHERE id = 1",
 				body.columnId,
 			);
-			await this.project(this.load() as PublicIdRow);
+			await this.project(this.requireRow());
 			return Response.json({ claimed: true });
 		}
 
@@ -104,7 +110,7 @@ export class PublicIdCoordinatorSql extends DurableObject<PublicIdCoordinatorEnv
 				this.ctx.storage.sql.exec(
 					"UPDATE public_id_claim SET column_id = NULL, dirty = 1 WHERE id = 1",
 				);
-				await this.project(this.load() as PublicIdRow);
+				await this.project(this.requireRow());
 			}
 			return Response.json({ released: row.column_id === body.columnId });
 		}
@@ -119,7 +125,7 @@ export class PublicIdCoordinatorSql extends DurableObject<PublicIdCoordinatorEnv
 	async alarm(): Promise<void> {
 		await this.enqueue(async () => {
 			const row = this.load();
-			if (row?.dirty) await this.project(row);
+			if (row?.dirty) {await this.project(row);}
 		});
 	}
 }

@@ -51,17 +51,27 @@ export type ColumnSocketEvent =
 
 export interface ColumnSocketInput {
 	url: string;
-	createSocket: (url: string, protocols: string[]) => ColumnSocketLike;
-	loadReplayFrames: () => ColumnSocketFrame[];
+	createSocket: (url: string, protocols: Array<string>) => ColumnSocketLike | WebSocket;
+	loadReplayFrames: () => Array<ColumnSocketFrame>;
 	onBestEffortFrameWritten: (frame: ColumnSocketFrame) => void;
 }
 
+export function isSocketBuffer(data: unknown): data is ArrayBuffer {
+	// oxlint-disable-next-line @nkzw/no-instanceof -- WebSocket binaryType creates the ArrayBuffer in the receiving realm.
+	return data instanceof ArrayBuffer;
+}
+
+function isSocketBlob(data: unknown): data is Blob {
+	// oxlint-disable-next-line @nkzw/no-instanceof -- The browser creates Blob messages in the receiving realm.
+	return typeof Blob !== "undefined" && data instanceof Blob;
+}
+
 async function normalizeSocketData(data: unknown): Promise<ArrayBuffer | null> {
-	if (data instanceof ArrayBuffer) {
+	if (isSocketBuffer(data)) {
 		return data;
 	}
 
-	if (typeof Blob !== "undefined" && data instanceof Blob) {
+	if (isSocketBlob(data)) {
 		return data.arrayBuffer();
 	}
 
@@ -76,7 +86,7 @@ export const columnSocketActor = createCallbackLogic<
 	socket.binaryType = "arraybuffer";
 
 	const writeFrame = (frame: ColumnSocketFrame) => {
-		if (socket.readyState !== 1) return false;
+		if (socket.readyState !== 1) {return false;}
 		try {
 			socket.send(frame.data);
 			if (!frame.requiresAck) {
@@ -102,10 +112,9 @@ export const columnSocketActor = createCallbackLogic<
 		sendBack({ type: "OUTBOX_REPLAYED" });
 	};
 
-	socket.onmessage = (event) => {
+	socket.onmessage = (event: { data: unknown }) => {
 		if (
-			typeof Blob !== "undefined" &&
-			event.data instanceof Blob &&
+			isSocketBlob(event.data) &&
 			event.data.size > MAX_WS_FRAME_BYTES
 		) {
 			socket.close(1009, "WebSocket payload too large");
@@ -113,13 +122,13 @@ export const columnSocketActor = createCallbackLogic<
 		}
 		void normalizeSocketData(event.data)
 			.then((data) => {
-				if (!data) return;
+				if (!data) {return;}
 				if (!isWsFrameWithinLimits(data)) {
 					socket.close(1009, "WebSocket payload too large");
 					return;
 				}
 				const message = decodeWsMessage(data);
-				if (!message) return;
+				if (!message) {return;}
 				if (message.type === "sync-ack") {
 					sendBack({
 						type: "OUTBOX_ACKNOWLEDGED",
@@ -142,7 +151,7 @@ export const columnSocketActor = createCallbackLogic<
 			});
 	};
 
-	socket.onclose = (event) => {
+	socket.onclose = (event: { code?: number; reason?: string; wasClean?: boolean }) => {
 		sendBack({
 			type: "SOCKET_CLOSED",
 			code: event.code ?? 0,

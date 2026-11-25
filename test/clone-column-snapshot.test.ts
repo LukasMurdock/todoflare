@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { cloneColumnSnapshot } from "../src/server/workflows/clone-column-snapshot";
 
 const ownerId = "1111 2222 3333 4444";
@@ -22,22 +22,22 @@ const snapshot = {
 };
 
 function bindings(importStatus = 200) {
-	const put = vi.fn(async () => undefined);
-	const fetch = vi.fn(async () => new Response(null, { status: importStatus }));
+	const writes: Array<string> = [];
+	const removed: Array<string> = [];
+	const records = new Map([["account:1111222233334444", JSON.stringify(account)]]);
 	return {
-			env: {
-				ACCOUNTS: {
-					get: vi.fn(async () => JSON.stringify(account)),
-					put,
-					delete: vi.fn(async () => undefined),
+		env: {
+			ACCOUNTS: {
+				get: async (key: string) => records.get(key) ?? null,
+				put: async (key: string, value: string) => { writes.push(key); records.set(key, value); },
+				delete: async (key: string) => { removed.push(key); records.delete(key); },
 			},
 			COLUMN_ROOM: {
 				idFromName: (id: string) => id,
-				get: () => ({ fetch }),
+				get: () => ({ fetch: async () => new Response(null, { status: importStatus }) }),
 			},
 		},
-		put,
-		fetch,
+		writes, removed,
 	};
 }
 
@@ -52,12 +52,11 @@ describe("cloneColumnSnapshot", () => {
 		});
 
 		expect(result).toEqual({ ok: false, code: "invalid_yjs_update" });
-		expect(failed.env.ACCOUNTS.delete).toHaveBeenCalledWith(
+		expect(failed.removed).toContain(
 			"column-registry:corrupt-clone",
 		);
-		expect(failed.put).not.toHaveBeenCalledWith(
+		expect(failed.writes).not.toContain(
 			"account:1111222233334444",
-			expect.any(String),
 		);
 	});
 
@@ -71,13 +70,12 @@ describe("cloneColumnSnapshot", () => {
 			now: () => 2,
 		});
 		expect(result).toEqual({ ok: false, code: "column_import_failed" });
-		expect(failed.put).toHaveBeenCalledWith(
+		expect(failed.writes).toContain(
 			"column-registry:00000000-0000-4000-8000-000000000002",
-			expect.any(String),
 		);
 
 		const successful = bindings();
-		const writes: string[] = [];
+		const writes: Array<string> = [];
 		const cloned = await cloneColumnSnapshot({
 			env: successful.env,
 			ownerId,

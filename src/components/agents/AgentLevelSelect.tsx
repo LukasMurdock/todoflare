@@ -1,10 +1,11 @@
-import { AGENT_GRANT_LEVELS, type AgentGrantLevel } from "@/lib/api/agent-contract";
+import { AGENT_GRANT_LEVELS } from '@/lib/api/agent-contract';
+import type { AgentGrantLevel } from '@/lib/api/agent-contract';
 import { AGENT_LEVEL_DESCRIPTIONS, AGENT_LEVEL_LABELS } from "@/lib/agents/agents-api";
 import { NativeSelect } from "@/components/ui/native-select";
 
 interface AgentLevelSelectProps {
 	value: AgentGrantLevel | null;
-	onChange(level: AgentGrantLevel | null): void;
+	onChange: (level: AgentGrantLevel | null) => void;
 	disabled?: boolean;
 	/** Offer "No access", which removes the grant. */
 	allowNone?: boolean;
@@ -27,7 +28,7 @@ export function AgentLevelSelect({ value, onChange, disabled, allowNone = true, 
 			className={value ? "w-full" : "w-full text-muted-foreground"}
 			value={value ?? ""}
 			disabled={disabled}
-			onChange={(event) => onChange(event.target.value === "" ? null : (event.target.value as AgentGrantLevel))}
+			onChange={(event) => onChange(event.target.value === "" ? null : (AGENT_GRANT_LEVELS.find((level) => level === event.target.value) ?? null))}
 		>
 			{allowNone && <option value="">No access</option>}
 			{AGENT_GRANT_LEVELS.map((level) => (

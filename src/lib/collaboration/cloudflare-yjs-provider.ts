@@ -1,7 +1,6 @@
 import type { ProviderConstructorProps, UnifiedProvider } from "@platejs/yjs";
-import * as Y from "yjs";
-import * as awarenessProtocol from "y-protocols/awareness";
-import type { Awareness } from "y-protocols/awareness";
+import { Doc as YDoc, applyUpdate } from "yjs";
+import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from "y-protocols/awareness";
 import type { SyncMessage } from "@/types/account";
 import type { DocumentAdapter } from "@todoflare/board";
 
@@ -26,7 +25,7 @@ class CloudflareProvider implements UnifiedProvider {
 	isSynced = false;
 
 	awareness: Awareness;
-	document: Y.Doc;
+	document: YDoc;
 
 	private readonly options: CloudflareProviderOptions;
 	private readonly onConnect?: () => void;
@@ -38,7 +37,7 @@ class CloudflareProvider implements UnifiedProvider {
 	private unsubscribeColumn?: () => void;
 	private docUpdateHandler?: (update: Uint8Array, origin: unknown) => void;
 	private awarenessUpdateHandler?: (
-		update: { added: number[]; updated: number[]; removed: number[] },
+		update: { added: Array<number>; updated: Array<number>; removed: Array<number> },
 		origin: unknown,
 	) => void;
 
@@ -52,9 +51,9 @@ class CloudflareProvider implements UnifiedProvider {
 		onSyncChange,
 	}: ProviderConstructorProps<CloudflareProviderOptions>) {
 		this.options = options;
-		const document = doc ?? new Y.Doc();
+		const document = doc ?? new YDoc();
 		this.document = document;
-		this.awareness = awareness ?? new awarenessProtocol.Awareness(document);
+		this.awareness = awareness ?? new Awareness(document);
 		this.onConnect = onConnect;
 		this.onDisconnect = onDisconnect;
 		this.onError = onError;
@@ -62,15 +61,15 @@ class CloudflareProvider implements UnifiedProvider {
 	}
 
 	connect() {
-		if (this.isConnected) return;
+		if (this.isConnected) {return;}
 		this.isConnected = true;
 		try {
 			this.unsubscribeColumn = this.options.transport.subscribeToColumn(
 				this.options.columnId,
 			);
 			this.onConnect?.();
-		} catch (err) {
-			this.onError?.(err instanceof Error ? err : new Error(String(err)));
+		} catch (error) {
+			this.onError?.(error instanceof Error ? error : new Error(String(error)));
 		}
 
 		this.unsubscribeMessages = this.options.transport.onColumnMessage(
@@ -78,7 +77,7 @@ class CloudflareProvider implements UnifiedProvider {
 			(message) => {
 				try {
 					if (message.type === "sync") {
-						Y.applyUpdate(this.document, message.data, "remote");
+						applyUpdate(this.document, message.data, "remote");
 
 						if (!this.isSynced) {
 							this.isSynced = true;
@@ -87,23 +86,23 @@ class CloudflareProvider implements UnifiedProvider {
 					}
 
 					if (message.type === "awareness") {
-						awarenessProtocol.applyAwarenessUpdate(
+						applyAwarenessUpdate(
 							this.awareness,
 							message.data,
 							"remote",
 						);
 					}
-				} catch (err) {
+				} catch (error) {
 					this.onError?.(
-						err instanceof Error ? err : new Error("Provider error"),
+						error instanceof Error ? error : new Error("Provider error"),
 					);
 				}
 			},
 		);
 
 		this.docUpdateHandler = (update: Uint8Array, origin: unknown) => {
-			if (!this.isConnected) return;
-			if (origin === "remote") return;
+			if (!this.isConnected) {return;}
+			if (origin === "remote") {return;}
 			this.options.transport.sendUpdate(this.options.columnId, update);
 		};
 		this.document.on("update", this.docUpdateHandler);
@@ -112,13 +111,13 @@ class CloudflareProvider implements UnifiedProvider {
 			{ added, updated, removed },
 			origin: unknown,
 		) => {
-			if (!this.isConnected) return;
-			if (origin === "remote") return;
+			if (!this.isConnected) {return;}
+			if (origin === "remote") {return;}
 
 			const changedClients = [...added, ...updated, ...removed];
-			if (changedClients.length === 0) return;
+			if (changedClients.length === 0) {return;}
 
-			const update = awarenessProtocol.encodeAwarenessUpdate(
+			const update = encodeAwarenessUpdate(
 				this.awareness,
 				changedClients,
 			);
@@ -133,7 +132,7 @@ class CloudflareProvider implements UnifiedProvider {
 	}
 
 	disconnect() {
-		if (!this.isConnected) return;
+		if (!this.isConnected) {return;}
 		this.isConnected = false;
 
 		if (this.isSynced) {
@@ -178,7 +177,7 @@ export function createCloudflareDocuments({
 	loadColumnDocument,
 	transport,
 }: {
-	loadColumnDocument(columnId: string): Promise<Uint8Array | null>;
+	loadColumnDocument: (columnId: string) => Promise<Uint8Array | null>;
 	transport: ColumnSyncTransport;
 }): DocumentAdapter {
 	return {
@@ -189,9 +188,9 @@ export function createCloudflareDocuments({
 				return null;
 			});
 			signal.throwIfAborted();
-			const doc = new Y.Doc();
-			const awareness = new awarenessProtocol.Awareness(doc);
-			if (cached) Y.applyUpdate(doc, cached, "remote");
+			const doc = new YDoc();
+			const awareness = new Awareness(doc);
+			if (cached) {applyUpdate(doc, cached, "remote");}
 			const provider = new CloudflareProvider({ options: { columnId, transport }, doc, awareness });
 			provider.connect();
 			return {

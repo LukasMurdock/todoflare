@@ -1,12 +1,7 @@
 import { createAsyncLogic, setup, types } from "xstate";
 import { normalizeAccountId } from "../account";
-import {
-	applyAccountCommand,
-	applyCommandEffects,
-	applyPendingCommands,
-	removeColumnFromProjection,
-	type AccountProjection,
-} from "./account-projection";
+import { applyAccountCommand, applyCommandEffects, applyPendingCommands, removeColumnFromProjection } from './account-projection';
+import type { AccountProjection } from './account-projection';
 import { summarizeReplayReport } from "./account-command-reconciliation";
 import type { QueuedMutation, ReplayReport } from "./contracts";
 
@@ -35,6 +30,11 @@ export class AccountConvergenceFailure extends Error {
 	}
 }
 
+function isConvergenceFailure(error: unknown): error is AccountConvergenceFailure {
+	// oxlint-disable-next-line @nkzw/no-instanceof -- These typed failures are constructed by the actor's own dependencies in the same runtime.
+	return error instanceof AccountConvergenceFailure;
+}
+
 export interface AccountConvergenceContext {
 	accountId: string | null;
 	authenticationStatus: "unknown" | "authenticated" | "required";
@@ -52,7 +52,7 @@ export interface AccountConvergenceContext {
 	hydrationFailureCount: number;
 	replayFailureCount: number;
 	lastReplayReport: ReplayReport | null;
-	accessLostColumnIds: string[];
+	accessLostColumnIds: Array<string>;
 	authCandidate: string | null;
 }
 
@@ -87,10 +87,10 @@ export interface AccountConvergenceDependencies {
 	login(accountId: string, signal: AbortSignal): Promise<AccountProjection>;
 	createAccount(signal: AbortSignal): Promise<AccountProjection>;
 	replay(accountId: string, signal: AbortSignal): Promise<ReplayReport>;
-	getPending(accountId: string): QueuedMutation[];
+	getPending(accountId: string): Array<QueuedMutation>;
 	getNextRetryAt(accountId: string): number | null;
-	persistCredential(accountId: string | null): void;
-	reconcileAccessLoss(accountId: string, columnIds: string[]): Promise<void>;
+	persistCredential: (accountId: string | null) => void;
+	reconcileAccessLoss(accountId: string, columnIds: Array<string>): Promise<void>;
 	now?: () => number;
 }
 
@@ -98,13 +98,13 @@ function failureFromUnknown(
 	error: unknown,
 	fallback: AccountConvergenceError
 ): AccountConvergenceError {
-	return error instanceof AccountConvergenceFailure
+	return isConvergenceFailure(error)
 		? error.convergenceError
 		: fallback;
 }
 
 function accountIdOrThrow(context: AccountConvergenceContext): string {
-	if (!context.accountId) throw new Error("Account session is not active");
+	if (!context.accountId) {throw new Error("Account session is not active");}
 	return context.accountId;
 }
 
@@ -114,7 +114,7 @@ export function createAccountConvergenceMachine(
 	const now = dependencies.now ?? Date.now;
 
 	const queueState = (accountId: string | null) => {
-		if (!accountId) return { queueDepth: 0, replayRetryAt: null };
+		if (!accountId) {return { queueDepth: 0, replayRetryAt: null };}
 		return {
 			queueDepth: dependencies.getPending(accountId).length,
 			replayRetryAt: dependencies.getNextRetryAt(accountId),
@@ -125,7 +125,7 @@ export function createAccountConvergenceMachine(
 		base: AccountProjection | null,
 		accountId: string | null
 	) => {
-		if (!base || !accountId) return base;
+		if (!base || !accountId) {return base;}
 		return applyPendingCommands(base, dependencies.getPending(accountId));
 	};
 
@@ -135,7 +135,7 @@ export function createAccountConvergenceMachine(
 		}: {
 			event: AccountConvergenceEvent;
 		}) => {
-			if (event.type !== "RESTORE_SESSION") return {};
+			if (event.type !== "RESTORE_SESSION") {return {};}
 			return {
 				accountId: event.accountId,
 				authenticationStatus: "unknown" as const,
@@ -241,7 +241,7 @@ export function createAccountConvergenceMachine(
 			const queue = queueState(context.accountId);
 			const fallbackRetryAt =
 				now() +
-				Math.min(30_000, 5_000 * 2 ** Math.max(0, failureCount - 1));
+				Math.min(30_000, 5000 * 2 ** Math.max(0, failureCount - 1));
 			return {
 				error: { scope: "replay", kind: "retryable" } as const,
 				...queue,
@@ -259,7 +259,7 @@ export function createAccountConvergenceMachine(
 			context: AccountConvergenceContext;
 		}) => {
 			const report = context.lastReplayReport;
-			if (!report || !context.serverBase) return {};
+			if (!report || !context.serverBase) {return {};}
 			let base = report.ackedCommands.reduce(
 				applyAccountCommand,
 				context.serverBase
@@ -280,7 +280,7 @@ export function createAccountConvergenceMachine(
 					? {
 							scope: "access",
 							kind: "revoked",
-							columnId: accessLostColumnIds[0]!,
+							columnId: accessLostColumnIds[0],
 						}
 					: reconciliation.nonAccessLossFailureCount > 0
 						? { scope: "replay", kind: "terminal" }
@@ -311,7 +311,7 @@ export function createAccountConvergenceMachine(
 			event: AccountConvergenceEvent;
 		}) => {
 			if (event.type !== "ACCESS_REVOKED" || !context.serverBase)
-				return {};
+				{return {};}
 			const base = removeColumnFromProjection(
 				context.serverBase,
 				event.columnId
@@ -334,7 +334,7 @@ export function createAccountConvergenceMachine(
 			event: AccountConvergenceEvent;
 		}) => {
 			if (event.type !== "COLUMN_DELETED" || !context.serverBase)
-				return {};
+				{return {};}
 			const base = removeColumnFromProjection(
 				context.serverBase,
 				event.columnId
@@ -366,12 +366,12 @@ export function createAccountConvergenceMachine(
 		) => {
 			const failureCount = context.hydrationFailureCount + 1;
 			const retryAfterMs =
-				error instanceof AccountConvergenceFailure
+				isConvergenceFailure(error)
 					? error.retryAfterMs
 					: null;
 			const fallbackDelay = Math.min(
 				30_000,
-				5_000 * 2 ** Math.max(0, failureCount - 1)
+				5000 * 2 ** Math.max(0, failureCount - 1)
 			);
 			return {
 				error: failureFromUnknown(error, {
@@ -472,7 +472,7 @@ export function createAccountConvergenceMachine(
 				run: ({
 					input,
 				}: {
-					input: { accountId: string; columnIds: string[] };
+					input: { accountId: string; columnIds: Array<string> };
 				}) =>
 					dependencies.reconcileAccessLoss(
 						input.accountId,
@@ -484,21 +484,21 @@ export function createAccountConvergenceMachine(
 			hydrationRetryDelay: ({ context }) =>
 				Math.max(
 					0,
-					(context.hydrationRetryAt ?? now() + 5_000) - now()
+					(context.hydrationRetryAt ?? now() + 5000) - now()
 				),
 			replayRetryDelay: ({ context }) =>
-				Math.max(0, (context.replayRetryAt ?? now() + 5_000) - now()),
+				Math.max(0, (context.replayRetryAt ?? now() + 5000) - now()),
 		},
 		guards: {
-			isOnline: ({ context }) => context.networkOnline,
-			canAttemptReplay: ({ context }) =>
+			isOnline: ({ context }: { context: AccountConvergenceContext }) => context.networkOnline,
+			canAttemptReplay: ({ context }: { context: AccountConvergenceContext }) =>
 				context.authenticationStatus !== "required",
-			isOffline: ({ context }) => !context.networkOnline,
-			hasAccountSession: ({ context }) => context.accountId !== null,
-			hasPending: ({ context }) => context.queueDepth > 0,
-			replayHadAttempts: ({ context }) =>
+			isOffline: ({ context }: { context: AccountConvergenceContext }) => !context.networkOnline,
+			hasAccountSession: ({ context }: { context: AccountConvergenceContext }) => context.accountId !== null,
+			hasPending: ({ context }: { context: AccountConvergenceContext }) => context.queueDepth > 0,
+			replayHadAttempts: ({ context }: { context: AccountConvergenceContext }) =>
 				(context.lastReplayReport?.attempted ?? 0) > 0,
-			isSameAccountLogin: ({ context, event }) =>
+			isSameAccountLogin: ({ context, event }: { context: AccountConvergenceContext; event: AccountConvergenceEvent }) =>
 				event.type === "LOGIN" &&
 				!!context.accountId &&
 				normalizeAccountId(event.accountId) ===
@@ -533,7 +533,7 @@ export function createAccountConvergenceMachine(
 				context: actions.clearError(),
 			}),
 			AUTHENTICATION_REQUIRED: (args) => {
-				if (!args.guards.hasAccountSession(args)) return;
+				if (!args.guards.hasAccountSession(args)) {return;}
 				return { target: ".authenticationRequired" };
 			},
 			NETWORK_ONLINE: () => ({ context: actions.setOnline() }),
@@ -549,7 +549,7 @@ export function createAccountConvergenceMachine(
 			signedOut: {
 				id: "accountConvergence.signedOut",
 				always: (args) => {
-					if (!args.guards.hasAccountSession(args)) return;
+					if (!args.guards.hasAccountSession(args)) {return;}
 					return { target: "loadingLocal" };
 				},
 				on: {
@@ -892,7 +892,7 @@ export function createAccountConvergenceMachine(
 					},
 					REFRESH_REQUESTED: { target: "hydratingServer" },
 					REPLAY_WAKE: (args) => {
-						if (!args.guards.canAttemptReplay(args)) return;
+						if (!args.guards.canAttemptReplay(args)) {return;}
 						return { target: "replaying" };
 					},
 				},
@@ -917,7 +917,7 @@ export function createAccountConvergenceMachine(
 					}),
 					REFRESH_REQUESTED: { target: "hydratingServer" },
 					REPLAY_WAKE: (args) => {
-						if (!args.guards.canAttemptReplay(args)) return;
+						if (!args.guards.canAttemptReplay(args)) {return;}
 						return { target: "replaying" };
 					},
 				},
@@ -948,11 +948,11 @@ export function createAccountConvergenceMachine(
 						context: actions.refreshProjection(args),
 					}),
 					LOGIN: (args) => {
-						if (!args.guards.isSameAccountLogin(args)) return;
+						if (!args.guards.isSameAccountLogin(args)) {return;}
 						return { target: "reconnecting" };
 					},
 					REFRESH_REQUESTED: (args) => {
-						if (!args.guards.isOnline(args)) return;
+						if (!args.guards.isOnline(args)) {return;}
 						return { target: "hydratingServer" };
 					},
 					NETWORK_ONLINE: () => ({ context: actions.setOnline() }),

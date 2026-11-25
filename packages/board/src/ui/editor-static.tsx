@@ -1,7 +1,8 @@
 import type { VariantProps } from 'class-variance-authority';
 
 import { cva } from 'class-variance-authority';
-import { type PlateStaticProps, PlateStatic } from 'platejs/static';
+import { PlateStatic } from 'platejs/static';
+import type { PlateStaticProps } from 'platejs/static';
 
 import { cn } from './cn';
 
@@ -32,7 +33,7 @@ export const editorVariants = cva(
         demo: 'size-full px-16 pt-4 pb-72 text-base sm:px-[max(64px,calc(50%-350px))]',
         fullWidth: 'size-full px-16 pt-4 pb-72 text-base sm:px-24',
         column:
-          'size-full px-4 pt-3 pb-24 text-sm leading-[22px] max-sm:text-[15px] max-sm:leading-6',
+          'bg-background size-full px-4 pt-3 pb-24 text-sm leading-[22px] max-sm:text-[15px] max-sm:leading-6',
         none: '',
         select: 'px-3 py-2 text-base data-readonly:w-fit',
       },

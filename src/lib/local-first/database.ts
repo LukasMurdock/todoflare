@@ -5,12 +5,12 @@ import type {
 	ColumnDocumentDoc,
 	DurableCollectionName,
 	MutationOutboxDoc,
-	QuarantinedRecord,
+	StoredQuarantineRecord,
 	SyncStateDoc,
 	YjsUpdateOutboxDoc,
 } from "@/lib/local-first/collections";
 import { REMOVAL_MARKER_TTL_MS } from "./outbox-journal";
-import { migrateCollectionEntries } from "./persistence-contract";
+import { isStoredQuarantineRecord, isRecord, migrateCollectionEntries } from "./persistence-contract";
 
 export interface LocalFirstCollections {
 	accountSnapshot: Map<string, AccountSnapshotDoc>;
@@ -18,7 +18,7 @@ export interface LocalFirstCollections {
 	mutationOutbox: Map<string, MutationOutboxDoc>;
 	yjsUpdateOutbox: Map<string, YjsUpdateOutboxDoc>;
 	syncState: Map<string, SyncStateDoc>;
-	quarantine: Map<string, QuarantinedRecord>;
+	quarantine: Map<string, StoredQuarantineRecord>;
 }
 
 export type StorageHealth =
@@ -52,14 +52,14 @@ const DURABLE_COLLECTION_KEYS = [
 	"mutationOutbox",
 	"yjsUpdateOutbox",
 	"syncState",
-] as const satisfies readonly DurableCollectionName[];
+] as const satisfies ReadonlyArray<DurableCollectionName>;
 const ALL_COLLECTION_KEYS = [...DURABLE_COLLECTION_KEYS, "quarantine"] as const;
 type CollectionName = (typeof ALL_COLLECTION_KEYS)[number];
 type StoredCollectionEntries = Array<[string, unknown]>;
 
 interface CollectionPatch {
 	sets: StoredCollectionEntries;
-	deletes: string[];
+	deletes: Array<string>;
 }
 
 function collectionDiff(previous: StoredCollectionEntries, next: StoredCollectionEntries): CollectionPatch {
@@ -80,7 +80,7 @@ class PersistedMap<T> extends Map<string, T> {
 	) {
 		super();
 		this.onChange = onChange;
-		for (const [key, value] of entries) super.set(key, value);
+		for (const [key, value] of entries) {super.set(key, value);}
 	}
 
 	override set(key: string, value: T): this {
@@ -91,12 +91,12 @@ class PersistedMap<T> extends Map<string, T> {
 
 	override delete(key: string): boolean {
 		const deleted = super.delete(key);
-		if (deleted) this.onChange({ sets: [], deletes: [key] });
+		if (deleted) {this.onChange({ sets: [], deletes: [key] });}
 		return deleted;
 	}
 
 	override clear(): void {
-		if (this.size === 0) return;
+		if (this.size === 0) {return;}
 		const deletes = Array.from(this.keys());
 		super.clear();
 		this.onChange({ sets: [], deletes });
@@ -106,8 +106,8 @@ class PersistedMap<T> extends Map<string, T> {
 		const next = Array.from(entries);
 		const patch = collectionDiff(Array.from(this.entries()), next);
 		super.clear();
-		for (const [key, value] of next) super.set(key, value);
-		if (patch.sets.length || patch.deletes.length) this.onChange(patch);
+		for (const [key, value] of next) {super.set(key, value);}
+		if (patch.sets.length || patch.deletes.length) {this.onChange(patch);}
 	}
 }
 
@@ -116,12 +116,13 @@ export function replaceLocalFirstCollection<T>(
 	collection: Map<string, T>,
 	entries: Iterable<[string, T]>,
 ): void {
+	// oxlint-disable-next-line @nkzw/no-instanceof -- Only this module constructs maps that batch their own persistence notifications.
 	if (collection instanceof PersistedMap) {
 		collection.replaceAll(entries);
 		return;
 	}
 	collection.clear();
-	for (const [key, value] of entries) collection.set(key, value);
+	for (const [key, value] of entries) {collection.set(key, value);}
 }
 
 function errorMessage(error: unknown): string {
@@ -133,11 +134,11 @@ function createHealthTracker(initial: StorageHealth) {
 	const listeners = new Set<(value: StorageHealth) => void>();
 	return {
 		get: () => health,
-		set(next: StorageHealth) {
+		set: (next: StorageHealth) => {
 			health = next;
-			for (const listener of listeners) listener(health);
+			for (const listener of listeners) {listener(health);}
 		},
-		subscribe(listener: (value: StorageHealth) => void) {
+		subscribe: (listener: (value: StorageHealth) => void) => {
 			listeners.add(listener);
 			listener(health);
 			return () => listeners.delete(listener);
@@ -172,6 +173,31 @@ function openLocalFirstIndexedDb(): Promise<IDBDatabase> {
 	});
 }
 
+function parseStoredCollection(raw: unknown) {
+	if (raw === null || raw === undefined) {return { entries: [], deletedKeys: [], deletedKeyTimes: [] };}
+	if (!isRecord(raw) || !Array.isArray(raw.entries)) {throw new Error("Collection entries are malformed");}
+	if (typeof raw.layoutVersion === "number" && raw.layoutVersion > COLLECTION_LAYOUT_VERSION) {
+		throw new Error(`Collection layout ${raw.layoutVersion} is not supported`);
+	}
+	const entries: StoredCollectionEntries = [];
+	for (const entry of raw.entries) {
+		if (!Array.isArray(entry) || entry.length < 2) {throw new Error("Collection contains a malformed entry tuple");}
+		entries.push([String(entry[0]), entry[1]]);
+	}
+	const keys = raw.deletedKeys ?? [];
+	const times = raw.deletedKeyTimes ?? [];
+	if (!Array.isArray(keys) || !keys.every((k): k is string => typeof k === "string") ||
+		!Array.isArray(times) || !times.every((t): t is number | null | undefined => t === null || t === undefined || typeof t === "number")) {
+		throw new Error("Collection removal markers are malformed");
+	}
+	return { entries, deletedKeys: keys, deletedKeyTimes: times };
+}
+
+function hasUpdateBytes(value: unknown): value is { updateBytes: Array<number> } {
+	return isRecord(value) && Array.isArray(value.updateBytes) &&
+		value.updateBytes.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255);
+}
+
 function readCollectionEntries(
 	db: IDBDatabase,
 	name: CollectionName,
@@ -181,29 +207,8 @@ function readCollectionEntries(
 			const tx = db.transaction(LOCAL_FIRST_COLLECTION_STORE, "readonly");
 			const request = tx.objectStore(LOCAL_FIRST_COLLECTION_STORE).get(name);
 			request.onsuccess = () => {
-				const raw = request.result as
-					| { layoutVersion?: unknown; entries?: unknown }
-					| undefined;
-				if (!raw) return resolve([]);
-				if (
-					typeof raw.layoutVersion === "number" &&
-					raw.layoutVersion > COLLECTION_LAYOUT_VERSION
-				) {
-					return reject(
-						new Error(`Collection layout ${raw.layoutVersion} is not supported`),
-					);
-				}
-				if (!Array.isArray(raw.entries)) {
-					return reject(new Error("Collection entries are malformed"));
-				}
-				const entries: StoredCollectionEntries = [];
-				for (const entry of raw.entries) {
-					if (!Array.isArray(entry) || entry.length < 2) {
-						return reject(new Error("Collection contains a malformed entry tuple"));
-					}
-					entries.push([String(entry[0]), entry[1]]);
-				}
-				resolve(entries);
+				try { resolve(parseStoredCollection(request.result).entries); }
+				catch (error) { reject(error); }
 			};
 			request.onerror = () => reject(request.error ?? new Error("IndexedDB read failed"));
 		} catch (error) {
@@ -217,7 +222,7 @@ function patchCollections(
 	db: IDBDatabase,
 	collections: Array<{ name: CollectionName; patch: CollectionPatch }>,
 ): Promise<void> {
-	if (collections.length === 0) return Promise.resolve();
+	if (collections.length === 0) {return Promise.resolve();}
 	return new Promise((resolve, reject) => {
 		try {
 			const tx = db.transaction(LOCAL_FIRST_COLLECTION_STORE, "readwrite");
@@ -225,32 +230,32 @@ function patchCollections(
 			for (const { name, patch } of collections) {
 				const request = store.get(name);
 				request.onsuccess = () => {
-					const raw = request.result as { layoutVersion?: number; entries?: StoredCollectionEntries; deletedKeys?: string[]; deletedKeyTimes?: number[] } | undefined;
-					if (raw && (raw.layoutVersion ?? 1) > COLLECTION_LAYOUT_VERSION) {
-						tx.abort(); return;
-					}
-					const entries = new Map(raw?.entries ?? []);
+					let raw: ReturnType<typeof parseStoredCollection>;
+					try { raw = parseStoredCollection(request.result); }
+					catch (error) { reject(error); tx.abort(); return; }
+					const entries = new Map(raw.entries);
 					// Removal markers expire like the localStorage journal's; untimed legacy ones at once.
 					const now = Date.now();
 					const deleted = new Map<string, number>();
-					(raw?.deletedKeys ?? []).forEach((key, index) => {
-						const at = raw?.deletedKeyTimes?.[index] ?? 0;
-						if (now - at <= REMOVAL_MARKER_TTL_MS) deleted.set(key, at);
+					raw.deletedKeys.forEach((key, index) => {
+						const at = raw.deletedKeyTimes[index] ?? 0;
+						if (now - at <= REMOVAL_MARKER_TTL_MS) {deleted.set(key, at);}
 					});
 					const isOutbox = name === "mutationOutbox" || name === "yjsUpdateOutbox";
 					for (const key of patch.deletes) {
 						entries.delete(key);
-						if (isOutbox) deleted.set(key, now);
+						if (isOutbox) {deleted.set(key, now);}
 					}
 					for (const [key, value] of patch.sets) {
 						// A receipt/removal always wins over a stale tab's retry state.
 						if (name === "columnDocument" && entries.has(key)) {
 							try {
-								const previous = entries.get(key) as ColumnDocumentDoc;
-								const next = value as ColumnDocumentDoc;
+								const previous = entries.get(key);
+								const next = value;
+								if (!hasUpdateBytes(previous) || !hasUpdateBytes(next)) { throw new Error("Malformed saved column update"); }
 								entries.set(key, { ...next, updateBytes: Array.from(mergeUpdates([new Uint8Array(previous.updateBytes), new Uint8Array(next.updateBytes)])) });
 							} catch (error) { reject(error); tx.abort(); return; }
-						} else if (!isOutbox || !deleted.has(key)) entries.set(key, value);
+						} else if (!isOutbox || !deleted.has(key)) {entries.set(key, value);}
 					}
 					store.put({ name, layoutVersion: COLLECTION_LAYOUT_VERSION, entries: Array.from(entries), deletedKeys: Array.from(deleted.keys()), deletedKeyTimes: Array.from(deleted.values()) });
 				};
@@ -264,11 +269,10 @@ function patchCollections(
 
 function validQuarantineEntries(
 	entries: StoredCollectionEntries,
-): Array<[string, QuarantinedRecord]> {
-	return entries.filter((entry): entry is [string, QuarantinedRecord] => {
-		const value = entry[1] as Partial<QuarantinedRecord> | null;
-		return !!value && typeof value === "object" && value.schemaVersion === 1 &&
-			value.id === entry[0] && typeof value.reason === "string";
+): Array<[string, StoredQuarantineRecord]> {
+	return entries.filter((entry): entry is [string, StoredQuarantineRecord] => {
+		const value = entry[1];
+		return isStoredQuarantineRecord(value) && value.id === entry[0] && typeof value.reason === "string";
 	});
 }
 
@@ -280,14 +284,14 @@ function createInMemoryDb(issue: StorageIssue): LocalFirstDatabase {
 		collections: { columnDocument: new Map(), accountSnapshot: new Map(), mutationOutbox: new Map(), yjsUpdateOutbox: new Map(), syncState: new Map(), quarantine: new Map() },
 		getStorageHealth: health.get,
 		subscribeStorageHealth: health.subscribe,
-		async flush() { if (durable) return durable.flush(); throw new Error(issue.message); },
+		async flush() { if (durable) {return durable.flush();} throw new Error(issue.message); },
 		async retryFailedWrites() {
-			if (durable) return durable.retryFailedWrites?.();
+			if (durable) {return durable.retryFailedWrites?.();}
 			const candidate = await createIndexedDbBackedDb();
 			if (candidate.getStorageHealth().state !== "durable") { await candidate.close(); throw new Error(issue.message); }
 			for (const name of ALL_COLLECTION_KEYS) {
 				const target = candidate.collections[name] as Map<string, unknown>;
-				for (const [id, row] of fallback.collections[name]) target.set(id, row);
+				for (const [id, row] of fallback.collections[name]) {target.set(id, row);}
 			}
 			try { await candidate.flush(); } catch (error) { await candidate.close(); throw error; }
 			durable = candidate;
@@ -328,8 +332,15 @@ export async function createIndexedDbBackedDb(): Promise<LocalFirstDatabase> {
 
 	const health = createHealthTracker({ state: "durable", lastError: null });
 	const blockedCollections = new Set<CollectionName>();
-	const migrated = new Map<DurableCollectionName, ReturnType<typeof migrateCollectionEntries>>();
-	const quarantineMap = new Map<string, QuarantinedRecord>(
+	const migrate = <K extends DurableCollectionName>(name: K) => migrateCollectionEntries(name, rawCollections.get(name) ?? []);
+	const migrated = {
+		accountSnapshot: migrate("accountSnapshot"),
+		columnDocument: migrate("columnDocument"),
+		mutationOutbox: migrate("mutationOutbox"),
+		yjsUpdateOutbox: migrate("yjsUpdateOutbox"),
+		syncState: migrate("syncState"),
+	};
+	const quarantineMap = new Map<string, StoredQuarantineRecord>(
 		validQuarantineEntries(rawCollections.get("quarantine") ?? []),
 	);
 	const migrationWrites: Array<{
@@ -338,16 +349,17 @@ export async function createIndexedDbBackedDb(): Promise<LocalFirstDatabase> {
 	}> = [];
 
 	for (const name of DURABLE_COLLECTION_KEYS) {
-		const result = migrateCollectionEntries(name, rawCollections.get(name) ?? []);
-		migrated.set(name, result);
-		for (const record of result.quarantined) quarantineMap.set(record.id, record);
-		if (result.writeBlocked) blockedCollections.add(name);
+		const result = migrated[name];
+		for (const record of result.quarantined) {quarantineMap.set(record.id, record);}
+		if (result.writeBlocked) {blockedCollections.add(name);}
 		if (result.changed && !result.writeBlocked) {
 			migrationWrites.push({ name, entries: result.entries });
 		}
 	}
-	if (Array.from(migrated.values()).some((result) => result.quarantined.length > 0)) {
-		migrationWrites.push({ name: "quarantine", entries: Array.from(quarantineMap) });
+	if (Object.values(migrated).some((result) => result.quarantined.length > 0)) {
+		const stored = new Map(rawCollections.get("quarantine"));
+		for (const [id, record] of quarantineMap) { stored.set(id, record); }
+		migrationWrites.push({ name: "quarantine", entries: Array.from(stored) });
 	}
 
 	try {
@@ -355,7 +367,7 @@ export async function createIndexedDbBackedDb(): Promise<LocalFirstDatabase> {
 			name, patch: collectionDiff(rawCollections.get(name) ?? [], entries),
 		})));
 	} catch (error) {
-		for (const write of migrationWrites) blockedCollections.add(write.name);
+		for (const write of migrationWrites) {blockedCollections.add(write.name);}
 		health.set({ state: "degraded", lastError: storageIssue("migrate", null, error) });
 	}
 
@@ -373,7 +385,7 @@ export async function createIndexedDbBackedDb(): Promise<LocalFirstDatabase> {
 	}
 
 	const pendingWrites = new Map<CollectionName, Promise<void>>();
-	const failedWrites = new Map<CollectionName, CollectionPatch[]>();
+	const failedWrites = new Map<CollectionName, Array<CollectionPatch>>();
 	const persistCollection = (name: CollectionName, patch: CollectionPatch) => {
 		if (blockedCollections.has(name)) {
 			failedWrites.set(name, [...(failedWrites.get(name) ?? []), patch]);
@@ -400,18 +412,16 @@ export async function createIndexedDbBackedDb(): Promise<LocalFirstDatabase> {
 		pendingWrites.set(name, next);
 	};
 
-	const entriesFor = <T>(name: DurableCollectionName): Array<[string, T]> =>
-		(migrated.get(name)?.entries ?? []) as Array<[string, T]>;
 	const collections: LocalFirstCollections = {
-		columnDocument: new PersistedMap(entriesFor<ColumnDocumentDoc>("columnDocument"),
+		columnDocument: new PersistedMap(migrated.columnDocument.entries,
 			(entries) => persistCollection("columnDocument", entries)),
-		accountSnapshot: new PersistedMap(entriesFor<AccountSnapshotDoc>("accountSnapshot"),
+		accountSnapshot: new PersistedMap(migrated.accountSnapshot.entries,
 			(entries) => persistCollection("accountSnapshot", entries)),
-		mutationOutbox: new PersistedMap(entriesFor<MutationOutboxDoc>("mutationOutbox"),
+		mutationOutbox: new PersistedMap(migrated.mutationOutbox.entries,
 			(entries) => persistCollection("mutationOutbox", entries)),
-		yjsUpdateOutbox: new PersistedMap(entriesFor<YjsUpdateOutboxDoc>("yjsUpdateOutbox"),
+		yjsUpdateOutbox: new PersistedMap(migrated.yjsUpdateOutbox.entries,
 			(entries) => persistCollection("yjsUpdateOutbox", entries)),
-		syncState: new PersistedMap(entriesFor<SyncStateDoc>("syncState"),
+		syncState: new PersistedMap(migrated.syncState.entries,
 			(entries) => persistCollection("syncState", entries)),
 		quarantine: new PersistedMap(Array.from(quarantineMap),
 			(entries) => persistCollection("quarantine", entries)),
@@ -423,13 +433,13 @@ export async function createIndexedDbBackedDb(): Promise<LocalFirstDatabase> {
 		subscribeStorageHealth: health.subscribe,
 		async flush() {
 			await Promise.all(pendingWrites.values());
-			if (failedWrites.size) throw new Error(health.get().lastError?.message ?? "Browser storage did not commit changes");
+			if (failedWrites.size) {throw new Error(health.get().lastError?.message ?? "Browser storage did not commit changes");}
 		},
 		async retryFailedWrites() {
 			await Promise.all(pendingWrites.values());
-			for (const name of failedWrites.keys()) persistCollection(name, { sets: [], deletes: [] });
+			for (const name of failedWrites.keys()) {persistCollection(name, { sets: [], deletes: [] });}
 			await Promise.all(pendingWrites.values());
-			if (failedWrites.size || blockedCollections.size) throw new Error(health.get().lastError?.message ?? "Browser storage is blocked");
+			if (failedWrites.size || blockedCollections.size) {throw new Error(health.get().lastError?.message ?? "Browser storage is blocked");}
 			health.set({ state: "durable", lastError: null });
 		},
 		async close() {
@@ -442,12 +452,12 @@ export async function createIndexedDbBackedDb(): Promise<LocalFirstDatabase> {
 let localFirstDbPromise: Promise<LocalFirstDatabase> | null = null;
 
 export async function getLocalFirstDb(): Promise<LocalFirstDatabase> {
-	if (!localFirstDbPromise) localFirstDbPromise = createIndexedDbBackedDb();
+	if (!localFirstDbPromise) {localFirstDbPromise = createIndexedDbBackedDb();}
 	return localFirstDbPromise;
 }
 
 /** Test-only reset for isolated IndexedDB boot scenarios. */
 export async function resetLocalFirstDbForTests(): Promise<void> {
-	if (localFirstDbPromise) await (await localFirstDbPromise).close();
+	if (localFirstDbPromise) {await (await localFirstDbPromise).close();}
 	localFirstDbPromise = null;
 }

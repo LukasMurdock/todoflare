@@ -1,8 +1,9 @@
+import { setTimeout as delay } from "node:timers/promises";
 import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { chromium } from '@playwright/test';
-import * as Y from 'yjs';
+import { Doc, applyUpdate, encodeStateAsUpdate } from 'yjs';
 const origin = 'https://staging.todo.tamesystems.org';
 const { BACKUP_ADMIN_TOKEN: token } = JSON.parse(await readFile('.wrangler/staging-secrets.json', 'utf8'));
 const browser = await chromium.launch();
@@ -13,9 +14,9 @@ const results = [];
 const SCHEDULED_RUN_TIMEOUT_MS = 180_000;
 async function api(path, method = 'GET', data, admin = false, expected = 200) {
   const response = await context.request.fetch(`${origin}${path}`, {
-    method, data, timeout: path === '/api/admin/staging/scheduled' ? SCHEDULED_RUN_TIMEOUT_MS : 30000,
+    method, data, timeout: path === '/api/admin/staging/scheduled' ? SCHEDULED_RUN_TIMEOUT_MS : 30_000,
     headers: admin ? { Authorization: `Bearer ${token}` } : {},
-  }).catch(error => { throw new Error(`${method} ${path} failed (${error.name}); request headers withheld`); });
+  }).catch(() => { throw new Error(`${method} ${path} failed; request headers withheld`); });
   assert.equal(response.status(), expected, `${method} ${path}: ${await response.text()}`);
   return response.status() === 200 ? response.json() : null;
 }
@@ -36,17 +37,18 @@ async function waitForWriteMode(freeze, consecutive = 5) {
   let matched = 0;
   for (let attempt = 0; attempt < 60; attempt++) {
     matched = (await api('/api/clock')).readOnlyMode === freeze ? matched + 1 : 0;
-    if (matched >= consecutive) return;
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    if (matched >= consecutive) {return;}
+    await delay(2000);
   }
   throw new Error(`Staging write mode ${freeze ? 'frozen' : 'writable'} did not settle within 120 seconds`);
 }
+/* oxlint-disable unicorn/consistent-function-scoping -- The browser receives registerPasskey as a serialized callback. */
 async function registerPasskey() {
-    const encode = value => btoa(String.fromCharCode(...new Uint8Array(value))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-    const decode = value => Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(value.length / 4) * 4, '=')), c => c.charCodeAt(0)).buffer;
+    const encode = value => btoa(String.fromCharCode(...new Uint8Array(value))).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+    const decode = value => Uint8Array.from(atob(value.replaceAll('-', '+').replaceAll('_', '/').padEnd(Math.ceil(value.length / 4) * 4, '=')), c => c.charCodeAt(0)).buffer;
     async function request(path, method = 'GET', data) {
       const res = await fetch(path, { method, headers: { 'Content-Type': 'application/json' }, body: data === undefined ? undefined : JSON.stringify(data) });
-      if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`);
+      if (!res.ok) {throw new Error(`${path}: ${res.status} ${await res.text()}`);}
       return res.json();
     }
     const provisional = await request('/api/auth/sign-in/anonymous', 'POST', {});
@@ -56,6 +58,7 @@ async function registerPasskey() {
     await request('/api/account', 'POST');
     return provisional.user.id;
 }
+/* oxlint-enable unicorn/consistent-function-scoping */
 try {
   const clock = await api('/api/clock');
   assert.equal(clock.readOnlyMode, false);
@@ -74,7 +77,7 @@ try {
   // KV listings are eventually consistent, so allow repeats.
   await api('/api/admin/staging/reset-data', 'POST', {}, false, 401);
   let reset;
-  for (let round = 0; round < 60 && !reset?.done; round++) reset = await api('/api/admin/staging/reset-data', 'POST', {}, true);
+  for (let round = 0; round < 60 && !reset?.done; round++) {reset = await api('/api/admin/staging/reset-data', 'POST', {}, true);}
   assert(reset?.done, 'staging data reset did not finish');
   const cdp = await context.newCDPSession(page);
   await cdp.send('WebAuthn.enable');
@@ -85,9 +88,9 @@ try {
   await api('/api/admin/staging/mark-drill', 'POST', {}, true);
   // Import a synthetic valid Yjs document using the supported account import API.
   const account = (await api('/api/account')).account;
-  const doc = new Y.Doc(); doc.getText('staging-recovery').insert(0, 'Recover this synthetic content exactly');
+  const doc = new Doc(); doc.getText('staging-recovery').insert(0, 'Recover this synthetic content exactly');
   const seedId = crypto.randomUUID();
-  await api('/api/account/import', 'POST', { schemaVersion: 2, exportedAt: Date.now(), complete: true, expectedColumnIds: [seedId], account: { ...account, columnOrder: [seedId] }, ownedColumns: [{ meta: { schemaVersion: 1, id: seedId, ownerId: accountId, sharedWith: [], publicId: null, createdAt: Date.now() }, yjs: Array.from(Y.encodeStateAsUpdate(doc)) }] });
+  await api('/api/account/import', 'POST', { schemaVersion: 2, exportedAt: Date.now(), complete: true, expectedColumnIds: [seedId], account: { ...account, columnOrder: [seedId] }, ownedColumns: [{ meta: { schemaVersion: 1, id: seedId, ownerId: accountId, sharedWith: [], publicId: null, createdAt: Date.now() }, yjs: Array.from(encodeStateAsUpdate(doc)) }] });
   doc.destroy();
   const seeded = await api('/api/account/export');
   assert.equal(seeded.ownedColumns.length, 1);
@@ -148,7 +151,7 @@ try {
   const exportedAfter = await api('/api/account/export');
   assert.deepEqual(exportedAfter.ownedColumns.map(c => c.meta), exportedBefore.ownedColumns.map(c => c.meta));
   for (const column of exportedAfter.ownedColumns) {
-    const copy = new Y.Doc(); Y.applyUpdate(copy, Uint8Array.from(column.yjs));
+    const copy = new Doc(); applyUpdate(copy, Uint8Array.from(column.yjs));
     assert.equal(copy.getText('staging-recovery').toString(), 'Recover this synthetic content exactly'); copy.destroy();
   }
   await api(`/api/p/${publicLink.publicId}`);

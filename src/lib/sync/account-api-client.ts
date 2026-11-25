@@ -13,11 +13,10 @@ import type {
 	CreateAccountResponse,
 	GetAccountResponse,
 } from "../../types/account";
-import {
-	AccountConvergenceFailure,
-	type AccountConvergenceError,
-} from "./account-convergence-machine";
-import { projectionFromServer, type AccountProjection } from "./account-projection";
+import { AccountConvergenceFailure } from './account-convergence-machine';
+import type { AccountConvergenceError } from './account-convergence-machine';
+import { projectionFromServer } from './account-projection';
+import type { AccountProjection } from './account-projection';
 import { API_ROUTES } from "../api/routes";
 
 function malformedResponse(message: string): AccountConvergenceFailure {
@@ -29,7 +28,7 @@ function malformedResponse(message: string): AccountConvergenceFailure {
 
 export function parseGetAccountResponse(value: unknown): GetAccountResponse {
 	const parsed = getAccountResponseSchema.safeParse(value);
-	if (!parsed.success) throw malformedResponse("Account response has invalid shape");
+	if (!parsed.success) {throw malformedResponse("Account response has invalid shape");}
 	return parsed.data satisfies GetAccountResponse;
 }
 
@@ -46,15 +45,15 @@ async function retryAfterMs(response: Response): Promise<number | null> {
 	if (retryAfterHeader !== null) {
 		const headerSeconds = Number(retryAfterHeader);
 		if (Number.isFinite(headerSeconds) && headerSeconds >= 0) {
-			return headerSeconds * 1_000;
+			return headerSeconds * 1000;
 		}
 	}
 	try {
-		const body = (await response.clone().json()) as { retryAfter?: unknown };
+		const body = await response.clone().json<{ retryAfter?: unknown }>();
 		return typeof body.retryAfter === "number" &&
 			Number.isFinite(body.retryAfter) &&
 			body.retryAfter >= 0
-			? body.retryAfter * 1_000
+			? body.retryAfter * 1000
 			: null;
 	} catch {
 		return null;
@@ -77,6 +76,7 @@ export async function fetchAccountProjection(
 	id: string,
 	signal: AbortSignal,
 	scope: "auth" | "hydrate",
+	fetchAccount: typeof fetch = fetch,
 ): Promise<AccountProjection> {
 	if (!validateAccountId(id)) {
 		throw new AccountConvergenceFailure(
@@ -84,7 +84,7 @@ export async function fetchAccountProjection(
 			"Invalid account ID format",
 		);
 	}
-	const response = await fetch(API_ROUTES.getAccount.path, {
+	const response = await fetchAccount(API_ROUTES.getAccount.path, {
 		method: API_ROUTES.getAccount.method,
 		signal,
 		credentials: "same-origin",
@@ -146,13 +146,13 @@ export async function createAccountProjection(
 			}
 			status = await fetchAuthStatus(signal);
 		}
-		if (!status.accountId) throw malformedResponse("Account creation did not start a session");
+		if (!status.accountId) {throw malformedResponse("Account creation did not start a session");}
 		// Bind the rest of sign-up to this account: if another tab signs in as
 		// someone else meanwhile, the server refuses instead of enrolling them.
 		const headers = accountRequestHeaders(status.accountId);
 		if (status.state === "provisional") {
-			await accountCredentials(status.accountId).addPasskey("Primary passkey").catch((cause: unknown) => {
-				throw malformedResponse(cause instanceof Error && cause.message ? cause.message : "Passkey registration failed");
+			await accountCredentials(status.accountId).addPasskey("Primary passkey").catch((error: unknown) => {
+				throw malformedResponse(error instanceof Error && error.message ? error.message : "Passkey registration failed");
 			});
 		}
 
@@ -201,7 +201,7 @@ export async function signInWithPasskey(autoFill = false): Promise<string> {
 			method: API_ROUTES.createAccount.method,
 			credentials: "same-origin",
 		});
-		if (!response.ok) throw malformedResponse("Account provisioning failed");
+		if (!response.ok) {throw malformedResponse("Account provisioning failed");}
 	}
 	return normalizeAccountId(status.accountId);
 }

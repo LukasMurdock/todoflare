@@ -4,22 +4,20 @@ import type {
 	TerminalReplayFailure,
 } from "./contracts";
 import { shouldApplyAccessLossPolicy } from "./replay-response";
-import { ACCOUNT_COMMANDS } from "../api/account-commands";
+import { accountCommandContracts } from "../api/account-commands";
+import type { AccountCommandType } from "../api/account-commands";
 import type { SyncFailureDoc } from "../local-first/collections";
 
-export function columnIdForAccountCommand(
-	command: AccountCommandDescriptor,
+export function columnIdForAccountCommand<T extends AccountCommandType>(
+	command: AccountCommandDescriptor<T>,
 ): string | null {
-	const { affectedColumnId } = ACCOUNT_COMMANDS[command.opType] as {
-		affectedColumnId(payload: AccountCommandDescriptor["payload"]): string | null;
-	};
-	return affectedColumnId(command.payload);
+	return accountCommandContracts[command.opType].affectedColumnId(command.payload);
 }
 
 export interface ReplayReconciliationSummary {
-	ackedCreatedColumnIds: string[];
-	failedCreatedColumnIds: string[];
-	accessLostColumnIds: string[];
+	ackedCreatedColumnIds: Array<string>;
+	failedCreatedColumnIds: Array<string>;
+	accessLostColumnIds: Array<string>;
 	nonAccessLossFailureCount: number;
 }
 
@@ -43,7 +41,7 @@ export function summarizeReplayReport(
 		}
 
 		const columnId = columnIdForAccountCommand(failure);
-		if (columnId) accessLostColumnIds.add(columnId);
+		if (columnId) {accessLostColumnIds.add(columnId);}
 	}
 
 	return {

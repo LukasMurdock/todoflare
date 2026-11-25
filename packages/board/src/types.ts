@@ -31,7 +31,7 @@ export interface BoardColumn {
 }
 
 export interface TodoBoardProps {
-	columns: readonly BoardColumn[];
+	columns: ReadonlyArray<BoardColumn>;
 	documents: DocumentAdapter;
 	/**
 	 * "loading" renders no columns and opens no documents. Hosts pass it until
@@ -41,20 +41,22 @@ export interface TodoBoardProps {
 
 	// Intents. Omitting a callback hides its control. Returned promises are
 	// awaited by the host's own code paths; the board ignores their values.
-	onCreateColumn?(): unknown;
-	onRemoveColumn?(column: BoardColumn): unknown;
-	onReorderColumns?(columnIds: string[]): unknown;
-	onCollapsedChange?(column: BoardColumn, collapsed: boolean): void;
+	/* oxlint-disable quality/no-unknown-returns -- Hosts may return any value or promise from an intent. */
+	onCreateColumn?: () => unknown;
+	onRemoveColumn?: (column: BoardColumn) => unknown;
+	onReorderColumns?: (columnIds: Array<string>) => unknown;
+	/* oxlint-enable quality/no-unknown-returns */
+	onCollapsedChange?: (column: BoardColumn, collapsed: boolean) => void;
 	/** Every editor change (including selection moves), as Plate JSON. */
-	onContentChange?(columnId: string, content: Value): void;
+	onContentChange?: (columnId: string, content: Value) => void;
 
 	/**
 	 * Errors from the document adapter, the editor, or a rejected intent
 	 * callback. The board stays mounted. Defaults to console.error.
 	 */
-	onError?(error: unknown, context: { columnId?: string; operation: string }): void;
+	onError?: (error: unknown, context: { columnId?: string; operation: string }) => void;
 	/** Cmd/Ctrl+click on a link. Defaults to opening a new tab. */
-	onOpenLink?(url: string): void;
+	onOpenLink?: (url: string) => void;
 
 	/** This user's cursor label; omitted means no cursors are shown or sent. */
 	identity?: { name: string; color: string };
@@ -63,7 +65,7 @@ export interface TodoBoardProps {
 	 * Additional Plate plugins for the live editor, after the built-in ones.
 	 * Snapshots render with the built-in blocks only. Pass a stable array.
 	 */
-	editorPlugins?: readonly PlatePlugin<AnyPluginConfig>[];
+	editorPlugins?: ReadonlyArray<PlatePlugin<AnyPluginConfig>>;
 	/**
 	 * Where the keyboard-shortcuts button sits: "board" (bottom-left of the
 	 * board, the default), "viewport" (fixed to the window, for hosts where the
@@ -78,9 +80,9 @@ export interface TodoBoardProps {
 	layout?: "fill" | "page";
 
 	/** Extra controls in a column header, before the remove control. */
-	renderColumnActions?(column: BoardColumn): ReactNode;
+	renderColumnActions?: (column: BoardColumn) => ReactNode;
 	/** Content at the top of the board, before the columns (banners, badges). */
-	renderTopBar?(): ReactNode;
+	renderTopBar?: () => ReactNode;
 
 	className?: string;
 	/**

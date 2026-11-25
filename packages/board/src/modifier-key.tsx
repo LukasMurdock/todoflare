@@ -1,6 +1,6 @@
 "use client";
 
-import * as React from "react";
+import React from "react";
 
 /**
  * Whether Cmd (macOS) or Ctrl is held, owned by one board. Listeners exist only
@@ -21,15 +21,15 @@ class ModifierKeyStore {
 
 	attach(target: Window): () => void {
 		const set = (pressed: boolean) => {
-			if (this.pressed === pressed) return;
+			if (this.pressed === pressed) {return;}
 			this.pressed = pressed;
-			for (const listener of this.listeners) listener();
+			for (const listener of this.listeners) {listener();}
 		};
 		const onKeyDown = (event: KeyboardEvent) => {
-			if (event.metaKey || event.ctrlKey) set(true);
+			if (event.metaKey || event.ctrlKey) {set(true);}
 		};
 		const onKeyUp = (event: KeyboardEvent) => {
-			if (!event.metaKey && !event.ctrlKey) set(false);
+			if (!event.metaKey && !event.ctrlKey) {set(false);}
 		};
 		const onBlur = () => set(false);
 		target.addEventListener("keydown", onKeyDown);

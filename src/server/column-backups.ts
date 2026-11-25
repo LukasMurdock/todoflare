@@ -8,7 +8,8 @@ import {
 	parseDeletedColumnRecords,
 	parseSharedColumnIndex,
 } from "./persistence-records";
-import { restoreColumnBackup, type ColumnBackupPayload } from "./workflows/restore-column-backup";
+import { restoreColumnBackup } from './workflows/restore-column-backup';
+import type { ColumnBackupPayload } from './workflows/restore-column-backup';
 import {
 	checksumColumnBackupPayload,
 	MAX_YJS_UPDATE_BYTES,
@@ -16,7 +17,7 @@ import {
 	yjsBytesSchema,
 } from "./column-backup-payload";
 import { accountRecordStore, mutateAccountRecord } from "./account-record-store";
-import { type Bindings } from "./bindings";
+import type { Bindings } from './bindings';
 
 export const MAX_BACKUP_OBJECT_BYTES = MAX_YJS_UPDATE_BYTES * 4 + 1_000_000;
 
@@ -30,7 +31,7 @@ export function isAutoBackupEnabled(env: Bindings): boolean {
 
 export function parseBackupMaxColumns(env: Bindings): number {
 	const parsed = Number(env.BACKUP_MAX_COLUMNS ?? "1000");
-	if (!Number.isFinite(parsed) || parsed <= 0) return 1000;
+	if (!Number.isFinite(parsed) || parsed <= 0) {return 1000;}
 	return Math.min(Math.floor(parsed), 10_000);
 }
 
@@ -57,16 +58,15 @@ export async function readAndVerifyColumnBackup(
 	return parseAndVerifyColumnBackup(await object.text(), columnId);
 }
 
-export async function rebuildSharedIndexesForColumns(env: Bindings, columns: ColumnMeta[]) {
+export async function rebuildSharedIndexesForColumns(env: Bindings, columns: Array<ColumnMeta>) {
 	const byAccount = new Map<string, Set<string>>();
 
 	for (const meta of columns) {
 		for (const sharedAccountId of meta.sharedWith) {
 			const normalized = normalizeAccountId(sharedAccountId);
-			if (!byAccount.has(normalized)) {
-				byAccount.set(normalized, new Set<string>());
-			}
-			byAccount.get(normalized)!.add(meta.id);
+			const columns = byAccount.get(normalized) ?? new Set<string>();
+			columns.add(meta.id);
+			byAccount.set(normalized, columns);
 		}
 	}
 
@@ -103,7 +103,7 @@ export async function createColumnBackupSnapshot(env: Bindings, columnId: string
 		// Keep an independent copy of undecodable storage before any recovery
 		// replaces it. It is diagnostic data, never a valid document snapshot.
 		const raw = await stub.fetch(new Request("http://do/export-raw"));
-		if (!raw.ok) throw new Error("raw_column_backup_failed");
+		if (!raw.ok) {throw new Error("raw_column_backup_failed");}
 		const snapshotAt = Date.now();
 		const key = `raw-columns/${columnId}/${snapshotAt}.json`;
 		const bytes = await raw.text();
@@ -114,10 +114,10 @@ export async function createColumnBackupSnapshot(env: Bindings, columnId: string
 		throw new Error("column_not_found");
 	}
 
-	const exported = (await exportResponse.json()) as {
+	const exported = await exportResponse.json<{
 		meta: unknown;
 		yjs: unknown;
-	};
+	}>();
 	const parsedMeta = parseColumnMetaRecord(exported.meta);
 	if (!parsedMeta.ok || parsedMeta.value.id !== columnId) {
 		throw new Error("column_meta_invalid");
@@ -156,7 +156,7 @@ export async function createColumnBackupSnapshot(env: Bindings, columnId: string
 export async function createPreRestoreColumnBackup(env: Bindings, columnId: string) {
 	const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
 	const current = await stub.fetch(new Request("http://do/meta"));
-	if (current.status === 404) return { key: null };
+	if (current.status === 404) {return { key: null };}
 	return createColumnBackupSnapshot(env, columnId, "pre-restore/columns");
 }
 
@@ -165,13 +165,13 @@ const INVENTORY_READ_CONCURRENCY = 16;
 /** Concurrent account and column backups in a scheduled run (each writes to R2). */
 const BACKUP_CONCURRENCY = 6;
 
-async function listKeys(env: Bindings, prefix: string): Promise<string[]> {
-	const names: string[] = [];
+async function listKeys(env: Bindings, prefix: string): Promise<Array<string>> {
+	const names: Array<string> = [];
 	let cursor: string | undefined;
 	do {
 		const page = await env.ACCOUNTS.list({ prefix, cursor, limit: 1000 });
 		names.push(...page.keys.map((key) => key.name));
-		if (page.list_complete) break;
+		if (page.list_complete) {break;}
 		cursor = page.cursor;
 	} while (cursor);
 	return names;
@@ -182,7 +182,7 @@ export async function collectRegisteredColumns(env: Bindings) {
 	const keys = await listKeys(env, "column-registry:");
 	const metas = await mapWithConcurrency(keys, INVENTORY_READ_CONCURRENCY, async (key) => {
 		const raw = await env.ACCOUNTS.get(key);
-		if (!raw) return null;
+		if (!raw) {return null;}
 		try {
 			const meta = parseColumnMetaRecord(JSON.parse(raw));
 			return meta.ok ? meta.value : "invalid";
@@ -190,11 +190,11 @@ export async function collectRegisteredColumns(env: Bindings) {
 			return "invalid";
 		}
 	});
-	const columnsByOwner = new Map<string, string[]>();
-	const columnIds: string[] = [];
+	const columnsByOwner = new Map<string, Array<string>>();
+	const columnIds: Array<string> = [];
 	let invalid = 0;
 	for (const meta of metas) {
-		if (meta === null) continue;
+		if (meta === null) {continue;}
 		if (meta === "invalid") { invalid++; continue; }
 		columnIds.push(meta.id);
 		const ownerId = normalizeAccountId(meta.ownerId);
@@ -206,7 +206,7 @@ export async function collectRegisteredColumns(env: Bindings) {
 /** Every account and column known to storage, for the scheduled full backup. */
 export async function collectBackupInventory(env: Bindings) {
 	const columnIds = new Set<string>();
-	const accountIds: string[] = [];
+	const accountIds: Array<string> = [];
 	let invalidAccounts = 0;
 	const records = accountRecordStore(env);
 	const accountKeys = await listKeys(env, "account:");
@@ -220,16 +220,16 @@ export async function collectBackupInventory(env: Bindings) {
 	for (const { id, account, trash } of accounts) {
 		if (!account?.ok || !trash.ok) { invalidAccounts++; continue; }
 		accountIds.push(id);
-		for (const columnId of [...account.value.columnOrder, ...trash.value.map(row => row.columnId)]) columnIds.add(columnId);
+		for (const columnId of [...account.value.columnOrder, ...trash.value.map(row => row.columnId)]) {columnIds.add(columnId);}
 	}
 	const registered = await collectRegisteredColumns(env);
-	for (const columnId of registered.columnIds) columnIds.add(columnId);
+	for (const columnId of registered.columnIds) {columnIds.add(columnId);}
 	invalidAccounts += registered.invalid;
 	return { columnIds: Array.from(columnIds).sort(), columnsByOwner: registered.columnsByOwner, accountIds, invalidAccounts };
 }
 
 export async function runScheduledBackups(env: Bindings) {
-	if (!env.BACKUPS) return { skipped: true, reason: "backup_not_configured" as const };
+	if (!env.BACKUPS) {return { skipped: true, reason: "backup_not_configured" as const };}
 	const inventory = await collectBackupInventory(env);
 	const stateObject = await env.BACKUPS.get("backup-state.json");
 	const state = stateObject ? await stateObject.json<{ afterColumnId?: string }>() : {};
@@ -247,7 +247,7 @@ export async function runScheduledBackups(env: Bindings) {
 	await mapWithConcurrency(selected, BACKUP_CONCURRENCY, async (columnId) => {
 		try {
 			const snapshot = await createColumnBackupSnapshot(env, columnId);
-			if (snapshot.checksum === "raw-recovery-source") { rawCopies++; failed++; } else backedUp++;
+			if (snapshot.checksum === "raw-recovery-source") { rawCopies++; failed++; } else {backedUp++;}
 		}
 		catch { failed++; }
 	});

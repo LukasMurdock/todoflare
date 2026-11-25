@@ -15,9 +15,9 @@ declare const __TODOFLARE_E2E__: boolean;
  */
 export const drainUnreadRequestBody: MiddlewareHandler = async (c, next) => {
 	await next();
-	if (typeof __TODOFLARE_E2E__ === "undefined" || !__TODOFLARE_E2E__) return;
+	if (typeof __TODOFLARE_E2E__ !== "boolean" || !__TODOFLARE_E2E__) {return;}
 	const body = c.req.raw.body;
-	if (!body || c.req.raw.bodyUsed || body.locked) return;
+	if (!body || c.req.raw.bodyUsed || body.locked) {return;}
 	try {
 		await body.pipeTo(new WritableStream());
 	} catch {

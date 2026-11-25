@@ -7,7 +7,7 @@ import { displayAccountId } from "@/lib/account";
 export function ReconnectBanner() {
 	const { accountId, authenticationStatus, isReconnecting, loginWithPasskey, error } = useAccount();
 	const [busy, setBusy] = useState(false);
-	if (!accountId || authenticationStatus !== "required") return null;
+	if (!accountId || authenticationStatus !== "required") {return null;}
 
 	const reconnect = async () => {
 		setBusy(true);

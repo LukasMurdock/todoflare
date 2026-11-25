@@ -29,9 +29,7 @@ export {
 
 export type AccountCommandDescriptor<
 	T extends AccountCommandType = AccountCommandType,
-> = T extends AccountCommandType
-	? { opType: T; payload: AccountCommandPayloadMap[T] }
-	: never;
+> = { [K in T]: { opType: K; payload: AccountCommandPayloadMap[K] } }[T];
 
 interface AccountEditCommandBase {
 	idempotencyKey: string;
@@ -45,15 +43,14 @@ export type NewAccountEditCommandFields = AccountEditCommandBase;
 
 export type AccountEditCommand<
 	T extends AccountCommandType = AccountCommandType,
-> = T extends AccountCommandType
-	? AccountEditCommandBase & AccountCommandDescriptor<T>
-	: never;
+> = T extends AccountCommandType ? AccountEditCommandBase & AccountCommandDescriptor<T> : never;
 
 export function createAccountEditCommand<T extends AccountCommandType>(
 	opType: T,
 	payload: AccountCommandPayloadMap[NoInfer<T>],
 	fields: NewAccountEditCommandFields,
 ): AccountEditCommand<T> {
+	// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The operation selects its exact payload in the signature. TypeScript cannot distribute the generic object literal over the command union.
 	return { ...fields, opType, payload } as AccountEditCommand<T>;
 }
 
@@ -93,7 +90,7 @@ export type TerminalReplayFailure<
 export type AccountCommandEffect =
 	| { type: "column.created"; queueId: string; column: ColumnMeta }
 	| { type: "column.deleted"; columnId: string }
-	| { type: "column.sharing.updated"; columnId: string; sharedWith: string[] }
+	| { type: "column.sharing.updated"; columnId: string; sharedWith: Array<string> }
 	| {
 			type: "column.public.enabled";
 			queueId: string;
@@ -108,9 +105,9 @@ export interface ReplayReport {
 	acked: number;
 	retried: number;
 	dropped: number;
-	ackedCommands: ReplayCommandSummary[];
-	terminalFailures: TerminalReplayFailure[];
-	effects: AccountCommandEffect[];
+	ackedCommands: Array<ReplayCommandSummary>;
+	terminalFailures: Array<TerminalReplayFailure>;
+	effects: Array<AccountCommandEffect>;
 }
 
 export interface MutationQueueService {
@@ -124,7 +121,7 @@ export interface MutationQueueService {
 		predicate: (m: QueuedMutation) => boolean,
 		reason: DropReason,
 	): Promise<number>;
-	pending$(): ObservableLike<QueuedMutation[]>;
-	getPending(accountId: string): QueuedMutation[];
+	pending$(): ObservableLike<Array<QueuedMutation>>;
+	getPending(accountId: string): Array<QueuedMutation>;
 	getNextRetryAt(accountId: string): number | null;
 }

@@ -54,10 +54,10 @@ app.use("/api/*", async (c, next) => {
 registerAuthRoutes(app);
 
 app.use("/api/*", async (c, next) => {
-	if (["GET", "HEAD", "OPTIONS"].includes(c.req.method)) return next();
+	if (["GET", "HEAD", "OPTIONS"].includes(c.req.method)) {return next();}
 	// OAuth registration and token requests carry no cookies and come from MCP
 	// clients on other origins by design; they authenticate by PKCE and tokens.
-	if (CROSS_ORIGIN_API_PATHS.includes(new URL(c.req.url).pathname)) return next();
+	if (CROSS_ORIGIN_API_PATHS.includes(new URL(c.req.url).pathname)) {return next();}
 	const origin = c.req.header("Origin");
 	const fetchSite = c.req.header("Sec-Fetch-Site");
 	if (
@@ -105,7 +105,7 @@ export default {
 			(async () => {
 				// Emergency read-only mode freezes scheduled maintenance as well as
 				// user writes. Backups remain available while incidents are investigated.
-				if (isReadOnlyMode(env)) return;
+				if (isReadOnlyMode(env)) {return;}
 				await cleanupAbandonedProvisionalUsers(env);
 				const reconciliationResult = await reconcileColumnLifecycle(env);
 				env.LIFECYCLE_METRICS?.writeDataPoint({
@@ -147,7 +147,7 @@ export default {
 					}),
 				);
 
-				if (!backupResult) return;
+				if (!backupResult) {return;}
 				console.log(
 					JSON.stringify({
 						event: "scheduled_backup_run",

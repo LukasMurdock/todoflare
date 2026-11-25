@@ -1,13 +1,12 @@
-import * as Y from "yjs";
+import { Doc as YDoc, applyUpdate, encodeStateAsUpdate } from "yjs";
 import { describe, expect, it } from "vitest";
 import {
 	columnBlocksToMarkdown,
-	columnContentRoot,
 	columnTitle,
 	readColumnBlocks,
 	readColumnContent,
 } from "../src/server/agent-access/column-content";
-import { docFromPlate } from "./helpers/plate-doc";
+import { docFromPlate, plateBlocks } from "./helpers/plate-doc";
 
 const BOARD = [
 	{ id: "h1aaaaaaaa", type: "h1", children: [{ text: "Groceries" }] },
@@ -65,24 +64,24 @@ describe("column content codec", () => {
 
 	it("names a column by its first line of text", () => {
 		expect(columnTitle(readColumnBlocks(docFromPlate(BOARD)))).toBe("Groceries");
-		expect(columnTitle(readColumnBlocks(new Y.Doc()))).toBe("");
+		expect(columnTitle(readColumnBlocks(new YDoc()))).toBe("");
 		expect(columnTitle([{ id: null, type: "p", list: null, depth: 0, checked: false, text: "x".repeat(200) }])).toHaveLength(80);
 	});
 
 	it("versions content: stable across encodings, different after any edit", () => {
 		const original = docFromPlate(BOARD);
-		const copy = new Y.Doc();
-		Y.applyUpdate(copy, Y.encodeStateAsUpdate(original));
+		const copy = new YDoc();
+		applyUpdate(copy, encodeStateAsUpdate(original));
 		const before = (readColumnContent(original)).version;
 		expect((readColumnContent(copy)).version).toBe(before);
 
-		const firstTodo = columnContentRoot(copy).toDelta()[1].insert as Y.XmlText;
+		const firstTodo = plateBlocks(copy)[1];
 		firstTodo.setAttribute("checked", true);
 		expect((readColumnContent(copy)).version).not.toBe(before);
 	});
 
 	it("treats an empty document as no blocks", () => {
-		expect(readColumnContent(new Y.Doc())).toMatchObject({ blocks: [] });
+		expect(readColumnContent(new YDoc())).toMatchObject({ blocks: [] });
 		expect(columnBlocksToMarkdown([])).toBe("");
 	});
 });

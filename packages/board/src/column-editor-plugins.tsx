@@ -7,7 +7,8 @@
  */
 import type { NodeEntry, Range, TText } from "platejs";
 import { createSlatePlugin, KEYS } from "platejs";
-import { SlateLeaf, type SlateLeafProps } from "platejs/static";
+import { SlateLeaf } from 'platejs/static';
+import type { SlateLeafProps } from 'platejs/static';
 import { createPlatePlugin } from "platejs/react";
 import { BaseH1Plugin, BaseH2Plugin, BaseH3Plugin, HeadingRules } from "@platejs/basic-nodes";
 import { H1Plugin, H2Plugin, H3Plugin } from "@platejs/basic-nodes/react";
@@ -80,7 +81,7 @@ const ListShortcutsPlugin = createPlatePlugin({
 					if (nodes.length > 0) {
 						const [node] = nodes[0];
 						const currentChecked =
-							(node as { checked?: boolean }).checked ?? false;
+							"checked" in node && Boolean(node.checked);
 						editor.tf.setNodes({ checked: !currentChecked });
 					}
 
@@ -121,9 +122,8 @@ function normalizeUrl(url: string): string {
 }
 
 // Find all URL ranges in a text node for decoration
-function findUrlRanges(node: TText, path: number[]): Range[] {
-	const text = node.text;
-	const ranges: Range[] = [];
+function findUrlRanges(text: string, path: Array<number>): Array<Range> {
+	const ranges: Array<Range> = [];
 
 	let match;
 	URL_REGEX.lastIndex = 0;
@@ -139,11 +139,11 @@ function findUrlRanges(node: TText, path: number[]): Range[] {
 	return ranges;
 }
 
-function decorateUrls({ entry }: { entry: NodeEntry }): Range[] {
-	const [node, path] = entry as NodeEntry<TText>;
+function decorateUrls({ entry }: { entry: NodeEntry }): Array<Range> {
+	const [node, path] = entry;
 	// Only text nodes carry URLs.
-	if (typeof (node as TText).text !== "string") return [];
-	return findUrlRanges(node as TText, path);
+	if (!("text" in node) || typeof node.text !== "string") {return [];}
+	return findUrlRanges(node.text, path);
 }
 
 // URL decoration plugin - adds url property to decorated ranges (rendered by the editor's renderLeaf)

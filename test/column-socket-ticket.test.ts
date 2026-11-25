@@ -39,25 +39,36 @@ describe("column socket ticket", () => {
 			.rejects.toBeInstanceOf(ColumnSocketAuthorizationError);
 	});
 
-	it("checks for a queued create only after the response arrives", async () => {
-		let responded = false;
-		const fetch = (async () => {
-			responded = true;
-			return new Response(null, { status: 404 });
-		}) as typeof globalThis.fetch;
-		const checkedAfterResponse: boolean[] = [];
-		await expect(
-			fetchColumnSocketUrl({
-				accountId: ACCOUNT_ID,
-				columnId: COLUMN_ID,
-				hasPendingCreate: () => {
-					checkedAfterResponse.push(responded);
-					return false;
-				},
-				fetch,
-				location,
-			}),
-		).rejects.toBeInstanceOf(ColumnSocketAuthorizationError);
-		expect(checkedAfterResponse).toEqual([true]);
+	it.each([403, 404])("retries a stale %i that arrives after the create was acknowledged", async (status) => {
+		const reply = Promise.withResolvers<Response>();
+		let createPending = true;
+		const pendingTicket = fetchColumnSocketUrl({
+			accountId: ACCOUNT_ID,
+			columnId: COLUMN_ID,
+			hasPendingCreate: () => createPending,
+			fetch: () => reply.promise,
+			location,
+		});
+		createPending = false;
+		reply.resolve(new Response(null, { status }));
+		await expect(pendingTicket).rejects.toBeInstanceOf(ColumnSocketProvisioningError);
+
+		const freshTicket = request(new Response(null, { status }), () => createPending);
+		await expect(freshTicket.result).rejects.toBeInstanceOf(ColumnSocketAuthorizationError);
+	});
+
+	it("retries a missing room when its create entered the queue during the request", async () => {
+		const reply = Promise.withResolvers<Response>();
+		let createPending = false;
+		const pendingTicket = fetchColumnSocketUrl({
+			accountId: ACCOUNT_ID,
+			columnId: COLUMN_ID,
+			hasPendingCreate: () => createPending,
+			fetch: () => reply.promise,
+			location,
+		});
+		createPending = true;
+		reply.resolve(new Response(null, { status: 404 }));
+		await expect(pendingTicket).rejects.toBeInstanceOf(ColumnSocketProvisioningError);
 	});
 });

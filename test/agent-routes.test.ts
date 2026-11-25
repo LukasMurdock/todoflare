@@ -170,7 +170,7 @@ describe("agent management routes", () => {
 
 	it("caps live connections per account", async () => {
 		const me = await createAccount();
-		for (let index = 0; index < AGENT_CONNECTIONS_PER_ACCOUNT; index++) await createAgent(me.id, `agent ${index}`);
+		for (let index = 0; index < AGENT_CONNECTIONS_PER_ACCOUNT; index++) {await createAgent(me.id, `agent ${index}`);}
 		expect((await call(me.id, API_ROUTES.createAgent, { name: "one too many" })).status).toBe(409);
 	});
 

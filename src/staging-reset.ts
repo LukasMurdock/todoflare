@@ -31,7 +31,7 @@ const AUTH_TABLES = [
 	"user",
 ] as const;
 
-async function listKvKeys(env: Bindings, prefix: string, limit: number): Promise<string[]> {
+async function listKvKeys(env: Bindings, prefix: string, limit: number): Promise<Array<string>> {
 	const page = await env.ACCOUNTS.list({ prefix, limit });
 	return page.keys.map((key) => key.name);
 }
@@ -49,22 +49,22 @@ export async function resetStagingData(
 		const response = await env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId)).fetch(
 			new Request("http://do/", { method: "DELETE" }),
 		);
-		if (!response.ok) throw new Error(`column ${columnId} reset failed (${response.status})`);
+		if (!response.ok) {throw new Error(`column ${columnId} reset failed (${response.status})`);}
 		await env.ACCOUNTS.delete(key);
 		deleted.columns++;
 	});
-	if (registry.length === batch) return { done: false, deleted };
+	if (registry.length === batch) {return { done: false, deleted };}
 
 	// Account roots live in each account's coordinator, mirrored to KV for listing.
 	const accounts = await listKvKeys(env, "account:", batch);
 	const records = accountRecordStore(env);
 	await mapWithConcurrency(accounts, RESET_CONCURRENCY, async (key) => {
 		const accountId = key.slice("account:".length);
-		for (const prefix of ["account", "shared", "trash"]) await records.delete(`${prefix}:${accountId}`);
+		for (const prefix of ["account", "shared", "trash"]) {await records.delete(`${prefix}:${accountId}`);}
 		await env.ACCOUNTS.delete(key);
 		deleted.accounts++;
 	});
-	if (accounts.length === batch) return { done: false, deleted };
+	if (accounts.length === batch) {return { done: false, deleted };}
 
 	// Everything else in KV: projections, journal entries, markers.
 	const rest = await listKvKeys(env, "", batch);
@@ -72,13 +72,13 @@ export async function resetStagingData(
 		await env.ACCOUNTS.delete(key);
 		deleted.kvKeys++;
 	});
-	if (rest.length === batch) return { done: false, deleted };
+	if (rest.length === batch) {return { done: false, deleted };}
 
 	if (env.BACKUPS) {
 		const objects = await env.BACKUPS.list({ limit: batch === RESET_BATCH ? R2_BATCH : batch });
-		if (objects.objects.length) await env.BACKUPS.delete(objects.objects.map((object) => object.key));
+		if (objects.objects.length) {await env.BACKUPS.delete(objects.objects.map((object) => object.key));}
 		deleted.backupObjects = objects.objects.length;
-		if (objects.truncated) return { done: false, deleted };
+		if (objects.truncated) {return { done: false, deleted };}
 	}
 
 	for (const table of AUTH_TABLES) {

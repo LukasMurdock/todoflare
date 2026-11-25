@@ -1,3 +1,4 @@
+import type { z } from "zod";
 // Protocol conformance against the official MCP TypeScript SDK client, plus
 // the transport rules a stateless JSON-only server must follow.
 import { SELF } from "cloudflare:test";
@@ -10,7 +11,7 @@ import { createAccount, createColumn } from "./helpers/metadata-fixtures";
 
 async function sdkClient(token: string) {
 	const transport = new StreamableHTTPClientTransport(new URL(`${BASE}${API_ROUTES.mcp.path}`), {
-		fetch: (input, init) => SELF.fetch(input as RequestInfo, init as RequestInit),
+		fetch: (input, init) => SELF.fetch(input, init),
 		requestInit: { headers: { Authorization: `Bearer ${token}` } },
 	});
 	const client = new Client({ name: "todoflare-test", version: "1.0.0" });
@@ -28,6 +29,17 @@ async function grantedAgent() {
 	const { agent, token } = await createAgent(owner.id);
 	expect((await setGrant(owner.id, agent.id, columnId, { level: "append" })).status).toBe(200);
 	return { owner, columnId, agent, token };
+}
+
+async function postFramed(token: string, method: string, mutate: (meta: Record<string, z.core.util.JSONType | undefined>, headers: Record<string, string>) => void) {
+	const framed = modernFraming(method);
+	mutate(framed.params._meta, framed.headers);
+	const response = await SELF.fetch(`${BASE}${API_ROUTES.mcp.path}`, {
+		method: "POST",
+		headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...framed.headers },
+		body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: framed.params }),
+	});
+	return { status: response.status, body: (await response.json<{ error: { code: number; data?: unknown } }>()) };
 }
 
 describe("MCP with the official SDK client", () => {
@@ -97,7 +109,7 @@ describe("MCP transport rules", () => {
 	it("rejects an unsupported MCP-Protocol-Version header on a legacy request", async () => {
 		const { token } = await grantedAgent();
 		const response = await mcp(token, "tools/list", undefined, { headers: { "MCP-Protocol-Version": "1999-01-01" } });
-		expect([response.status, response.body?.error?.code]).toEqual([400, -32600]);
+		expect(response).toMatchObject({ status: 400, body: { error: { code: -32_600 } } });
 	});
 
 	it("accepts notifications without a reply", async () => {
@@ -120,9 +132,9 @@ describe("MCP transport rules", () => {
 				body,
 			});
 		expect((await post("[]")).status).toBe(400);
-		expect(((await (await post("{")).json()) as { error: { code: number } }).error.code).toBe(-32700);
-		expect((await mcp(token, "resources/list")).body?.error?.code).toBe(-32601);
-		expect((await mcp(token, "tools/call", { name: "share_column", arguments: {} })).body?.error?.code).toBe(-32602);
+		expect(((await (await post("{")).json<{ error: { code: number } }>())).error.code).toBe(-32_700);
+		expect((await mcp(token, "resources/list")).body).toMatchObject({ error: { code: -32_601 } });
+		expect((await mcp(token, "tools/call", { name: "share_column", arguments: {} })).body).toMatchObject({ error: { code: -32_602 } });
 	});
 
 	it("offers no stream and no session to end", async () => {
@@ -223,30 +235,20 @@ describe("MCP 2026-07-28", () => {
 	])("rejects %s with HeaderMismatch", async (_name, override) => {
 		const { token, columnId } = await grantedAgent();
 		const framed = modernFraming("tools/call", { name: "read_column", arguments: { columnId } });
-		const headers: Record<string, string> = { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...framed.headers };
+		const headers = new Headers({ Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...framed.headers });
 		for (const [key, value] of Object.entries(override)) {
-			if (value === "") delete headers[key];
-			else headers[key] = value;
+			if (value === "") {headers.delete(key);}
+			else {headers.set(key, value);}
 		}
 		const response = await SELF.fetch(`${BASE}${API_ROUTES.mcp.path}`, {
 			method: "POST",
 			headers,
 			body: JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/call", params: framed.params }),
 		});
-		const body = (await response.json()) as { id: number; error: { code: number } };
-		expect([response.status, body.id, body.error.code]).toEqual([400, 7, -32020]);
+		const body = (await response.json<{ id: number; error: { code: number } }>());
+		expect([response.status, body.id, body.error.code]).toEqual([400, 7, -32_020]);
 	});
 
-	async function postFramed(token: string, method: string, mutate: (meta: Record<string, unknown>, headers: Record<string, string>) => void) {
-		const framed = modernFraming(method);
-		mutate(framed.params._meta as Record<string, unknown>, framed.headers);
-		const response = await SELF.fetch(`${BASE}${API_ROUTES.mcp.path}`, {
-			method: "POST",
-			headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...framed.headers },
-			body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: framed.params }),
-		});
-		return { status: response.status, body: (await response.json()) as { error: { code: number; data?: unknown } } };
-	}
 
 	it("rejects an unknown version with the versions it can retry with", async () => {
 		const { token } = await grantedAgent();
@@ -255,7 +257,7 @@ describe("MCP 2026-07-28", () => {
 			headers["MCP-Protocol-Version"] = "2099-01-01";
 		});
 		expect(response.status).toBe(400);
-		expect(response.body.error.code).toBe(-32022);
+		expect(response.body.error.code).toBe(-32_022);
 		expect(response.body.error.data).toEqual({ supported: expect.arrayContaining([MODERN_VERSION]), requested: "2099-01-01" });
 	});
 
@@ -267,7 +269,7 @@ describe("MCP 2026-07-28", () => {
 			headers["MCP-Protocol-Version"] = "2099-01-01";
 			delete headers["Mcp-Method"];
 		});
-		expect(response.body.error.code).toBe(-32022);
+		expect(response.body.error.code).toBe(-32_022);
 	});
 
 	it("rejects a request without client capabilities as invalid params", async () => {
@@ -275,21 +277,21 @@ describe("MCP 2026-07-28", () => {
 		const response = await postFramed(token, "tools/list", (meta) => {
 			delete meta["io.modelcontextprotocol/clientCapabilities"];
 		});
-		expect([response.status, response.body.error.code]).toEqual([400, -32602]);
+		expect([response.status, response.body.error.code]).toEqual([400, -32_602]);
 	});
 
 	it("answers unknown and removed methods with 404", async () => {
 		const { token } = await grantedAgent();
 		for (const method of ["resources/list", "ping", "logging/setLevel"]) {
 			const response = await mcp(token, method, {}, modern);
-			expect([method, response.status, response.body?.error?.code]).toEqual([method, 404, -32601]);
+			expect(response, method).toMatchObject({ status: 404, body: { error: { code: -32_601 } } });
 		}
 	});
 
 	it("rejects a modern-version header on a request without per-request metadata", async () => {
 		const { token } = await grantedAgent();
 		const response = await mcp(token, "tools/list", undefined, { headers: { "MCP-Protocol-Version": MODERN_VERSION, "Mcp-Method": "tools/list" } });
-		expect([response.status, response.body?.error?.code]).toEqual([400, -32602]);
+		expect(response).toMatchObject({ status: 400, body: { error: { code: -32_602 } } });
 	});
 
 	it("still lets the same agent use initialize", async () => {

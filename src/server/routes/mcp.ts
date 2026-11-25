@@ -2,24 +2,12 @@ import { API_ROUTES } from "../../lib/api/routes";
 import { BUILD_INFO } from "../../lib/build-info";
 import { checkRateLimit, RATE_LIMITS, resourceRateLimitKey } from "../../lib/rate-limit";
 import { shouldSkipRateLimit } from "../http/guards";
-import {
-	JSON_RPC_ERRORS,
-	MCP_LEGACY_PROTOCOL_VERSIONS,
-	MCP_MODERN_PROTOCOL_VERSIONS,
-	MCP_PROTOCOL_VERSIONS,
-	META_SERVER_INFO,
-	isModernMessage,
-	jsonRpcError,
-	jsonRpcMessageSchema,
-	jsonRpcResult,
-	negotiateLegacyProtocolVersion,
-	validateModernRequest,
-	type JsonRpcId,
-	type JsonRpcMessage,
-} from "../agent-access/mcp-protocol";
+import { JSON_RPC_ERRORS, MCP_LEGACY_PROTOCOL_VERSIONS, MCP_MODERN_PROTOCOL_VERSIONS, MCP_PROTOCOL_VERSIONS, META_SERVER_INFO, isModernMessage, jsonRpcError, jsonRpcMessageSchema, jsonRpcResult, negotiateLegacyProtocolVersion, validateModernRequest } from '../agent-access/mcp-protocol';
+import type { JsonRpcId, JsonRpcMessage } from '../agent-access/mcp-protocol';
 import { agentStore } from "../agent-access/store";
 import { protectedResourceMetadataUrl } from "../oauth/authorization-server";
-import { agentToolDescriptors, callAgentTool, type AgentToolContext } from "../agent-access/tools";
+import { agentToolDescriptors, callAgentTool } from '../agent-access/tools';
+import type { AgentToolContext } from '../agent-access/tools';
 import { isAgentAccessEnabled } from "./agents";
 import type { App } from "../bindings";
 
@@ -60,11 +48,11 @@ type McpRequest = JsonRpcMessage & { id: JsonRpcId; method: string };
 async function handleLegacy(protocolHeader: string | undefined, request: McpRequest, context: AgentToolContext): Promise<Response> {
 	const { id, method, params } = request;
 	if (protocolHeader !== undefined && method !== "initialize") {
-		if (MCP_MODERN_PROTOCOL_VERSIONS.includes(protocolHeader as never)) {
+		if (MCP_MODERN_PROTOCOL_VERSIONS.some(version => version === protocolHeader)) {
 			// A modern client that left out its per-request metadata.
 			return rpc(jsonRpcError(id, JSON_RPC_ERRORS.invalidParams, "Modern requests must carry their protocol version in _meta"), 400);
 		}
-		if (!MCP_LEGACY_PROTOCOL_VERSIONS.includes(protocolHeader as never)) {
+		if (!MCP_LEGACY_PROTOCOL_VERSIONS.some(version => version === protocolHeader)) {
 			// Deliberately not a modern error: newer clients probing a legacy-shaped
 			// request fall back to initialize instead of retrying.
 			return rpc(jsonRpcError(id, JSON_RPC_ERRORS.invalidRequest, `Unsupported MCP-Protocol-Version: ${protocolHeader}`), 400);
@@ -86,7 +74,7 @@ async function handleLegacy(protocolHeader: string | undefined, request: McpRequ
 			return rpc(jsonRpcResult(id, { tools: agentToolDescriptors() }));
 		case "tools/call": {
 			const result = await callAgentTool(context, params?.name, params?.arguments);
-			if (!result) return rpc(jsonRpcError(id, JSON_RPC_ERRORS.invalidParams, `Unknown tool: ${String(params?.name)}`));
+			if (!result) {return rpc(jsonRpcError(id, JSON_RPC_ERRORS.invalidParams, `Unknown tool: ${String(params?.name)}`));}
 			return rpc(jsonRpcResult(id, result));
 		}
 		default:
@@ -98,9 +86,9 @@ async function handleLegacy(protocolHeader: string | undefined, request: McpRequ
 async function handleModern(headers: Headers, request: McpRequest, context: AgentToolContext): Promise<Response> {
 	const { id, method, params } = request;
 	const validation = validateModernRequest(request, headers);
-	if (!validation.ok) return rpc(jsonRpcError(id, validation.code, validation.message, validation.data), validation.status);
+	if (!validation.ok) {return rpc(jsonRpcError(id, validation.code, validation.message, validation.data), validation.status);}
 
-	const complete = (result: Record<string, unknown>) =>
+	const complete = <T extends object>(result: T) =>
 		rpc(jsonRpcResult(id, { resultType: "complete", ...result, _meta: { [META_SERVER_INFO]: SERVER_INFO } }));
 	switch (method) {
 		case "server/discover":
@@ -114,7 +102,7 @@ async function handleModern(headers: Headers, request: McpRequest, context: Agen
 			return complete({ tools: agentToolDescriptors(), ...TOOL_LIST_CACHE });
 		case "tools/call": {
 			const result = await callAgentTool(context, params?.name, params?.arguments);
-			if (!result) return rpc(jsonRpcError(id, JSON_RPC_ERRORS.invalidParams, `Unknown tool: ${String(params?.name)}`), 400);
+			if (!result) {return rpc(jsonRpcError(id, JSON_RPC_ERRORS.invalidParams, `Unknown tool: ${String(params?.name)}`), 400);}
 			return complete({ ...result });
 		}
 		default:
@@ -130,19 +118,19 @@ async function handleModern(headers: Headers, request: McpRequest, context: Agen
  */
 export function registerMcpRoutes(app: App) {
 	app.on(["GET", "DELETE"], API_ROUTES.mcp.path, (c) => {
-		if (!isAgentAccessEnabled(c.env)) return c.json({ error: "Not found", code: "not_found" }, 404);
+		if (!isAgentAccessEnabled(c.env)) {return c.json({ error: "Not found", code: "not_found" }, 404);}
 		// Stateless server: no server-to-client stream and no session to end.
 		return c.body(null, 405, { Allow: "POST" });
 	});
 
 	app.on(API_ROUTES.mcp.method, API_ROUTES.mcp.path, async (c) => {
-		if (!isAgentAccessEnabled(c.env)) return c.json({ error: "Not found", code: "not_found" }, 404);
+		if (!isAgentAccessEnabled(c.env)) {return c.json({ error: "Not found", code: "not_found" }, 404);}
 
 		const now = Date.now();
 		const token = bearerToken(c.req.header("Authorization"));
 		const store = agentStore(c.env.AUTH_DB);
 		const agent = token ? await store.resolveToken(token, now) : null;
-		if (!agent) return unauthorized(new URL(c.req.url).origin, token !== null);
+		if (!agent) {return unauthorized(new URL(c.req.url).origin, token !== null);}
 
 		if (!shouldSkipRateLimit(c)) {
 			const limit = await checkRateLimit(
@@ -161,7 +149,7 @@ export function registerMcpRoutes(app: App) {
 		c.executionCtx.waitUntil(store.touch(agent.id, now));
 
 		const raw = await c.req.text();
-		if (raw.length > MAX_BODY_BYTES) return rpc(jsonRpcError(null, JSON_RPC_ERRORS.invalidRequest, "Request too large"), 413);
+		if (raw.length > MAX_BODY_BYTES) {return rpc(jsonRpcError(null, JSON_RPC_ERRORS.invalidRequest, "Request too large"), 413);}
 		let json: unknown;
 		try {
 			json = JSON.parse(raw);
@@ -169,11 +157,11 @@ export function registerMcpRoutes(app: App) {
 			return rpc(jsonRpcError(null, JSON_RPC_ERRORS.parseError, "Parse error"), 400);
 		}
 		const parsed = jsonRpcMessageSchema.safeParse(json);
-		if (!parsed.success) return rpc(jsonRpcError(null, JSON_RPC_ERRORS.invalidRequest, "Invalid JSON-RPC message"), 400);
+		if (!parsed.success) {return rpc(jsonRpcError(null, JSON_RPC_ERRORS.invalidRequest, "Invalid JSON-RPC message"), 400);}
 		const message = parsed.data;
 
 		// Notifications and responses need no reply.
-		if (message.id === undefined || message.method === undefined) return c.body(null, 202);
+		if (message.id === undefined || message.method === undefined) {return c.body(null, 202);}
 		const request = { ...message, id: message.id, method: message.method };
 		const context = { env: c.env, agent, now };
 		return isModernMessage(request) ? handleModern(c.req.raw.headers, request, context) : handleLegacy(c.req.header("MCP-Protocol-Version"), request, context);

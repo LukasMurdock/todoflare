@@ -16,7 +16,7 @@ async function coordinatorRequest<TDurableObjectId>(
 	publicId: string,
 	columnId?: string,
 ): Promise<Response | null> {
-	if (!env.PUBLIC_ID_COORDINATOR) return null;
+	if (!env.PUBLIC_ID_COORDINATOR) {return null;}
 	const stub = env.PUBLIC_ID_COORDINATOR.get(
 		env.PUBLIC_ID_COORDINATOR.idFromName(publicId),
 	);
@@ -35,9 +35,9 @@ export async function claimPublicId<TDurableObjectId>(
 	columnId: string,
 ): Promise<boolean> {
 	const response = await coordinatorRequest(env, "claim", publicId, columnId);
-	if (response) return response.ok;
+	if (response) {return response.ok;}
 	const mapped = await env.ACCOUNTS.get(`public:${publicId}`);
-	if (mapped !== null && mapped !== columnId) return false;
+	if (mapped !== null && mapped !== columnId) {return false;}
 	await env.ACCOUNTS.put(`public:${publicId}`, columnId);
 	return true;
 }
@@ -49,7 +49,7 @@ export async function releasePublicId<TDurableObjectId>(
 ): Promise<void> {
 	const response = await coordinatorRequest(env, "release", publicId, columnId);
 	if (response) {
-		if (!response.ok) throw new Error(`Public ID release failed: ${response.status}`);
+		if (!response.ok) {throw new Error(`Public ID release failed: ${response.status}`);}
 		return;
 	}
 	if ((await env.ACCOUNTS.get(`public:${publicId}`)) === columnId) {
@@ -62,7 +62,7 @@ export async function resolvePublicId<TDurableObjectId>(
 	publicId: string,
 ): Promise<string | null> {
 	const response = await coordinatorRequest(env, "resolve", publicId);
-	if (!response) return env.ACCOUNTS.get(`public:${publicId}`);
-	if (!response.ok) throw new Error(`Public ID resolve failed: ${response.status}`);
-	return ((await response.json()) as { columnId: string | null }).columnId;
+	if (!response) {return env.ACCOUNTS.get(`public:${publicId}`);}
+	if (!response.ok) {throw new Error(`Public ID resolve failed: ${response.status}`);}
+	return (await response.json<{ columnId: string | null }>()).columnId;
 }

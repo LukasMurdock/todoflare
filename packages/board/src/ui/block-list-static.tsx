@@ -1,6 +1,4 @@
-import * as React from 'react';
-
-import type { RenderStaticNodeWrapper, TListElement } from 'platejs';
+import type { RenderStaticNodeWrapper } from 'platejs';
 import type { SlateRenderElementProps } from 'platejs/static';
 
 import { isOrderedList } from '@platejs/list';
@@ -8,28 +6,16 @@ import { Checkbox } from './checkbox';
 
 import { cn } from './cn';
 
-const config: Record<
-  string,
-  {
-    Li: React.FC<SlateRenderElementProps>;
-    Marker: React.FC<SlateRenderElementProps>;
-  }
-> = {
-  todo: {
-    Li: TodoLiStatic,
-    Marker: TodoMarkerStatic,
-  },
-};
-
 export const BlockListStatic: RenderStaticNodeWrapper = (props) => {
-  if (!props.element.listStyleType) return;
+  if (!props.element.listStyleType) {return;}
 
-  return (props) => <List {...props} />;
+  return List;
 };
 
 function List(props: SlateRenderElementProps) {
-  const { listStart, listStyleType } = props.element as TListElement;
-  const { Li, Marker } = config[listStyleType] ?? {};
+  const listStart = typeof props.element.listStart === 'number' ? props.element.listStart : undefined;
+  const listStyleType = typeof props.element.listStyleType === 'string' ? props.element.listStyleType : undefined;
+  const todo = listStyleType === 'todo';
   const List = isOrderedList(props.element) ? 'ol' : 'ul';
 
   return (
@@ -38,8 +24,8 @@ function List(props: SlateRenderElementProps) {
       style={{ listStyleType }}
       start={listStart}
     >
-      {Marker && <Marker {...props} />}
-      {Li ? <Li {...props} /> : <li>{props.children}</li>}
+      {todo && <TodoMarkerStatic {...props} />}
+      {todo ? <TodoLiStatic {...props} /> : <li>{props.children}</li>}
     </List>
   );
 }
@@ -64,7 +50,7 @@ function TodoLiStatic(props: SlateRenderElementProps) {
     <li
       className={cn(
         'list-none pl-2 line-through decoration-[1.5px] transition-[color,text-decoration-color] duration-200 ease-out',
-        (props.element.checked as boolean)
+        props.element.checked
           ? 'text-muted-foreground decoration-muted-foreground/60'
           : 'decoration-transparent'
       )}

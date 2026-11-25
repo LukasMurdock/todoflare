@@ -5,10 +5,9 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const root = path.resolve(import.meta.dirname, "..");
 const routeModules = new Set(["src/lib/api/routes.ts", "src/lib/api/account-commands.ts"]);
 const routeLiteral = /^\/(api|p)\//;
 const allowed = (text) => text === "/api/*" || text === "/api/auth/*" || text.startsWith("/api/admin/");
@@ -18,7 +17,7 @@ const AUTH_BASE_PATH = { name: "AUTH_BASE_PATH", value: "/api/auth" };
 function sourceFiles(dir) {
 	return readdirSync(path.join(root, dir), { withFileTypes: true }).flatMap((entry) => {
 		const rel = `${dir}/${entry.name}`;
-		if (entry.isDirectory()) return sourceFiles(rel);
+		if (entry.isDirectory()) {return sourceFiles(rel);}
 		return /\.tsx?$/.test(entry.name) ? [rel] : [];
 	});
 }
@@ -28,7 +27,7 @@ export function findRouteLiterals(fileName, text) {
 	const found = [];
 	const visit = (node) => {
 		let literal = null;
-		if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) literal = node.text;
+		if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {literal = node.text;}
 		else if (ts.isTemplateExpression(node)) {
 			const [first] = node.templateSpans;
 			literal = node.head.text === "" && ts.isIdentifier(first.expression) && first.expression.text === AUTH_BASE_PATH.name
@@ -58,7 +57,7 @@ const violations = sourceFiles("src")
 
 if (violations.length) {
 	console.error("Route paths must come from src/lib/api/routes.ts or account-commands.ts:");
-	for (const violation of violations) console.error(`  ${violation}`);
+	for (const violation of violations) {console.error(`  ${violation}`);}
 	process.exit(1);
 }
 console.log("Route literals are declared only in the route modules.");

@@ -9,9 +9,9 @@ import { publicPageUrl } from "../api/routes";
 
 export interface LocalAccountProjectionSource {
 	account: Account;
-	sharedColumns?: ColumnMeta[];
-	deletedColumns?: DeletedColumn[];
-	sharedWithByColumn?: Record<string, string[] | undefined>;
+	sharedColumns?: Array<ColumnMeta>;
+	deletedColumns?: Array<DeletedColumn>;
+	sharedWithByColumn?: Record<string, Array<string> | undefined>;
 	publicLinksByColumn?: Record<string, PublicLinkResponse | null>;
 }
 import type {
@@ -22,9 +22,9 @@ import type {
 
 export interface AccountProjection {
 	account: Account;
-	sharedColumns: ColumnMeta[];
-	deletedColumns: DeletedColumn[];
-	sharedWithByColumn: Record<string, string[] | undefined>;
+	sharedColumns: Array<ColumnMeta>;
+	deletedColumns: Array<DeletedColumn>;
+	sharedWithByColumn: Record<string, Array<string> | undefined>;
 	publicLinksByColumn: Record<string, PublicLinkResponse | null>;
 }
 
@@ -173,14 +173,14 @@ export function applyAccountCommand(
 
 export function applyPendingCommands(
 	serverBase: AccountProjection,
-	commands: readonly QueuedMutation[],
+	commands: ReadonlyArray<QueuedMutation>,
 ): AccountProjection {
 	return commands.reduce(applyAccountCommand, cloneAccountProjection(serverBase));
 }
 
 export function applyCommandEffects(
 	projection: AccountProjection,
-	effects: readonly AccountCommandEffect[],
+	effects: ReadonlyArray<AccountCommandEffect>,
 ): AccountProjection {
 	const next = cloneAccountProjection(projection);
 

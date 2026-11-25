@@ -1,16 +1,21 @@
-import * as Y from "yjs";
+import { Doc as YDoc, applyUpdate } from "yjs";
 import { z } from "zod";
 import type { AgentGrantLevel } from "../../lib/api/agent-contract";
 import { columnIdContractSchema } from "../../lib/api/account-contract";
 import { mapWithConcurrency } from "../bounded-concurrency";
 import { isReadOnlyMode } from "../read-only-mode";
 import type { Bindings } from "../bindings";
-import { loadColumnAccessState, type ColumnAccessState } from "./column-state";
+import { loadColumnAccessState } from './column-state';
+import type { ColumnAccessState } from './column-state';
 import { columnBlocksToMarkdown, columnTitle, readColumnContent } from "./column-content";
-import { decideAgentColumnAccess, type AgentAccessDecision } from "./decision";
-import { ITEM_STYLES, type AgentEdit } from "./column-edits";
-import { toolError, toolText, type ToolResult } from "./mcp-protocol";
-import { agentStore, type ResolvedAgent } from "./store";
+import { decideAgentColumnAccess } from './decision';
+import type { AgentAccessDecision } from './decision';
+import { ITEM_STYLES } from './column-edits';
+import type { AgentEdit } from './column-edits';
+import { toolError, toolText } from './mcp-protocol';
+import type { ToolResult } from './mcp-protocol';
+import { agentStore } from './store';
+import type { ResolvedAgent } from './store';
 
 export interface AgentToolContext {
 	env: Bindings;
@@ -48,7 +53,7 @@ export async function authorizeColumn(
 	const grant = await agentStore(context.env.AUTH_DB).grant(context.agent.id, columnId);
 	// Ungranted columns are never looked up, so their existence cannot leak through timing or errors.
 	const column = grant ? await loadColumnAccessState(context.env.COLUMN_ROOM, columnId) : { ok: true as const, state: null };
-	if (!column.ok) return { ok: false, result: toolError("The column is temporarily unavailable. Try again shortly.") };
+	if (!column.ok) {return { ok: false, result: toolError("The column is temporarily unavailable. Try again shortly.") };}
 	const decision = decideAgentColumnAccess({
 		now: context.now,
 		readOnlyMode: isReadOnlyMode(context.env),
@@ -57,16 +62,17 @@ export async function authorizeColumn(
 		column: column.state,
 		required,
 	});
-	if (!decision.allowed) return { ok: false, result: denial(decision, required) };
-	return { ok: true, level: decision.level, state: column.state! };
+	if (!decision.allowed) {return { ok: false, result: denial(decision, required) };}
+	if (!column.state) {throw new Error("Allowed column missing its access state");}
+	return { ok: true, level: decision.level, state: column.state };
 }
 
-async function loadDocument(env: Bindings, columnId: string): Promise<Y.Doc | null> {
+async function loadDocument(env: Bindings, columnId: string): Promise<YDoc | null> {
 	const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
 	const response = await stub.fetch(new Request("http://do/yjs-state"));
-	if (!response.ok) return null;
-	const doc = new Y.Doc();
-	Y.applyUpdate(doc, new Uint8Array(await response.arrayBuffer()));
+	if (!response.ok) {return null;}
+	const doc = new YDoc();
+	applyUpdate(doc, new Uint8Array(await response.arrayBuffer()));
 	return doc;
 }
 
@@ -79,8 +85,18 @@ interface AgentTool<TInput extends z.ZodType> {
 	run(context: AgentToolContext, input: z.output<TInput>): Promise<ToolResult>;
 }
 
-function defineTool<TInput extends z.ZodType>(tool: AgentTool<TInput>): AgentTool<TInput> {
-	return tool;
+function defineTool<TInput extends z.ZodType>(tool: AgentTool<TInput>) {
+	return {
+		...tool,
+		execute(context: AgentToolContext, args: unknown) {
+			const parsed = tool.input.safeParse(args ?? {});
+			if (!parsed.success) {
+				const issues = parsed.error.issues.map((issue) => `${issue.path.join(".") || "input"}: ${issue.message}`);
+				return toolError(`Invalid arguments: ${issues.join("; ")}`);
+			}
+			return tool.run(context, parsed.data);
+		},
+	};
 }
 
 const columnId = columnIdContractSchema.describe("A column ID from list_columns.");
@@ -106,7 +122,7 @@ interface EditResponse {
 	ok: boolean;
 	changeId?: string | null;
 	version?: string;
-	itemIds?: string[];
+	itemIds?: Array<string>;
 	summary?: string;
 	failure?: { code: string; message: string };
 	code?: string;
@@ -121,7 +137,7 @@ async function editColumn(
 	edit: AgentEdit,
 ): Promise<ToolResult> {
 	const authorization = await authorizeColumn(context, columnId, required);
-	if (!authorization.ok) return authorization.result;
+	if (!authorization.ok) {return authorization.result;}
 	const stub = context.env.COLUMN_ROOM.get(context.env.COLUMN_ROOM.idFromName(columnId));
 	const response = await stub.fetch(
 		new Request("http://do/agent-edit", {
@@ -136,10 +152,10 @@ async function editColumn(
 			}),
 		}),
 	);
-	if (response.status === 503) return toolError("Todoflare is temporarily read-only. Try again later.");
-	const body = (await response.json()) as EditResponse;
-	if (response.status === 404) return toolError(NOT_VISIBLE);
-	if (!body.ok) return toolError(body.failure?.message ?? "The edit could not be applied.");
+	if (response.status === 503) {return toolError("Todoflare is temporarily read-only. Try again later.");}
+	const body = await response.json<EditResponse>();
+	if (response.status === 404) {return toolError(NOT_VISIBLE);}
+	if (!body.ok) {return toolError(body.failure?.message ?? "The edit could not be applied.");}
 	const ids = body.itemIds?.length ? ` Items: ${body.itemIds.map((id) => `^${id}`).join(", ")}.` : "";
 	const undo = body.changeId ? ` Change ${body.changeId} can be undone with undo_change.` : "";
 	return toolText(`${body.summary}.${ids} Column version is now ${body.version}.${undo}`, {
@@ -164,9 +180,9 @@ export const AGENT_TOOLS = [
 			const grants = await agentStore(context.env.AUTH_DB).grants(context.agent.id);
 			const visible = await mapWithConcurrency(grants, 8, async (grant) => {
 				const authorization = await authorizeColumn(context, grant.columnId, "read");
-				if (!authorization.ok) return null;
+				if (!authorization.ok) {return null;}
 				const doc = await loadDocument(context.env, grant.columnId);
-				if (!doc) return null;
+				if (!doc) {return null;}
 				const { blocks } = readColumnContent(doc);
 				doc.destroy();
 				return { columnId: grant.columnId, title: columnTitle(blocks) || "(untitled)", level: authorization.level };
@@ -189,9 +205,9 @@ export const AGENT_TOOLS = [
 		annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
 		async run(context, { columnId }) {
 			const authorization = await authorizeColumn(context, columnId, "read");
-			if (!authorization.ok) return authorization.result;
+			if (!authorization.ok) {return authorization.result;}
 			const doc = await loadDocument(context.env, columnId);
-			if (!doc) return toolError(NOT_VISIBLE);
+			if (!doc) {return toolError(NOT_VISIBLE);}
 			const { blocks, version } = readColumnContent(doc);
 			doc.destroy();
 			const markdown = columnBlocksToMarkdown(blocks);
@@ -200,7 +216,7 @@ export const AGENT_TOOLS = [
 				UNTRUSTED_CONTENT_NOTE,
 				"<column-content>",
 				// Column text cannot close the wrapper and pose as text from Todoflare.
-				markdown.replace(/<(\/?)column-content>/gi, "<$1column-content\u200b>") || "(empty)",
+				markdown.replaceAll(/<(\/?)column-content>/gi, "<$1column-content\u200b>") || "(empty)",
 				"</column-content>",
 			].join("\n");
 			return toolText(text, {
@@ -325,7 +341,7 @@ export const AGENT_TOOLS = [
 			// Object, which holds the change, requires the level that change needed
 			// and restricts undo to this agent's own changes.
 			const authorization = await authorizeColumn(context, id, "append");
-			if (!authorization.ok) return authorization.result;
+			if (!authorization.ok) {return authorization.result;}
 			const stub = context.env.COLUMN_ROOM.get(context.env.COLUMN_ROOM.idFromName(id));
 			const response = await stub.fetch(
 				new Request("http://do/agent-undo", {
@@ -333,11 +349,11 @@ export const AGENT_TOOLS = [
 					body: JSON.stringify({ accountId: context.agent.userId, changeId, connectionId: context.agent.id, grantedLevel: authorization.level }),
 				}),
 			);
-			if (response.status === 503) return toolError("Todoflare is temporarily read-only. Try again later.");
-			const body = (await response.json()) as { ok: boolean; code?: string; restored?: number; kept?: number; version?: string };
-			if (body.code === "change_not_found" || response.status === 404) return toolError("No change with that ID from this agent in this column.");
-			if (body.code === "already_undone") return toolError("That change was already undone.");
-			if (body.code === "insufficient_grant") return toolError("This agent's access to the column does not allow undoing that change.");
+			if (response.status === 503) {return toolError("Todoflare is temporarily read-only. Try again later.");}
+			const body = await response.json<{ ok: boolean; code?: string; restored?: number; kept?: number; version?: string }>();
+			if (body.code === "change_not_found" || response.status === 404) {return toolError("No change with that ID from this agent in this column.");}
+			if (body.code === "already_undone") {return toolError("That change was already undone.");}
+			if (body.code === "insufficient_grant") {return toolError("This agent's access to the column does not allow undoing that change.");}
 			const kept = body.kept ? ` Kept ${body.kept} that someone changed since.` : "";
 			return toolText(`Undid change ${changeId}: restored ${body.restored}.${kept} Column version is now ${body.version}.`, {
 				columnId: id,
@@ -362,10 +378,6 @@ export function agentToolDescriptors() {
 
 export async function callAgentTool(context: AgentToolContext, name: unknown, args: unknown): Promise<ToolResult | null> {
 	const tool = AGENT_TOOLS.find((candidate) => candidate.name === name);
-	if (!tool) return null;
-	const parsed = tool.input.safeParse(args ?? {});
-	if (!parsed.success) {
-		return toolError(`Invalid arguments: ${parsed.error.issues.map((issue) => `${issue.path.join(".") || "input"}: ${issue.message}`).join("; ")}`);
-	}
-	return tool.run(context, parsed.data as never);
+	if (!tool) {return null;}
+	return tool.execute(context, args);
 }

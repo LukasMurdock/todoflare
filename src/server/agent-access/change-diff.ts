@@ -1,5 +1,6 @@
 import type { AgentChangeDiff, AgentDiffItem } from "../../lib/api/agent-contract";
-import { currentStyle, type BlockSnapshot, type FieldValues, type UndoRecord } from "./column-edits";
+import { currentStyle, undoRecordSchema } from './column-edits';
+import type { BlockSnapshot, FieldValues, UndoRecord } from './column-edits';
 
 /** Enough entries to read a change at a glance; a rewrite can touch hundreds. */
 export const MAX_DIFF_ENTRIES = 50;
@@ -12,14 +13,14 @@ function item(fields: FieldValues): AgentDiffItem {
 }
 
 function snapshotFields(saved: BlockSnapshot): FieldValues {
-	return { ...saved.attributes, text: saved.runs.map((run) => run.insert).join("") } as FieldValues;
+	return { ...saved.attributes, text: saved.runs.map((run) => run.insert).join("") };
 }
 
 function sameItem(left: AgentDiffItem, right: AgentDiffItem): boolean {
 	return left.text === right.text && left.style === right.style && left.checked === right.checked && left.depth === right.depth;
 }
 
-function capped(entries: Entry[]): AgentChangeDiff {
+function capped(entries: Array<Entry>): AgentChangeDiff {
 	return { entries: entries.slice(0, MAX_DIFF_ENTRIES), omitted: Math.max(entries.length - MAX_DIFF_ENTRIES, 0) };
 }
 
@@ -29,9 +30,9 @@ function capped(entries: Entry[]): AgentChangeDiff {
  * recorded before `context` existed borrows the item's current fields for
  * whatever the change did not touch.
  */
-export function describeAgentChange(record: UndoRecord, current: (id: string) => FieldValues | undefined): AgentChangeDiff {
+export function describeAgentChange(record: unknown, current: (id: string) => FieldValues | undefined): AgentChangeDiff {
 	try {
-		return describe(record, current);
+		return describe(undoRecordSchema.parse(record), current);
 	} catch {
 		// A record this code cannot read still lists, with its summary only.
 		return capped([]);
@@ -45,31 +46,31 @@ function describe(record: UndoRecord, current: (id: string) => FieldValues | und
 		case "reinsert":
 			return capped(record.items.map(({ snapshot }) => ({ kind: "removed", item: item(snapshotFields(snapshot)) })));
 		case "restore-fields": {
-			if (Object.keys(record.after).length === 0) return capped([]);
+			if (Object.keys(record.after).length === 0) {return capped([]);}
 			const context = record.context ?? current(record.id) ?? {};
 			return capped([{ kind: "changed", before: item({ ...context, ...record.before }), after: item({ ...context, ...record.after }) }]);
 		}
 		case "restore-column": {
 			const before = new Map<string, AgentDiffItem>();
-			const unidentified: AgentDiffItem[] = [];
+			const unidentified: Array<AgentDiffItem> = [];
 			for (const saved of record.before) {
 				const id = saved.attributes.id;
-				if (typeof id === "string" && id) before.set(id, item(snapshotFields(saved)));
-				else unidentified.push(item(snapshotFields(saved)));
+				if (typeof id === "string" && id) {before.set(id, item(snapshotFields(saved)));}
+				else {unidentified.push(item(snapshotFields(saved)));}
 			}
-			const entries: Entry[] = [];
+			const entries: Array<Entry> = [];
 			const kept = new Set<string>();
 			for (const written of record.after) {
 				const after = item(written);
 				const previous = before.get(written.id);
-				if (!previous) entries.push({ kind: "added", item: after });
+				if (!previous) {entries.push({ kind: "added", item: after });}
 				else {
 					kept.add(written.id);
-					if (!sameItem(previous, after)) entries.push({ kind: "changed", before: previous, after });
+					if (!sameItem(previous, after)) {entries.push({ kind: "changed", before: previous, after });}
 				}
 			}
-			for (const [id, previous] of before) if (!kept.has(id)) entries.push({ kind: "removed", item: previous });
-			for (const previous of unidentified) entries.push({ kind: "removed", item: previous });
+			for (const [id, previous] of before) {if (!kept.has(id)) {entries.push({ kind: "removed", item: previous });}}
+			for (const previous of unidentified) {entries.push({ kind: "removed", item: previous });}
 			return capped(entries);
 		}
 		default:

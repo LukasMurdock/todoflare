@@ -9,12 +9,8 @@ import {
 	parseSharedColumnIndex,
 	TRASH_RETENTION_MS,
 } from "../persistence-records";
-import {
-	type ColumnLifecycleBindings,
-	type ColumnLifecycleResult,
-	type ColumnLifecycleWriteObserver,
-	lifecycleNotFound,
-} from "./column-lifecycle";
+import { lifecycleNotFound } from './column-lifecycle';
+import type { ColumnLifecycleBindings, ColumnLifecycleResult, ColumnLifecycleWriteObserver } from './column-lifecycle';
 
 export type DeleteColumnWriteBoundary =
 	| "owner-account"
@@ -55,7 +51,7 @@ export async function deleteColumn<TColumnRoomId>(
 	const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
 	const metaResponse = await stub.fetch(new Request("http://do/meta"));
 
-	if (!metaResponse.ok) return lifecycleNotFound("Column not found");
+	if (!metaResponse.ok) {return lifecycleNotFound("Column not found");}
 
 	const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
 	if (!parsedMeta.ok) {
@@ -103,7 +99,7 @@ export async function deleteColumn<TColumnRoomId>(
 		const normalizedSharedId = normalizeAccountId(sharedAccountId);
 		const sharedKey = `shared:${normalizedSharedId}`;
 		const sharedColumnsData = await records.get(sharedKey);
-		if (!sharedColumnsData) continue;
+		if (!sharedColumnsData) {continue;}
 
 		const parsedSharedColumns = parseSharedColumnIndex(sharedColumnsData);
 		if (!parsedSharedColumns.ok) {
@@ -150,10 +146,10 @@ export async function deleteColumn<TColumnRoomId>(
 	const trashResponse = await stub.fetch(new Request("http://do/trash", {
 		method: "POST", body: JSON.stringify({ deletedAt: now() }),
 	}));
-	if (!trashResponse.ok) throw new Error(`Failed to mark column trash: ${trashResponse.status}`);
+	if (!trashResponse.ok) {throw new Error(`Failed to mark column trash: ${trashResponse.status}`);}
 	// The room keeps the first deletion time of an already-trashed column.
-	const { deletedAt } = (await trashResponse.json()) as { deletedAt: number };
-	if (!Number.isFinite(deletedAt)) throw new Error("Column trash response has no deletion time");
+	const { deletedAt } = await trashResponse.json<{ deletedAt: number }>();
+	if (!Number.isFinite(deletedAt)) {throw new Error("Column trash response has no deletion time");}
 	await mutateAccountRecord(env, trashKey, {
 		kind: "trash-upsert",
 		columnId,

@@ -16,10 +16,10 @@ interface AccountColumnCommandDependencies {
 	accountId: string | null;
 	accountConvergenceActor: AccountConvergenceActor;
 	submitAccountCommand: ReturnType<typeof useAccountCommandSubmission>["submitAccountCommand"];
-	detachColumnSync(columnId: string): void;
+	detachColumnSync: (columnId: string) => void;
 	yjsOutbox: LocalYjsUpdateOutbox;
-	refreshYjsOutboxSummary(): void;
-	setError(message: string): void;
+	refreshYjsOutboxSummary: () => void;
+	setError: (message: string) => void;
 }
 
 /**
@@ -44,8 +44,8 @@ export function useAccountColumnCommands({
 			try {
 				const { outcome } = await submitAccountCommand(opType, payload);
 				return outcome !== "terminal";
-			} catch (err) {
-				setError(err instanceof Error ? err.message : "Unknown error");
+			} catch (error) {
+				setError(error instanceof Error ? error.message : "Unknown error");
 				return false;
 			}
 		},
@@ -53,7 +53,7 @@ export function useAccountColumnCommands({
 	);
 
 	const createColumn = useCallback(async () => {
-		if (!accountId) return null;
+		if (!accountId) {return null;}
 
 		const columnId = crypto.randomUUID();
 		const provisionalColumn: ColumnMeta = {
@@ -81,9 +81,9 @@ export function useAccountColumnCommands({
 			}
 
 			return provisionalColumn;
-		} catch (err) {
+		} catch (error) {
 			detachColumnSync(columnId);
-			setError(err instanceof Error ? err.message : "Unknown error");
+			setError(error instanceof Error ? error.message : "Unknown error");
 			return null;
 		}
 	}, [
@@ -97,7 +97,7 @@ export function useAccountColumnCommands({
 
 	const deleteColumn = useCallback(
 		async (columnId: string) => {
-			if (!accountId) return false;
+			if (!accountId) {return false;}
 			detachColumnSync(columnId);
 			return submit("column.delete", { columnId });
 		},
@@ -106,7 +106,7 @@ export function useAccountColumnCommands({
 
 	const restoreColumn = useCallback(
 		async (columnId: string) => {
-			if (!accountId) return false;
+			if (!accountId) {return false;}
 			return submit("column.restore", { columnId });
 		},
 		[accountId, submit],
@@ -114,7 +114,7 @@ export function useAccountColumnCommands({
 
 	const shareColumn = useCallback(
 		async (columnId: string, targetAccountId: string) => {
-			if (!accountId || !validateAccountId(targetAccountId)) return false;
+			if (!accountId || !validateAccountId(targetAccountId)) {return false;}
 			return submit("column.share", { columnId, targetAccountId });
 		},
 		[accountId, submit],
@@ -122,7 +122,7 @@ export function useAccountColumnCommands({
 
 	const revokeShare = useCallback(
 		async (columnId: string, targetAccountId: string) => {
-			if (!accountId || !validateAccountId(targetAccountId)) return false;
+			if (!accountId || !validateAccountId(targetAccountId)) {return false;}
 			return submit("column.revoke", { columnId, targetAccountId });
 		},
 		[accountId, submit],
@@ -130,8 +130,8 @@ export function useAccountColumnCommands({
 
 	const enablePublicLink = useCallback(
 		async (columnId: string) => {
-			if (!accountId) return null;
-			if (!(await submit("column.public.enable", { columnId }))) return null;
+			if (!accountId) {return null;}
+			if (!(await submit("column.public.enable", { columnId }))) {return null;}
 			return (
 				accountConvergenceActor.getSnapshot().context.projection
 					?.publicLinksByColumn[columnId] ?? null
@@ -142,7 +142,7 @@ export function useAccountColumnCommands({
 
 	const disablePublicLink = useCallback(
 		async (columnId: string) => {
-			if (!accountId) return false;
+			if (!accountId) {return false;}
 			return submit("column.public.disable", { columnId });
 		},
 		[accountId, submit],
@@ -150,24 +150,24 @@ export function useAccountColumnCommands({
 
 	// Reorder and hide are background preferences: failures are logged, not surfaced.
 	const updateColumnOrder = useCallback(
-		async (columnOrder: string[]) => {
-			if (!accountId) return;
+		async (columnOrder: Array<string>) => {
+			if (!accountId) {return;}
 			try {
 				await submitAccountCommand("column.reorder", { columnOrder });
-			} catch (err) {
-				console.error("Failed to update column order:", err);
+			} catch (error) {
+				console.error("Failed to update column order:", error);
 			}
 		},
 		[accountId, submitAccountCommand],
 	);
 
 	const updateHiddenSharedColumns = useCallback(
-		async (hiddenSharedColumns: string[]) => {
-			if (!accountId) return;
+		async (hiddenSharedColumns: Array<string>) => {
+			if (!accountId) {return;}
 			try {
 				await submitAccountCommand("column.hide_shared", { hiddenSharedColumns });
-			} catch (err) {
-				console.error("Failed to update hidden shared columns:", err);
+			} catch (error) {
+				console.error("Failed to update hidden shared columns:", error);
 			}
 		},
 		[accountId, submitAccountCommand],

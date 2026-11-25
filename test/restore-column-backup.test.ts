@@ -1,8 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
-import {
-	restoreColumnBackup,
-	type ColumnBackupPayload,
-} from "../src/server/workflows/restore-column-backup";
+import { describe, expect, it } from "vitest";
+import { restoreColumnBackup } from '../src/server/workflows/restore-column-backup';
+import type { ColumnBackupPayload } from '../src/server/workflows/restore-column-backup';
 
 const ownerId = "1111 2222 3333 4444";
 const collaboratorId = "9999 8888 7777 6666";
@@ -44,28 +42,27 @@ function bindings(importStatus: number) {
 			}),
 		],
 	]);
-	const put = vi.fn(async (key: string, value: string) => {
+	const put = async (key: string, value: string) => {
 		records.set(key, value);
-	});
-	const fetch = vi.fn(async (request: Request) => {
+	};
+	const fetch = async (request: Request) => {
 		if (new URL(request.url).pathname === "/meta") {
 			return new Response("Column not found", { status: 404 });
 		}
 		return new Response(null, { status: importStatus });
-	});
+	};
 	return {
 		env: {
 			ACCOUNTS: {
 				get: async (key: string) => records.get(key) ?? null,
 				put,
-				delete: vi.fn(async (key: string) => void records.delete(key)),
+				delete: async (key: string) => { records.delete(key); },
 			},
 			COLUMN_ROOM: {
 				idFromName: (id: string) => id,
 				get: () => ({ fetch }),
 			},
 		},
-		put,
 		records,
 	};
 }
@@ -101,8 +98,8 @@ describe("restoreColumnBackup", () => {
 	});
 
 	it("repairs owner, collaborator, and public projections after import", async () => {
-		const { env, put } = bindings(200);
-		const writes: string[] = [];
+		const { env, records } = bindings(200);
+		const writes: Array<string> = [];
 		const result = await restoreColumnBackup({
 			env,
 			columnId,
@@ -113,11 +110,8 @@ describe("restoreColumnBackup", () => {
 			},
 		});
 		expect(result).toMatchObject({ ok: true, preRestoreBackupKey: "pre-backup" });
-		expect(put).toHaveBeenCalledWith(
-			"shared:9999888877776666",
-			JSON.stringify([columnId]),
-		);
-		expect(put).toHaveBeenCalledWith("public:AbCd1234", columnId);
+		expect(records.get("shared:9999888877776666")).toBe(JSON.stringify([columnId]));
+		expect(records.get("public:AbCd1234")).toBe(columnId);
 		expect(writes).toContain("column-import");
 		expect(writes).toContain("owner-account");
 	});

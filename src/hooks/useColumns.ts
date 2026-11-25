@@ -1,6 +1,7 @@
 import { useCallback, useState, useMemo, useRef } from "react";
 import type { Value } from "platejs";
-import { EMPTY_COLUMN_VALUE, type Column, createEmptyColumn } from "@/types/column";
+import { EMPTY_COLUMN_VALUE, createEmptyColumn } from '@/types/column';
+import type { Column } from '@/types/column';
 import { useSyncContext } from "@/contexts/sync-context";
 import type { ColumnMeta } from "@/types/account";
 import { isColumnOwner as accountOwnsColumn } from "@/lib/column-access";
@@ -22,7 +23,7 @@ function currentHourBucket(ts = Date.now()): string {
 	return `${yyyy}${mm}${dd}${hh}`;
 }
 
-function persistLocalCheckpoint(columns: Column[]): void {
+function persistLocalCheckpoint(columns: Array<Column>): void {
 	try {
 		const bucket = currentHourBucket();
 		const key = `${LOCAL_COLUMN_BACKUP_PREFIX}${bucket}`;
@@ -31,32 +32,33 @@ function persistLocalCheckpoint(columns: Column[]): void {
 		localStorage.setItem(key, serialized);
 
 		const existingRaw = localStorage.getItem(LOCAL_COLUMN_BACKUP_INDEX_KEY);
-		const existing = existingRaw ? (JSON.parse(existingRaw) as string[]) : [];
+		const parsed: unknown = existingRaw ? JSON.parse(existingRaw) : [];
+		const existing = Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
 		const merged = [key, ...existing.filter((k) => k !== key)];
 		const kept = merged.slice(0, LOCAL_BACKUP_MAX_CHECKPOINTS);
 		localStorage.setItem(LOCAL_COLUMN_BACKUP_INDEX_KEY, JSON.stringify(kept));
 
 		for (const oldKey of merged.slice(LOCAL_BACKUP_MAX_CHECKPOINTS)) {
-			localStorage.removeItem(oldKey);
+			if (oldKey.startsWith(LOCAL_COLUMN_BACKUP_PREFIX)) { localStorage.removeItem(oldKey); }
 		}
-	} catch (e) {
-		console.error("Failed to persist local checkpoint:", e);
+	} catch (error) {
+		console.error("Failed to persist local checkpoint:", error);
 	}
 }
 
-function loadLocalColumns(): Column[] {
+function loadLocalColumns(): Array<Column> {
 	try {
 		const parsed = parseLocalColumns(
 			localStorage.getItem(LOCAL_COLUMNS_STORAGE_KEY),
 		);
-		if (parsed) return parsed;
-	} catch (e) {
-		console.error("Failed to load columns from localStorage:", e);
+		if (parsed) {return parsed;}
+	} catch (error) {
+		console.error("Failed to load columns from localStorage:", error);
 	}
 	return [createEmptyColumn()];
 }
 
-function saveLocalColumns(columns: Column[]): void {
+function saveLocalColumns(columns: Array<Column>): void {
 	const serialized = JSON.stringify(columns);
 	localStorage.setItem(LOCAL_COLUMNS_STORAGE_KEY, serialized);
 	persistLocalCheckpoint(columns);
@@ -65,12 +67,12 @@ function saveLocalColumns(columns: Column[]): void {
 export function clearLocalColumns(): void {
 	try {
 		localStorage.removeItem(LOCAL_COLUMNS_STORAGE_KEY);
-	} catch (e) {
-		console.error("Failed to clear columns from localStorage:", e);
+	} catch (error) {
+		console.error("Failed to clear columns from localStorage:", error);
 	}
 }
 
-export function getLocalColumns(): Column[] {
+export function getLocalColumns(): Array<Column> {
 	return loadLocalColumns();
 }
 
@@ -106,12 +108,12 @@ export function useColumns() {
 		!!accountId && !account && isLoading ? "loading" : "ready";
 
 	// Local columns (for offline/unauthenticated mode)
-	const [localColumns, setLocalColumnsState] = useState<Column[]>(() =>
+	const [localColumns, setLocalColumnsState] = useState<Array<Column>>(() =>
 		loadLocalColumns(),
 	);
 	const localColumnsRef = useRef(localColumns);
-	const setLocalColumns = useCallback((update: (previous: Column[]) => Column[]) => {
-		if (browserStorageError) return;
+	const setLocalColumns = useCallback((update: (previous: Array<Column>) => Array<Column>) => {
+		if (browserStorageError) {return;}
 		const next = update(localColumnsRef.current);
 		localColumnsRef.current = next;
 		try { saveLocalColumns(next); }
@@ -123,7 +125,7 @@ export function useColumns() {
 
 	// When authenticated, derive columns from account metadata + shared columns
 	const syncedColumnIds = useMemo(() => {
-		if (!account) return [];
+		if (!account) {return [];}
 
 		// Start with owned columns in order
 		const ownedIds = account.columnOrder || [];
@@ -180,7 +182,7 @@ export function useColumns() {
 			} else {
 				// Local-only mode
 				setLocalColumns((prev) => {
-					if (prev.length <= 1) return prev;
+					if (prev.length <= 1) {return prev;}
 					return prev.filter((col) => col.id !== id);
 				});
 			}
@@ -202,7 +204,7 @@ export function useColumns() {
 			if (!usesSyncedMode) {
 				// The editor reports every change, including selection moves; save only content changes.
 				const current = localColumnsRef.current.find((col) => col.id === id);
-				if (current && JSON.stringify(current.value) === JSON.stringify(value)) return;
+				if (current && JSON.stringify(current.value) === JSON.stringify(value)) {return;}
 				setLocalColumns((prev) =>
 					prev.map((col) => (col.id === id ? { ...col, value } : col)),
 				);
@@ -214,7 +216,7 @@ export function useColumns() {
 
 	// Apply a new column order (all visible column IDs, in order)
 	const reorderColumns = useCallback(
-		async (columnIds: string[]) => {
+		async (columnIds: Array<string>) => {
 			if (usesSyncedMode) {
 				// Shared columns are appended after owned ones; only owned order is stored.
 				const ownedOrder = columnIds.filter((id) => !columnMetaMap.has(id));
@@ -255,7 +257,7 @@ export function useColumns() {
 
 	// Get columns based on mode
 	const columns = useMemo(() => {
-		if (status === "loading") return [];
+		if (status === "loading") {return [];}
 		if (usesSyncedMode) {
 			// Synced mode: return column IDs with metadata
 			return syncedColumnIds.map((id) => {
@@ -269,7 +271,7 @@ export function useColumns() {
 					ownerId: meta?.ownerId || accountId,
 					sharedWith: localSharedWith ?? meta?.sharedWith ?? [],
 					publicId: localPublicLink?.publicId || meta?.publicId || null,
-				} as Column;
+				};
 			});
 		}
 		// Local-only mode
@@ -289,10 +291,10 @@ export function useColumns() {
 	// Check if a column is owned by the current user
 	const isColumnOwner = useCallback(
 		(columnId: string) => {
-			if (!usesSyncedMode) return true; // Local mode, always owner
+			if (!usesSyncedMode) {return true;} // Local mode, always owner
 
 			const meta = columnMetaMap.get(columnId);
-			if (!meta) return true; // If no meta, it's owned
+			if (!meta) {return true;} // If no meta, it's owned
 
 			return accountOwnsColumn(meta, accountId);
 		},
@@ -302,7 +304,7 @@ export function useColumns() {
 	// Get column owner info
 	const getColumnOwner = useCallback(
 		(columnId: string): string | null => {
-			if (!usesSyncedMode) return null;
+			if (!usesSyncedMode) {return null;}
 
 			const meta = columnMetaMap.get(columnId);
 			return meta?.ownerId || null;

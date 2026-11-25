@@ -5,12 +5,8 @@ import {
 import { isColumnOwner } from "../../lib/column-access";
 import { parseColumnMetaRecord } from "../persistence-records";
 import { claimPublicId } from "../public-id-registry";
-import {
-	type ColumnLifecycleBindings,
-	type ColumnLifecycleResult,
-	type ColumnLifecycleWriteObserver,
-	lifecycleNotFound,
-} from "./column-lifecycle";
+import { lifecycleNotFound } from './column-lifecycle';
+import type { ColumnLifecycleBindings, ColumnLifecycleResult, ColumnLifecycleWriteObserver } from './column-lifecycle';
 
 export type EnablePublicColumnWriteBoundary =
 	| "column-public"
@@ -41,7 +37,7 @@ export async function enablePublicColumn<TColumnRoomId>(
 	const createPublicId = input.createPublicId ?? generatePublicId;
 	const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(columnId));
 	const metaResponse = await stub.fetch(new Request("http://do/meta"));
-	if (!metaResponse.ok) return lifecycleNotFound("Column not found");
+	if (!metaResponse.ok) {return lifecycleNotFound("Column not found");}
 
 	const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
 	if (!parsedMeta.ok) {

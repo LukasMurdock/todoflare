@@ -2,13 +2,11 @@
 
 // Lifted from slate-yjs https://github.com/BitPhinix/slate-yjs/blob/main/examples/frontend/src/pages/RemoteCursorOverlay/Overlay.tsx
 
-import * as React from 'react';
+import React from 'react';
 
 import { YjsPlugin } from '@platejs/yjs/react';
-import {
-  type CursorOverlayData,
-  useRemoteCursorOverlayPositions,
-} from '@slate-yjs/react';
+import { useRemoteCursorOverlayPositions } from '@slate-yjs/react';
+import type { CursorOverlayData } from '@slate-yjs/react';
 import { useEditorContainerRef, useEditorVersion, usePluginOption } from 'platejs/react';
 
 export function RemoteCursorOverlay() {
@@ -51,14 +49,15 @@ class RemoteCursorErrorBoundary extends React.Component<
   }
 
   render() {
-    if (this.state.hasError) return null;
+    if (this.state.hasError) {return null;}
     return this.props.children;
   }
 }
 
 function RemoteCursorOverlayContent() {
-  const containerRef: any = useEditorContainerRef();
+  const containerRef = useEditorContainerRef();
   const [cursors] = useRemoteCursorOverlayPositions<CursorData>({
+    // @ts-expect-error -- slate-yjs declares React 18 refs; its runtime accepts a nullable current value.
     containerRef,
   });
 

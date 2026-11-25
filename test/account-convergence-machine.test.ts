@@ -1,18 +1,14 @@
 import { createActor, waitFor } from "xstate";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-	AccountConvergenceFailure,
-	createAccountConvergenceMachine,
-	type AccountConvergenceDependencies,
-	type AccountConvergenceEvent,
-} from "../src/lib/sync/account-convergence-machine";
+import { AccountConvergenceFailure, createAccountConvergenceMachine } from '../src/lib/sync/account-convergence-machine';
+import type { AccountConvergenceDependencies, AccountConvergenceEvent } from '../src/lib/sync/account-convergence-machine';
 import { projectionFromServer } from "../src/lib/sync/account-projection";
 import type { QueuedMutation, ReplayReport } from "../src/lib/sync/contracts";
 
 const ACCOUNT_ID = "1111 1111 1111 1111";
 const COLUMN_ID = "00000000-0000-4000-8000-000000000001";
 
-function projection(columnOrder: string[] = []) {
+function projection(columnOrder: Array<string> = []) {
 	return projectionFromServer({
 		account: {
 			schemaVersion: 1,
@@ -73,7 +69,7 @@ function emptyReport(): ReplayReport {
 // vitest 5 that broke the fake-timer tests), so every harness actor is stopped.
 const harnessActors = new Set<{ stop(): void }>();
 afterEach(() => {
-	for (const actor of harnessActors) actor.stop();
+	for (const actor of harnessActors) {actor.stop();}
 	harnessActors.clear();
 });
 
@@ -81,14 +77,14 @@ function harness(options?: {
 	online?: boolean;
 	local?: ReturnType<typeof projection> | null;
 	server?: ReturnType<typeof projection>;
-	pending?: QueuedMutation[];
+	pending?: Array<QueuedMutation>;
 	replay?: (signal: AbortSignal) => Promise<ReplayReport>;
 	fetchServer?: AccountConvergenceDependencies["fetchServer"];
 	login?: AccountConvergenceDependencies["login"];
 }) {
 	let pending = [...(options?.pending ?? [])];
 	const persistedCredentials: Array<string | null> = [];
-	const fetchSignals: AbortSignal[] = [];
+	const fetchSignals: Array<AbortSignal> = [];
 	let serverFetchCount = 0;
 	const dependencies: AccountConvergenceDependencies = {
 		loadLocal: async () => options?.local ?? null,
@@ -100,7 +96,7 @@ function harness(options?: {
 		login: options?.login ?? (async () => options?.server ?? projection()),
 		createAccount: async () => options?.server ?? projection(),
 		replay: async (_accountId, signal) => {
-			if (options?.replay) return options.replay(signal);
+			if (options?.replay) {return options.replay(signal);}
 			return emptyReport();
 		},
 		getPending: () => [...pending],
@@ -122,7 +118,7 @@ function harness(options?: {
 		fetchSignals,
 		persistedCredentials,
 		getServerFetchCount: () => serverFetchCount,
-		setPending: (next: QueuedMutation[]) => {
+		setPending: (next: Array<QueuedMutation>) => {
 			pending = [...next];
 		},
 	};
@@ -145,7 +141,7 @@ describe("account convergence machine", () => {
 		const test = harness({
 			local: projection(["cached"]), pending: [queuedCreate()],
 			fetchServer: async () => { throw new AccountConvergenceFailure({ scope: "auth", kind: "reauth_required" }, "Expired"); },
-			login: async () => { if (!authenticated) throw new Error("network error"); return projection(["cached"]); },
+			login: async () => { if (!authenticated) {throw new Error("network error");} return projection(["cached"]); },
 			replay: async () => { replayed++; return emptyReport(); },
 		});
 		test.actor.send({ type: "RESTORE_SESSION", accountId: ACCOUNT_ID });
@@ -187,7 +183,7 @@ describe("account convergence machine", () => {
 	it("recognizes expiry during confirmation without clearing the local account", async () => {
 		let calls = 0;
 		const test = harness({ local: projection(["cached"]), fetchServer: async () => {
-			if (++calls > 1) throw new AccountConvergenceFailure({ scope: "auth", kind: "reauth_required" }, "Expired");
+			if (++calls > 1) {throw new AccountConvergenceFailure({ scope: "auth", kind: "reauth_required" }, "Expired");}
 			return projection(["cached"]);
 		}, replay: async () => ({ ...emptyReport(), attempted: 1, acked: 1 }) });
 		test.actor.send({ type: "RESTORE_SESSION", accountId: ACCOUNT_ID });
@@ -226,8 +222,8 @@ describe("account convergence machine", () => {
 	});
 
 	it("runs hydrate, replay, reconcile, and confirmation in order", async () => {
-		const order: string[] = [];
-		let pending: QueuedMutation[] = [queuedCreate()];
+		const order: Array<string> = [];
+		let pending: Array<QueuedMutation> = [queuedCreate()];
 		const dependencies: AccountConvergenceDependencies = {
 			loadLocal: async () => {
 				order.push("local");
@@ -241,7 +237,7 @@ describe("account convergence machine", () => {
 			createAccount: async () => projection(),
 			replay: async () => {
 				order.push("replay");
-				const command = pending[0]!;
+				const command = pending[0];
 				pending = [];
 				return {
 					...emptyReport(),
@@ -274,7 +270,7 @@ describe("account convergence machine", () => {
 	});
 
 	it("reconciles shared-column access lost during server hydration", async () => {
-		const reconciled: string[][] = [];
+		const reconciled: Array<Array<string>> = [];
 		const dependencies: AccountConvergenceDependencies = {
 			loadLocal: async () => sharedProjection(),
 			fetchServer: async () => projection(),
@@ -300,7 +296,7 @@ describe("account convergence machine", () => {
 	});
 
 	it("cancels an in-flight hydration to replay a newly persisted command", async () => {
-		let pending: QueuedMutation[] = [];
+		let pending: Array<QueuedMutation> = [];
 		let firstHydrationSignal: AbortSignal | null = null;
 		let fetchCount = 0;
 		const dependencies: AccountConvergenceDependencies = {
@@ -316,7 +312,7 @@ describe("account convergence machine", () => {
 			login: async () => projection(),
 			createAccount: async () => projection(),
 			replay: async () => {
-				const command = pending[0]!;
+				const command = pending[0];
 				pending = [];
 				return {
 					...emptyReport(),
@@ -443,7 +439,7 @@ describe("account convergence machine", () => {
 				true,
 			);
 
-			await vi.advanceTimersByTimeAsync(5_000);
+			await vi.advanceTimersByTimeAsync(5000);
 			await waitFor(actor, (state) => state.matches("ready"));
 
 			expect(fetchCount).toBe(2);
@@ -512,7 +508,7 @@ describe("account convergence machine", () => {
 				createAccount: async () => projection(),
 				replay: async () => {
 					replayCount += 1;
-					if (replayCount === 1) throw new Error("temporary");
+					if (replayCount === 1) {throw new Error("temporary");}
 					return emptyReport();
 				},
 				getPending: () => [],
@@ -528,7 +524,7 @@ describe("account convergence machine", () => {
 				true,
 			);
 
-			await vi.advanceTimersByTimeAsync(5_000);
+			await vi.advanceTimersByTimeAsync(5000);
 			await waitFor(actor, (state) => state.matches("ready"));
 
 			expect(fetchCount).toBe(1);
@@ -540,8 +536,8 @@ describe("account convergence machine", () => {
 	});
 
 	it("preserves a classified terminal replay failure after confirmation", async () => {
-		let pending: QueuedMutation[] = [queuedCreate()];
-		const failed = pending[0]!;
+		let pending: Array<QueuedMutation> = [queuedCreate()];
+		const failed = pending[0];
 		const dependencies: AccountConvergenceDependencies = {
 			loadLocal: async () => projection(),
 			fetchServer: async () => projection(),
@@ -573,7 +569,7 @@ describe("account convergence machine", () => {
 	});
 
 	it("replays a command persisted while server confirmation is in flight", async () => {
-		let pending: QueuedMutation[] = [queuedCreate()];
+		let pending: Array<QueuedMutation> = [queuedCreate()];
 		let replayCount = 0;
 		let fetchCount = 0;
 		const confirmation = { release: null as (() => void) | null };
@@ -661,7 +657,7 @@ describe("account convergence machine", () => {
 	});
 
 	it("does not confirm against the server after going offline during reconciliation", async () => {
-		let pending: QueuedMutation[] = [queuedCreate()];
+		let pending: Array<QueuedMutation> = [queuedCreate()];
 		let releaseReconciliation: (() => void) | null = null;
 		let fetchCount = 0;
 		const dependencies: AccountConvergenceDependencies = {
@@ -673,7 +669,7 @@ describe("account convergence machine", () => {
 			login: async () => projection(),
 			createAccount: async () => projection(),
 			replay: async () => {
-				const command = pending[0]!;
+				const command = pending[0];
 				pending = [];
 				return {
 					...emptyReport(),

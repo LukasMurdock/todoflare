@@ -27,7 +27,7 @@ try {
 		process.exit(res.ok && !responseIndicatesFailure ? 0 : 1);
 	}
 	if (action === "create-account") {
-		const res = await fetch(`${origin}/api/admin/backups/account`, { method: "POST", headers: { ...baseHeaders, "Content-Type": "application/json" }, body: JSON.stringify({ accountId: columnId, ...(arg3 ? { key: arg3 } : {}) }) });
+		const res = await fetch(`${origin}/api/admin/backups/account`, { method: "POST", headers: { ...baseHeaders, "Content-Type": "application/json" }, body: JSON.stringify({ accountId: columnId, ...(arg3 ? { key: arg3 } : undefined) }) });
 		await printResponse(res);
 		process.exit(res.ok && !responseIndicatesFailure ? 0 : 1);
 	}
@@ -53,8 +53,8 @@ try {
 		const key = arg3 && arg3 !== "in_place" && arg3 !== "clone" ? arg3 : undefined;
 		const mode = arg4 ?? (arg3 === "in_place" || arg3 === "clone" ? arg3 : undefined);
 		const body = {
-			...(key ? { key } : {}),
-			...(mode ? { mode } : {}),
+			...(key ? { key } : undefined),
+			...(mode ? { mode } : undefined),
 		};
 		const res = await fetch(
 			`${origin}/api/admin/backups/column/${encodeURIComponent(columnId)}/restore`,
@@ -75,7 +75,7 @@ try {
 		const res = await fetch(`${origin}/api/admin/backups/account/restore`, {
 			method: "POST",
 			headers: { ...baseHeaders, "Content-Type": "application/json" },
-			body: JSON.stringify({ accountId: columnId, ...(arg3 ? { key: arg3 } : {}) }),
+			body: JSON.stringify({ accountId: columnId, ...(arg3 ? { key: arg3 } : undefined) }),
 		});
 		await printResponse(res);
 		process.exit(res.ok && !responseIndicatesFailure ? 0 : 1);
@@ -105,7 +105,7 @@ function printUsage() {
 
 async function printResponse(res) {
 	const text = await res.text();
-	let parsed = null;
+	let parsed;
 
 	try {
 		parsed = JSON.parse(text);

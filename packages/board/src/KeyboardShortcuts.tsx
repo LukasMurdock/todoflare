@@ -1,6 +1,6 @@
 "use client";
 
-import * as React from "react";
+import React from "react";
 import { useModifierSymbol } from "./platform";
 import {
 	Dialog,
@@ -11,13 +11,13 @@ import {
 import { cn } from "./ui/cn";
 
 interface ShortcutItem {
-	keys: React.ReactNode[];
+	keys: Array<React.ReactNode>;
 	description: string;
 }
 
 interface ShortcutSection {
 	title: string;
-	shortcuts: ShortcutItem[];
+	shortcuts: Array<ShortcutItem>;
 }
 
 // A sculpted keycap: a faint top-to-bottom gradient with a pressed-in bottom lip.
@@ -81,7 +81,7 @@ export function KeyboardShortcuts({
 }) {
 	const mod = useModifierSymbol();
 
-	const sections: ShortcutSection[] = [
+	const sections: Array<ShortcutSection> = [
 		// {
 		// 	title: "Formatting",
 		// 	shortcuts: [
@@ -124,7 +124,7 @@ export function KeyboardShortcuts({
 		<>
 			{/* Floating button: Mod / on a keyboard, ? on touch. */}
 			{button !== "none" && (
-				<button
+				<button type="button"
 					data-board-part="shortcuts-button"
 					onClick={() => onOpenChange(true)}
 					className={cn(

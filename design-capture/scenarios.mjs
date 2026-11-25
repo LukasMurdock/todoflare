@@ -1,3 +1,4 @@
+import { exhaustLocalStorage } from "../e2e/helpers/storage-quota.ts";
 import { expect } from "@playwright/test";
 import {
 	RICH_GUEST_COLUMNS,
@@ -9,7 +10,6 @@ import {
 	createCaptureContext,
 	deleteColumnApi,
 	enablePublicLinkApi,
-	formatAccountId,
 	mcpCall,
 	openGuestPage,
 	registerOAuthConsentUrl,
@@ -134,15 +134,7 @@ export const SCENARIOS = [
 		async run({ page }) {
 			await openGuestPage(page, { columns: RICH_GUEST_COLUMNS, welcomed: true, dismissModal: true });
 			// Trigger a real localStorage quota failure on the next edit.
-			await page.evaluate(() => {
-				const orig = Storage.prototype.setItem;
-				Storage.prototype.setItem = function (k, v) {
-					if (k === "todoflare-columns") {
-						throw new DOMException("QuotaExceededError", "QuotaExceededError");
-					}
-					return orig.call(this, k, v);
-				};
-			});
+			await page.evaluate(exhaustLocalStorage);
 			const editor = page.getByRole("textbox", { name: "Todo editor" }).first();
 			await editor.click();
 			await page.keyboard.type(" unsaved edit");
@@ -184,8 +176,8 @@ export const SCENARIOS = [
 			void col1;
 			void peerCol;
 			await page.reload();
-			await expect(page.getByText("Product Roadmap")).toBeVisible({ timeout: 15000 });
-			await expect(page.getByText("Team Sync")).toBeVisible({ timeout: 15000 });
+			await expect(page.getByText("Product Roadmap")).toBeVisible({ timeout: 15_000 });
+			await expect(page.getByText("Team Sync")).toBeVisible({ timeout: 15_000 });
 			await blurFocus(page);
 			await settleUi(page, { hideToasts: true });
 		},
@@ -286,7 +278,7 @@ export const SCENARIOS = [
 			await waitForSynced(page);
 			await deleteColumnApi(request, baseURL, accountId, col2);
 			await page.reload();
-			await expect(page.getByRole("button", { name: shortAccountId(accountId) })).toBeVisible({ timeout: 15000 });
+			await expect(page.getByRole("button", { name: shortAccountId(accountId) })).toBeVisible({ timeout: 15_000 });
 			await page.getByRole("button", { name: shortAccountId(accountId) }).click();
 			await page.getByRole("menuitem", { name: /Recently Deleted/ }).click();
 			await expect(page.getByRole("button", { name: "Restore" })).toBeVisible();
@@ -315,7 +307,7 @@ export const SCENARIOS = [
 				}),
 			);
 			await page.reload();
-			await expect(page.getByText("Sign-in required to resume syncing")).toBeVisible({ timeout: 15000 });
+			await expect(page.getByText("Sign-in required to resume syncing")).toBeVisible({ timeout: 15_000 });
 			await settleUi(page, { hideToasts: true });
 		},
 	},
@@ -334,7 +326,7 @@ export const SCENARIOS = [
 			await waitForSynced(page);
 			await context.setOffline(true);
 			await typeIntoColumn(page, 0, ["[] Written while offline"]);
-			await page.waitForTimeout(450);
+			await expect(page.getByRole("textbox", { name: "Todo editor" }).first()).toContainText("Written while offline");
 			await page.getByRole("button", { name: shortAccountId(accountId) }).hover();
 			await settleUi(page, { hideToasts: true });
 		},
@@ -378,7 +370,7 @@ export const SCENARIOS = [
 			await shareColumnApi(request, baseURL, ownerId, colId, peerId);
 			await enablePublicLinkApi(request, baseURL, ownerId, colId);
 			await page.reload();
-			await expect(page.getByText("Shared Spec")).toBeVisible({ timeout: 15000 });
+			await expect(page.getByText("Shared Spec")).toBeVisible({ timeout: 15_000 });
 			await page.getByRole("button", { name: "Share column" }).click();
 			await expect(page.getByRole("button", { name: "Disable" })).toBeVisible();
 			await settleUi(page, { hideToasts: true });
@@ -405,11 +397,10 @@ export const SCENARIOS = [
 				const peerPage = await peerContext.newPage();
 				await bootstrapSignedInPage(peerPage, peerId);
 				const peerEditor = peerPage.getByRole("textbox", { name: "Todo editor" }).first();
-				await expect(peerEditor).toContainText("Live Jam", { timeout: 15000 });
+				await expect(peerEditor).toContainText("Live Jam", { timeout: 15_000 });
 				await peerEditor.click();
 				await peerPage.keyboard.press("End");
-				await peerPage.waitForTimeout(500);
-				await page.waitForTimeout(500);
+				await expect(page.getByRole("img", { name: /people viewing|person viewing/ }).first()).toBeVisible();
 				await settleUi(page, { hideToasts: true });
 			} finally {
 				await peerContext.close();
@@ -445,7 +436,7 @@ export const SCENARIOS = [
 				await setupCtx.close();
 			}
 			await page.goto(`/p/${publicId}`);
-			await expect(page.getByText("Weekend Packing List")).toBeVisible({ timeout: 15000 });
+			await expect(page.getByText("Weekend Packing List")).toBeVisible({ timeout: 15_000 });
 			await settleUi(page, { hideToasts: true });
 		},
 	},
@@ -458,7 +449,7 @@ export const SCENARIOS = [
 		description: "Error screen when visiting a revoked or nonexistent public column link.",
 		async run({ page }) {
 			await page.goto("/p/notfound");
-			await expect(page.getByRole("heading", { name: "Unable to load" })).toBeVisible({ timeout: 15000 });
+			await expect(page.getByRole("heading", { name: "Unable to load" })).toBeVisible({ timeout: 15_000 });
 			await settleUi(page, { hideToasts: true });
 		},
 	},
@@ -625,7 +616,7 @@ export const SCENARIOS = [
 			});
 			await page.reload();
 			await expect(page.getByRole("textbox", { name: "Todo editor" }).first()).toContainText("Run visual hill-climb sweep", {
-				timeout: 15000,
+				timeout: 15_000,
 			});
 			await page.getByRole("button", { name: "Agents for this column" }).first().click();
 			await expect(page.getByTestId("agent-change").first()).toBeVisible();
@@ -664,7 +655,7 @@ export const SCENARIOS = [
 		async run({ page, request, baseURL }) {
 			const consentUrl = await registerOAuthConsentUrl(request, baseURL, { clientName: "Claude" });
 			await page.goto(consentUrl);
-			await expect(page.getByRole("button", { name: "Sign in with a passkey" })).toBeVisible({ timeout: 15000 });
+			await expect(page.getByRole("button", { name: "Sign in with a passkey" })).toBeVisible({ timeout: 15_000 });
 			await settleUi(page, { hideToasts: true });
 		},
 	},
@@ -677,7 +668,7 @@ export const SCENARIOS = [
 		description: "Error state when an OAuth authorization link is malformed or missing parameters.",
 		async run({ page }) {
 			await page.goto("/oauth/authorize");
-			await expect(page.getByRole("heading", { name: /can.t continue/ })).toBeVisible({ timeout: 15000 });
+			await expect(page.getByRole("heading", { name: /can.t continue/ })).toBeVisible({ timeout: 15_000 });
 			await settleUi(page, { hideToasts: true });
 		},
 	},
@@ -724,7 +715,7 @@ export const SCENARIOS = [
 				items: [{ text: "Check mobile popover clearance" }],
 			});
 			await expect(page.getByRole("textbox", { name: "Todo editor" }).first()).toContainText("Check mobile popover clearance", {
-				timeout: 15000,
+				timeout: 15_000,
 			});
 			await captureStep("04-agent-edit-live", "Agent edit arrives live in the column");
 

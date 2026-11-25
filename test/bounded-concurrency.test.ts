@@ -8,7 +8,7 @@ describe("mapWithConcurrency", () => {
 		const results = await mapWithConcurrency([5, 4, 3, 2, 1, 0], 3, async (value) => {
 			active += 1;
 			maximumActive = Math.max(maximumActive, active);
-			await new Promise((resolve) => setTimeout(resolve, value));
+			await Promise.resolve();
 			active -= 1;
 			return value * 2;
 		});

@@ -1,7 +1,7 @@
-import { type Context } from "hono";
+import type { Context } from 'hono';
 import { z } from "zod";
 import { columnIdContractSchema, publicIdContractSchema } from "../../lib/api/account-contract";
-import { type Bindings } from "../bindings";
+import type { Bindings } from '../bindings';
 
 export type RequestValidationResult<T> =
 	| { ok: true; data: T }

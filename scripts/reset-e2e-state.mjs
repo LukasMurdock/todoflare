@@ -1,9 +1,8 @@
 import { rm } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 const repositoryRoot = path.resolve(
-	path.dirname(fileURLToPath(import.meta.url)),
+	import.meta.dirname,
 	"..",
 );
 const e2eStatePath = path.join(repositoryRoot, ".wrangler", "e2e-state");

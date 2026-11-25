@@ -1,7 +1,8 @@
+import { setTimeout as delay } from "node:timers/promises";
 import assert from 'node:assert/strict';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import * as Y from 'yjs';
+import { Doc, applyUpdate, encodeStateAsUpdate } from 'yjs';
 import { api, captureProductionSnapshot } from './production-snapshot.mjs';
 const frozen = !process.argv.includes('--live');
 const baseline = JSON.parse(await readFile('.wrangler/production-preflight/snapshot.json', 'utf8'));
@@ -10,9 +11,9 @@ assert.equal(baseline.schemaVersion, 1, 'Take a fresh production preflight snaps
 // mode does not mean the next request reaches it. Wait for several in a row,
 // as the staging drill does.
 for (let attempt = 0, matched = 0; matched < 5; attempt++) {
- if (attempt === 60) throw new Error('Production write mode did not propagate');
+ if (attempt === 60) {throw new Error('Production write mode did not propagate');}
  matched = (await api('/api/clock')).readOnlyMode === frozen ? matched + 1 : 0;
- if (matched < 5) await new Promise(resolve => setTimeout(resolve, matched > 0 ? 500 : 2000));
+ if (matched < 5) {await delay(matched > 0 ? 500 : 2000);}
 }
 assert.equal((await api('/api/clock')).autoBackupEnabled, true);
 await api('/api/account', 'GET', undefined, false, 401);
@@ -22,7 +23,7 @@ const after = await captureProductionSnapshot();
 assert.deepEqual(Object.keys(after.accounts), Object.keys(baseline.accounts), 'Production account inventory changed');
 for (const [id, before] of Object.entries(baseline.accounts)) {
  const current = after.accounts[id];
- for (const field of ['account', 'sharedIndex', 'trash', 'columnIds']) assert.deepEqual(current[field], before[field], 'Production account data changed');
+ for (const field of ['account', 'sharedIndex', 'trash', 'columnIds']) {assert.deepEqual(current[field], before[field], 'Production account data changed');}
  assert.deepEqual(current.auth.user, before.auth.user, 'Production auth identity changed');
  assert.deepEqual(current.auth.account, before.auth.account, 'Production provider credentials changed');
  // Passkey sign-in stays available during a freeze and can increase counters.
@@ -33,18 +34,18 @@ for (const [id, before] of Object.entries(baseline.accounts)) {
   assert.deepEqual(newKey, oldKey, 'Production passkey changed'); assert(newCounter >= oldCounter, 'Production passkey counter regressed');
  }
  for (const headers of [{ Authorization: `Bearer ${id}` }, { 'X-Account-ID': id }]) {
-  const response = await fetch('https://todo.tamesystems.org/api/account', { headers, signal: AbortSignal.timeout(15000) });
+  const response = await fetch('https://todo.tamesystems.org/api/account', { headers, signal: AbortSignal.timeout(15_000) });
   assert.equal(response.status, 401, 'Retired Account ID transport still authenticates');
  }
 }
 assert.deepEqual(Object.keys(after.columns).sort(), Object.keys(baseline.columns).sort(), 'Production document inventory changed');
 for (const [id, before] of Object.entries(baseline.columns)) {
  const current = after.columns[id]; assert.deepEqual(current.meta, before.meta, 'Production metadata changed');
- const a = new Y.Doc(); const b = new Y.Doc();
+ const a = new Doc(); const b = new Doc();
  try {
-  if (before.yjs) Y.applyUpdate(a, Uint8Array.from(before.yjs));
-  if (current.yjs) Y.applyUpdate(b, Uint8Array.from(current.yjs));
-  assert.deepEqual(Y.encodeStateAsUpdate(b), Y.encodeStateAsUpdate(a), 'Production document changed');
+  if (before.yjs) {applyUpdate(a, Uint8Array.from(before.yjs));}
+  if (current.yjs) {applyUpdate(b, Uint8Array.from(current.yjs));}
+  assert.deepEqual(encodeStateAsUpdate(b), encodeStateAsUpdate(a), 'Production document changed');
  } finally { a.destroy(); b.destroy(); }
 }
 if (frozen) {

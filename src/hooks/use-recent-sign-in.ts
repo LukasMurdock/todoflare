@@ -34,21 +34,21 @@ export function useRecentSignIn(accountId: string | null) {
 		const current = generation.current;
 		try {
 			await change();
-			if (current === generation.current) setPending(null);
-		} catch (cause) {
-			if (cause instanceof RecentAuthenticationRequiredError && accountId) {
-				if (current === generation.current) setPending({ accountId, change, fallback });
+			if (current === generation.current) {setPending(null);}
+		} catch (error) {
+			if (error instanceof RecentAuthenticationRequiredError && accountId) {
+				if (current === generation.current) {setPending({ accountId, change, fallback });}
 				return;
 			}
-			throw cause;
+			throw error;
 		}
 	}, [accountId]);
 
 	const confirm = useCallback(async () => {
-		if (!pending) return;
+		if (!pending) {return;}
 		const current = generation.current;
 		await accountCredentials(pending.accountId).reauthenticate();
-		if (current !== generation.current) return;
+		if (current !== generation.current) {return;}
 		await attempt(pending.change, pending.fallback);
 	}, [attempt, pending]);
 

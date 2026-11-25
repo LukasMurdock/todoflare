@@ -1,3 +1,4 @@
+import { useCurrentMinute } from "@/hooks/use-current-minute";
 import { useEffect, useState } from "react";
 import { ArrowLeft, Bot, Check, ChevronRight, Copy, Download, ExternalLink, Globe, KeyRound, MessageCircle, Terminal } from "lucide-react";
 import { toast } from "sonner";
@@ -17,7 +18,7 @@ import { AgentLevelSelect } from "./AgentLevelSelect";
 interface AgentsDialogProps {
 	accountId: string;
 	open: boolean;
-	onOpenChange(open: boolean): void;
+	onOpenChange: (open: boolean) => void;
 }
 
 /** The apps the dialog has instructions for. Token apps get a token; OAuth apps sign in themselves. */
@@ -58,12 +59,12 @@ export const CHATGPT_FORM = {
 };
 
 function relative(timestamp: number | null, now: number): string {
-	if (timestamp === null) return "never";
+	if (timestamp === null) {return "never";}
 	const minutes = Math.round((timestamp - now) / 60_000);
 	const format = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
-	if (Math.abs(minutes) < 60) return format.format(minutes, "minute");
+	if (Math.abs(minutes) < 60) {return format.format(minutes, "minute");}
 	const hours = Math.round(minutes / 60);
-	if (Math.abs(hours) < 48) return format.format(hours, "hour");
+	if (Math.abs(hours) < 48) {return format.format(hours, "hour");}
 	return format.format(Math.round(hours / 24), "day");
 }
 
@@ -87,7 +88,7 @@ function CopyField({ value, label }: { value: string; label: string }) {
 	return (
 		<div className="flex items-stretch gap-2">
 			<code className="min-w-0 flex-1 rounded-md border border-border/70 bg-muted/40 px-2.5 py-1.5 font-mono text-xs leading-5 whitespace-pre-wrap [overflow-wrap:anywhere]">{value}</code>
-			<Button variant="outline" size="sm" className="h-auto min-h-8 shrink-0" aria-label={`Copy ${label}`} onClick={() => copy(value)}>
+			<Button variant="outline" size="sm" className="h-auto min-h-8 shrink-0" aria-label={`Copy ${label}`} onClick={() => void copy(value)}>
 				{copied ? <Check className="size-3.5 text-emerald-500" /> : <Copy className="size-3.5" />}
 				{copied ? "Copied" : "Copy"}
 			</Button>
@@ -111,7 +112,7 @@ function CommandBlock({ value, label }: { value: string; label: string }) {
 				size="sm"
 				className="absolute top-2 right-2 h-7 gap-1 px-2 text-xs text-zinc-300 hover:bg-white/10 hover:text-white"
 				aria-label={`Copy ${label}`}
-				onClick={() => copy(value)}
+				onClick={() => void copy(value)}
 			>
 				{copied ? <Check className="size-3.5 text-emerald-400" /> : <Copy className="size-3.5" />}
 				{copied ? "Copied" : "Copy"}
@@ -134,7 +135,7 @@ function Step({ number, title, children }: { number: number; title: React.ReactN
 	);
 }
 
-function BackButton({ onClick, disabled = false }: { onClick(): void; disabled?: boolean }) {
+function BackButton({ onClick, disabled = false }: { onClick: () => void; disabled?: boolean }) {
 	return (
 		<Button variant="ghost" size="sm" className="-ml-2 h-7 px-2" disabled={disabled} onClick={onClick}>
 			<ArrowLeft className="size-3.5" />
@@ -144,17 +145,19 @@ function BackButton({ onClick, disabled = false }: { onClick(): void; disabled?:
 }
 
 /** Everything about the account's agents: step-by-step connection for each app, their column grants, and revocation. */
-export function AgentsDialog({ accountId, open, onOpenChange }: AgentsDialogProps) {
+export function AgentsDialog(props: AgentsDialogProps) {
+	return props.open ? <OpenAgentsDialog key={props.accountId} {...props} /> : null;
+}
+
+function OpenAgentsDialog({ accountId, open, onOpenChange }: AgentsDialogProps) {
 	const { state } = useAgentConnections(accountId, open);
-	const [columns, setColumns] = useState<GrantableColumn[] | null>(null);
+	const [columns, setColumns] = useState<Array<GrantableColumn> | null>(null);
 	const [view, setView] = useState<View>({ kind: "home" });
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
 	useEffect(() => {
-		if (!open) return;
-		setView({ kind: "home" });
-		setError(null);
+		if (!open) {return;}
 		void refreshAgentConnections(accountId);
 		agentsApi.grantableColumns(accountId).then(setColumns, () => setColumns([]));
 	}, [open, accountId]);
@@ -164,8 +167,8 @@ export function AgentsDialog({ accountId, open, onOpenChange }: AgentsDialogProp
 		setError(null);
 		try {
 			await action();
-		} catch (cause) {
-			setError(cause instanceof Error && cause.message ? cause.message : "Something went wrong");
+		} catch (error_) {
+			setError(error_ instanceof Error && error_.message ? error_.message : "Something went wrong");
 		} finally {
 			setBusy(false);
 		}
@@ -217,7 +220,7 @@ export function AgentsDialog({ accountId, open, onOpenChange }: AgentsDialogProp
 							columns={columns}
 							busy={locked}
 							onBack={() => go({ kind: "home" })}
-							onCreate={(name, expiresInDays, levels) =>
+							onCreate={(name, expiresInDays, levels) => void
 								grant(async () => {
 									const grants = Object.entries(levels).map(([columnId, level]) => ({ columnId, level }));
 									const result = await agentsApi.create(accountId, name, expiresInDays, grants);
@@ -229,7 +232,7 @@ export function AgentsDialog({ accountId, open, onOpenChange }: AgentsDialogProp
 					) : view.kind === "connected" ? (
 						<TokenConnected view={view} endpoint={endpoint} onDone={() => go({ kind: "home" })} />
 					) : null}
-					{recent.pending && <ConfirmSignIn busy={busy} onConfirm={() => run(recent.confirm)} onCancel={recent.cancel} />}
+					{recent.pending && <ConfirmSignIn busy={busy} onConfirm={() => void run(recent.confirm)} onCancel={recent.cancel} />}
 					{error && <p className="text-[13px] text-red-600 dark:text-red-400">{error}</p>}
 				</div>
 			</DialogContent>
@@ -237,7 +240,7 @@ export function AgentsDialog({ accountId, open, onOpenChange }: AgentsDialogProp
 	);
 }
 
-function AppChoices({ onChoose }: { onChoose(app: AgentApp): void }) {
+function AppChoices({ onChoose }: { onChoose: (app: AgentApp) => void }) {
 	return (
 		<ul className="flex flex-col gap-1.5">
 			{APPS.map(({ app, title, detail, icon: Icon }) => (
@@ -273,16 +276,16 @@ function Home({
 }: {
 	accountId: string;
 	state: ReturnType<typeof useAgentConnections>["state"];
-	columns: GrantableColumn[] | null;
+	columns: Array<GrantableColumn> | null;
 	busy: boolean;
-	run(action: () => Promise<void>): Promise<void>;
+	run: (action: () => Promise<void>) => Promise<void>;
 	/** Like run, for a change that may need a recent sign-in. */
-	grant(action: () => Promise<void>): Promise<void>;
-	onChoose(app: AgentApp): void;
+	grant: (action: () => Promise<void>) => Promise<void>;
+	onChoose: (app: AgentApp) => void;
 }) {
 	const [confirming, setConfirming] = useState<string | null>(null);
 	const agents = state.status === "ready" ? state.agents : [];
-	const now = Date.now();
+	const now = useCurrentMinute();
 	const titleOf = (columnId: string) => columns?.find((column) => column.columnId === columnId)?.title || "Untitled column";
 
 	const setLevel = (agent: AgentConnection, columnId: string, level: AgentGrantLevel | null) =>
@@ -341,7 +344,7 @@ function Home({
 											<Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => setConfirming(null)}>
 												Keep
 											</Button>
-											<Button variant="destructive" size="sm" className="h-7 px-2" disabled={busy} onClick={() => revoke(agent)}>
+											<Button variant="destructive" size="sm" className="h-7 px-2" disabled={busy} onClick={() => void revoke(agent)}>
 												Disconnect now
 											</Button>
 										</div>
@@ -369,7 +372,7 @@ function Home({
 											label={`${agent.name} access to ${titleOf(grant.columnId)}`}
 											value={grant.level}
 											disabled={busy}
-											onChange={(level) => setLevel(agent, grant.columnId, level)}
+											onChange={(level) => void setLevel(agent, grant.columnId, level)}
 										/>
 									</li>
 								))}
@@ -383,7 +386,7 @@ function Home({
 										className="border-dashed bg-transparent font-normal text-muted-foreground"
 										value=""
 										disabled={busy}
-										onChange={(event) => event.target.value && setLevel(agent, event.target.value, "read")}
+										onChange={(event) => { if (event.target.value) { void setLevel(agent, event.target.value, "read"); } }}
 									>
 										<option value="">+ Add a column…</option>
 										{grantable.map((column) => (
@@ -417,12 +420,14 @@ function TokenSetup({
 	onCreate,
 }: {
 	app: TokenApp;
-	columns: GrantableColumn[] | null;
+	columns: Array<GrantableColumn> | null;
 	busy: boolean;
-	onBack(): void;
-	onCreate(name: string, expiresInDays: number, levels: Record<string, AgentGrantLevel>): void;
+	onBack: () => void;
+	onCreate: (name: string, expiresInDays: number, levels: Record<string, AgentGrantLevel>) => void;
 }) {
-	const { title, defaultName } = APPS.find((entry) => entry.app === app)!;
+	const selected = APPS.find((entry) => entry.app === app);
+	if (!selected) { throw new Error("Unknown agent app"); }
+	const { title, defaultName } = selected;
 	const [levels, setLevels] = useState<Record<string, AgentGrantLevel>>({});
 	const [name, setName] = useState(defaultName);
 	const [expiresInDays, setExpiresInDays] = useState(30);
@@ -465,7 +470,7 @@ function TokenSetup({
 	);
 }
 
-function TokenConnected({ view, endpoint, onDone }: { view: Extract<View, { kind: "connected" }>; endpoint: string; onDone(): void }) {
+function TokenConnected({ view, endpoint, onDone }: { view: Extract<View, { kind: "connected" }>; endpoint: string; onDone: () => void }) {
 	const columnCount = view.agent.grants.length;
 	return (
 		<section className="space-y-4" data-testid="agent-token">
@@ -514,7 +519,7 @@ function TokenConnected({ view, endpoint, onDone }: { view: Extract<View, { kind
 	);
 }
 
-function ClaudeAiSetup({ endpoint, onBack }: { endpoint: string; onBack(): void }) {
+function ClaudeAiSetup({ endpoint, onBack }: { endpoint: string; onBack: () => void }) {
 	return (
 		<section className="space-y-4">
 			<BackButton onClick={onBack} />
@@ -545,7 +550,7 @@ function ClaudeAiSetup({ endpoint, onBack }: { endpoint: string; onBack(): void 
 	);
 }
 
-function ChatGptSetup({ endpoint, onBack }: { endpoint: string; onBack(): void }) {
+function ChatGptSetup({ endpoint, onBack }: { endpoint: string; onBack: () => void }) {
 	return (
 		<section className="space-y-4">
 			<BackButton onClick={onBack} />

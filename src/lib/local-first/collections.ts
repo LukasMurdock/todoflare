@@ -12,9 +12,9 @@ export interface AccountSnapshotDoc {
 	id: string;
 	accountId: string;
 	account: Account;
-	sharedColumns: ColumnMeta[];
-	deletedColumns: DeletedColumn[];
-	sharedWithByColumn?: Record<string, string[] | undefined>;
+	sharedColumns: Array<ColumnMeta>;
+	deletedColumns: Array<DeletedColumn>;
+	sharedWithByColumn?: Record<string, Array<string> | undefined>;
 	publicLinksByColumn?: Record<string, PublicLinkResponse | null>;
 	hydratedAt: number;
 	reconciledAt: number | null;
@@ -29,7 +29,7 @@ export interface ColumnDocumentDoc {
 	id: string;
 	accountId: string;
 	columnId: string;
-	updateBytes: number[];
+	updateBytes: Array<number>;
 }
 
 export interface YjsUpdateOutboxDoc {
@@ -38,8 +38,8 @@ export interface YjsUpdateOutboxDoc {
 	accountId: string;
 	columnId: string;
 	kind: YjsOutboxKind;
-	updateBytes: number[];
-	stateVectorBytes: number[] | null;
+	updateBytes: Array<number>;
+	stateVectorBytes: Array<number> | null;
 	createdAt: number;
 	attemptCount: number;
 	nextRetryAt: number;
@@ -61,7 +61,7 @@ export interface SyncStateDoc {
 	revokeDiscardCount: number;
 	convergenceFailureCount: number;
 	/** Newest first; kept so a rejection can be diagnosed after a reload. */
-	recentSyncFailures?: SyncFailureDoc[];
+	recentSyncFailures?: Array<SyncFailureDoc>;
 	updatedAt: number;
 }
 
@@ -113,3 +113,13 @@ export interface QuarantinedRecord {
 	containsDurableMutation: boolean;
 	raw: unknown;
 }
+
+/** Old quarantine payloads are exported verbatim even when they have only a version and ID. */
+export type StoredQuarantineRecord = QuarantinedRecord | {
+	schemaVersion: 1;
+	id: string;
+	reason?: unknown;
+	containsDurableMutation?: unknown;
+	sourceCollection?: unknown;
+	raw?: unknown;
+};

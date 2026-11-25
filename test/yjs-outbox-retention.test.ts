@@ -21,7 +21,7 @@ function entry(id: string, columnId: string, kind: "sync" | "awareness", ageMs =
 	};
 }
 
-function classify(entries: YjsOutboxEntry[]) {
+function classify(entries: Array<YjsOutboxEntry>) {
 	const result = classifyYjsOutbox(entries, {
 		activeColumnIds: new Set(["active"]),
 		trashedColumnIds: new Set(["trashed"]),
@@ -39,7 +39,7 @@ describe("classifyYjsOutbox", () => {
 	it("keeps edits for active columns and drops only stale presence", () => {
 		expect(classify([
 			entry("edit", "active", "sync", 60 * 60 * 1000),
-			entry("fresh-presence", "active", "awareness", 1_000),
+			entry("fresh-presence", "active", "awareness", 1000),
 			entry("stale-presence", "active", "awareness", 60_000),
 		])).toEqual({ sendable: ["edit", "fresh-presence"], heldForTrash: [], discardable: ["stale-presence"] });
 	});

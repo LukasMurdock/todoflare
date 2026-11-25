@@ -57,7 +57,7 @@ test.describe("collaborative editing", () => {
 
 		await expect
 			.poll(async () => (await secondEditor.innerText()).trim(), {
-				timeout: 20000,
+				timeout: 20_000,
 			})
 			.toContain(offlineText);
 
@@ -119,7 +119,7 @@ test.describe("collaborative editing", () => {
 
 		await expect
 			.poll(async () => (await observerEditor.innerText()).trim(), {
-				timeout: 20000,
+				timeout: 20_000,
 			})
 			.toContain(offlineText);
 
@@ -145,12 +145,12 @@ test.describe("collaborative editing", () => {
 		await bootstrapAuthenticatedPage(observerPage, accountId);
 
 		await expect(writerPage.getByRole("button", { name: "Collapse column" })).toHaveCount(1, {
-			timeout: 15000,
+			timeout: 15_000,
 		});
 		await expect(
 			observerPage.getByRole("button", { name: "Collapse column" }),
 		).toHaveCount(1, {
-			timeout: 15000,
+			timeout: 15_000,
 		});
 
 		const writerEditor = writerPage.getByRole("textbox", { name: "Todo editor" }).first();
@@ -163,7 +163,7 @@ test.describe("collaborative editing", () => {
 		await writerPage.keyboard.type(baselineText);
 		await expect
 			.poll(async () => (await observerEditor.innerText()).trim(), {
-				timeout: 15000,
+				timeout: 15_000,
 			})
 			.toContain(baselineText);
 
@@ -189,7 +189,7 @@ test.describe("collaborative editing", () => {
 
 		await expect
 			.poll(async () => (await observerEditor.innerText()).trim(), {
-				timeout: 20000,
+				timeout: 20_000,
 			})
 			.toContain(offlineText);
 
@@ -198,7 +198,7 @@ test.describe("collaborative editing", () => {
 		await writerPage.keyboard.type(postReconnectText);
 		await expect
 			.poll(async () => (await observerEditor.innerText()).trim(), {
-				timeout: 15000,
+				timeout: 15_000,
 			})
 			.toContain(postReconnectText);
 
@@ -220,11 +220,11 @@ test.describe("collaborative editing", () => {
 		const warmPage = await warmContext.newPage();
 		await bootstrapAuthenticatedPage(warmPage, accountId);
 		await expect(warmPage.getByRole("button", { name: "Collapse column" })).toHaveCount(2, {
-			timeout: 15000,
+			timeout: 15_000,
 		});
 		await expect
 			.poll(() => getAccountSnapshotOwnedColumnCount(warmPage, accountId), {
-				timeout: 15000,
+				timeout: 15_000,
 			})
 			.toBe(2);
 
@@ -246,7 +246,7 @@ test.describe("collaborative editing", () => {
 		await expect(
 			offlinePage.getByRole("button", { name: "Collapse column" }),
 		).toHaveCount(2, {
-			timeout: 15000,
+			timeout: 15_000,
 		});
 
 		await offlineContext.close();
@@ -275,7 +275,7 @@ test.describe("collaborative editing", () => {
 					typeof onlineSyncState.lastReplayLatencyMs === "number"
 				);
 			}, {
-				timeout: 15000,
+				timeout: 15_000,
 			})
 			.toBe(true);
 
@@ -288,7 +288,7 @@ test.describe("collaborative editing", () => {
 				const settled = state?.lastServerHydrationAt === previousHydrationAt;
 				previousHydrationAt = state?.lastServerHydrationAt ?? undefined;
 				return settled;
-			}, { intervals: [750], timeout: 15000 })
+			}, { intervals: [750], timeout: 15_000 })
 			.toBe(true);
 
 		const onlineSyncState = await getSyncStateSnapshot(warmPage, accountId);

@@ -3,12 +3,12 @@ import { describe, expect, it } from "vitest";
 import { ACCOUNT_COMMANDS } from "../src/lib/api/account-commands";
 import { API_ROUTES } from "../src/lib/api/routes";
 
-const SAMPLE_PARAMS: Record<string, string> = {
+const SAMPLE_PARAMS = new Map(Object.entries({
 	id: "00000000-0000-4000-8000-000000000001",
 	publicId: "x7Km9p2N",
 	agentId: "agt_AAAAAAAAAAAAAAAAAAAAAA",
 	changeId: "chg_AAAAAAAAAAAAAAAAAAAAAA",
-};
+}));
 
 const declaredRoutes = [
 	...Object.entries(API_ROUTES).map(([name, route]) => ({ name, ...route })),
@@ -17,7 +17,7 @@ const declaredRoutes = [
 
 describe("route declarations", () => {
 	it.each(declaredRoutes)("$name ($method $path) is served by the Worker", async ({ method, path }) => {
-		const url = path.replace(/:([A-Za-z]+)/g, (_match, name: string) => SAMPLE_PARAMS[name]);
+		const url = path.replaceAll(/:([A-Za-z]+)/g, (_match, name: string) => SAMPLE_PARAMS.get(name) ?? (() => { throw new Error(`Missing sample for ${name}`); })());
 		const response = await SELF.fetch(`http://example.com${url}`, {
 			method,
 			headers: { "X-Forwarded-For": "203.0.113.77" },

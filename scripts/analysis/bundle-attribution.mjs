@@ -13,11 +13,13 @@ import path from "node:path";
 import { brotliCompressSync, gzipSync } from "node:zlib";
 import { zoneOf } from "./board-zones.mjs";
 
+const kb = (n) => `${(n / 1024).toFixed(1)} KiB`;
+
 const args = process.argv.slice(2);
 const asJson = args.includes("--json");
 const top = args.includes("--top") ? Number(args[args.indexOf("--top") + 1]) : 25;
 const assetsDir = args.filter((arg, i) => !arg.startsWith("--") && args[i - 1] !== "--top").at(-1);
-if (!assetsDir) throw new Error("Usage: bundle-attribution.mjs [--json] [--top N] ASSETS_DIR");
+if (!assetsDir) {throw new Error("Usage: bundle-attribution.mjs [--json] [--top N] ASSETS_DIR");}
 
 const BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -28,7 +30,7 @@ function decodeMappings(mappings) {
 	mappings.split(";").forEach((line, lineIndex) => {
 		let column = 0;
 		for (const segment of line.split(",")) {
-			if (!segment) continue;
+			if (!segment) {continue;}
 			const values = [];
 			let value = 0;
 			let shift = 0;
@@ -44,7 +46,7 @@ function decodeMappings(mappings) {
 				}
 			}
 			column += values[0];
-			if (values.length > 1) sourceIndex += values[1];
+			if (values.length > 1) {sourceIndex += values[1];}
 			segments.push([lineIndex, column, values.length > 1 ? sourceIndex : -1]);
 		}
 	});
@@ -52,13 +54,13 @@ function decodeMappings(mappings) {
 }
 
 function owner(source) {
-	const normalized = source.replace(/\\/g, "/");
+	const normalized = source.replaceAll('\\', "/");
 	const pnpm = /node_modules\/\.pnpm\/[^/]+\/node_modules\/((?:@[^/]+\/)?[^/]+)/.exec(normalized);
 	const plain = /node_modules\/((?:@[^/]+\/)?[^/]+)/.exec(normalized);
 	const pkg = pnpm?.[1] ?? plain?.[1];
-	if (pkg) return { group: "dependency", name: pkg };
+	if (pkg) {return { group: "dependency", name: pkg };}
 	const src = /(?:^|\/)((?:packages\/[^/]+\/)?src\/.+)$/.exec(normalized);
-	if (src) return { group: zoneOf(src[1]), name: src[1] };
+	if (src) {return { group: zoneOf(src[1]), name: src[1] };}
 	return { group: "other", name: normalized };
 }
 
@@ -73,7 +75,7 @@ for (const file of readdirSync(assetsDir)) {
 		files.push({ file, bytes: css.length, gzip: gzipSync(css).length, brotli: brotliCompressSync(css).length });
 		continue;
 	}
-	if (!file.endsWith(".js")) continue;
+	if (!file.endsWith(".js")) {continue;}
 	const code = readFileSync(absolute, "utf8");
 	files.push({ file, bytes: Buffer.byteLength(code), gzip: gzipSync(code).length, brotli: brotliCompressSync(code).length });
 
@@ -97,7 +99,7 @@ const total = [...byGroup.values()].reduce((a, b) => a + b, 0);
 const packages = new Map();
 for (const [key, size] of byName) {
 	const [group, name] = key.split("\t");
-	if (group !== "dependency") continue;
+	if (group !== "dependency") {continue;}
 	packages.set(name, size);
 }
 const ourFiles = [...byName].filter(([key]) => /^(board|host)\t/.test(key));
@@ -116,13 +118,13 @@ const report = {
 if (asJson) {
 	console.log(JSON.stringify(report, null, 2));
 } else {
-	const kb = (n) => `${(n / 1024).toFixed(1)} KiB`;
+
 	console.log("## Files");
-	for (const f of files) console.log(`  ${f.file}: ${kb(f.bytes)} min, ${kb(f.gzip)} gzip, ${kb(f.brotli)} brotli`);
+	for (const f of files) {console.log(`  ${f.file}: ${kb(f.bytes)} min, ${kb(f.gzip)} gzip, ${kb(f.brotli)} brotli`);}
 	console.log(`\n## Minified JS by origin (${kb(total)} attributed)`);
-	for (const [group, bytes] of Object.entries(report.groups)) console.log(`  ${group.padEnd(11)} ${kb(bytes).padStart(11)}  ${((100 * bytes) / total).toFixed(1)}%`);
+	for (const [group, bytes] of Object.entries(report.groups)) {console.log(`  ${group.padEnd(11)} ${kb(bytes).padStart(11)}  ${((100 * bytes) / total).toFixed(1)}%`);}
 	console.log(`\n## Top ${top} dependencies`);
-	for (const p of report.topPackages) console.log(`  ${p.name.padEnd(40)} ${kb(p.bytes).padStart(11)}`);
+	for (const p of report.topPackages) {console.log(`  ${p.name.padEnd(40)} ${kb(p.bytes).padStart(11)}`);}
 	console.log(`\n## Top ${top} source files`);
-	for (const s of report.topSourceFiles) console.log(`  ${s.zone.padEnd(6)} ${s.file.padEnd(52)} ${kb(s.bytes).padStart(10)}`);
+	for (const s of report.topSourceFiles) {console.log(`  ${s.zone.padEnd(6)} ${s.file.padEnd(52)} ${kb(s.bytes).padStart(10)}`);}
 }

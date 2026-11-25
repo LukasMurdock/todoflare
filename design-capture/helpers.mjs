@@ -1,3 +1,4 @@
+import { getSyncStateSnapshot } from "../e2e/helpers/local-first-readers.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { expect } from "@playwright/test";
 
@@ -67,17 +68,17 @@ export const RICH_GUEST_COLUMNS = [
 ];
 
 export function shortAccountId(accountId) {
-	const compact = accountId.replace(/\D/g, "");
+	const compact = accountId.replaceAll(/\D/g, "");
 	return `${compact.slice(0, 4)}...${compact.slice(-4)}`;
 }
 
 export function formatAccountId(accountId) {
-	const compact = accountId.replace(/\D/g, "");
-	return compact.replace(/(\d{4})(?=\d)/g, "$1 ");
+	const compact = accountId.replaceAll(/\D/g, "");
+	return compact.replaceAll(/(\d{4})(?=\d)/g, "$1 ");
 }
 
 export function accountHeaders(accountId) {
-	return { "X-Todoflare-Test-Account": accountId.replace(/\D/g, "") };
+	return { "X-Todoflare-Test-Account": accountId.replaceAll(/\D/g, "") };
 }
 
 /** Deterministic IP generator per run so rate limits never collide. */
@@ -119,7 +120,7 @@ export async function shareColumnApi(request, baseURL, ownerId, columnId, target
 			"X-Idempotency-Key": `share-${columnId}-${Date.now()}-${Math.random()}`,
 			...accountHeaders(ownerId),
 		},
-		data: { targetAccountId: targetAccountId.replace(/\D/g, "") },
+		data: { targetAccountId: targetAccountId.replaceAll(/\D/g, "") },
 	});
 	if (!response.ok()) {
 		throw new Error(`Failed to share column (${response.status()}): ${await response.text()}`);
@@ -224,7 +225,7 @@ export async function registerOAuthConsentUrl(request, baseURL, { clientName = "
 export async function applyThemeInitScript(context, theme) {
 	await context.addInitScript((mode) => {
 		const apply = () => {
-			if (!document.documentElement) return;
+			if (!document.documentElement) {return;}
 			document.documentElement.classList.toggle("dark", mode === "dark");
 		};
 		apply();
@@ -254,7 +255,7 @@ export async function createCaptureContext(browser, { baseURL, viewport, theme =
 export function attachDiagnostics(page) {
 	const diag = { consoleErrors: [], pageErrors: [], failedRequests: [] };
 	page.on("console", (msg) => {
-		if (msg.type() === "error") diag.consoleErrors.push(msg.text());
+		if (msg.type() === "error") {diag.consoleErrors.push(msg.text());}
 	});
 	page.on("pageerror", (err) => {
 		diag.pageErrors.push(err.message ?? String(err));
@@ -284,7 +285,7 @@ export async function collectLayoutDiagnostics(page) {
 		const edgeHuggingDialogs = [];
 		for (const el of floating) {
 			const r = el.getBoundingClientRect();
-			if (r.width === 0 || r.height === 0) continue;
+			if (r.width === 0 || r.height === 0) {continue;}
 			const role = el.getAttribute("role") ?? "popover";
 			if (r.left < -2 || r.top < -2 || r.right > vw + 2 || r.bottom > vh + 2) {
 				clippedPopups.push({
@@ -301,13 +302,14 @@ export async function collectLayoutDiagnostics(page) {
 			}
 		}
 		// Check fixed-element overlaps: welcome pills vs welcome card, AccountBadge vs column headers.
+		// oxlint-disable-next-line unicorn/consistent-function-scoping -- Playwright serializes this callback into the browser.
 		const rectsOverlap = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
 		const fixedOverlaps = [];
 		const welcomeCard = document.querySelector("[data-welcome-card]");
 		if (welcomeCard) {
 			const cr = welcomeCard.getBoundingClientRect();
 			for (const pill of document.querySelectorAll(".fixed.rounded-full")) {
-				if (welcomeCard.contains(pill)) continue;
+				if (welcomeCard.contains(pill)) {continue;}
 				const pr = pill.getBoundingClientRect();
 				if (pr.width > 0 && pr.height > 0 && rectsOverlap(cr, pr)) {
 					fixedOverlaps.push({ a: "welcome-card", b: pill.textContent?.trim() ?? "pill" });
@@ -341,10 +343,10 @@ export async function collectLayoutDiagnostics(page) {
 export async function openGuestPage(page, { columns = RICH_GUEST_COLUMNS, welcomed = true, dismissModal = true } = {}) {
 	await page.addInitScript(
 		({ columnsKey, welcomeKey, cols, isWelcomed }) => {
-			if (cols) localStorage.setItem(columnsKey, JSON.stringify(cols));
-			else localStorage.removeItem(columnsKey);
-			if (isWelcomed) localStorage.setItem(welcomeKey, "true");
-			else localStorage.removeItem(welcomeKey);
+			if (cols) {localStorage.setItem(columnsKey, JSON.stringify(cols));}
+			else {localStorage.removeItem(columnsKey);}
+			if (isWelcomed) {localStorage.setItem(welcomeKey, "true");}
+			else {localStorage.removeItem(welcomeKey);}
 		},
 		{ columnsKey: LOCAL_COLUMNS_KEY, welcomeKey: WELCOME_KEY, cols: columns, isWelcomed: welcomed },
 	);
@@ -352,11 +354,11 @@ export async function openGuestPage(page, { columns = RICH_GUEST_COLUMNS, welcom
 	// Radix Dialog marks the background board aria-hidden while the onboarding
 	// AccountModal or ClaimDataModal is open, so wait for the dialog first.
 	const dialog = page.getByRole("dialog");
-	await expect(dialog).toBeVisible({ timeout: 15000 });
+	await expect(dialog).toBeVisible({ timeout: 15_000 });
 	if (dismissModal) {
 		await page.keyboard.press("Escape");
 		await expect(dialog).toBeHidden({ timeout: 5000 });
-		await expect(page.getByRole("textbox", { name: "Todo editor" }).first()).toBeVisible({ timeout: 15000 });
+		await expect(page.getByRole("textbox", { name: "Todo editor" }).first()).toBeVisible({ timeout: 15_000 });
 	}
 	await settleUi(page);
 }
@@ -365,8 +367,8 @@ export async function bootstrapSignedInPage(page, accountId, { welcomed = true }
 	await page.addInitScript(
 		({ accountStorageKey, localColumnsKey, welcomeKey, id, isWelcomed }) => {
 			localStorage.setItem(accountStorageKey, id);
-			if (isWelcomed) localStorage.setItem(welcomeKey, "true");
-			else localStorage.removeItem(welcomeKey);
+			if (isWelcomed) {localStorage.setItem(welcomeKey, "true");}
+			else {localStorage.removeItem(welcomeKey);}
 			localStorage.removeItem(localColumnsKey);
 		},
 		{
@@ -378,7 +380,7 @@ export async function bootstrapSignedInPage(page, accountId, { welcomed = true }
 		},
 	);
 	await page.goto("/");
-	await expect(page.getByRole("button", { name: "Add column" })).toBeVisible({ timeout: 15000 });
+	await expect(page.getByRole("button", { name: "Add column" })).toBeVisible({ timeout: 15_000 });
 	await settleUi(page);
 }
 
@@ -392,13 +394,13 @@ export async function addColumnAndGetId(page) {
 		throw new Error(`Failed to create column: ${await createResponse.text()}`);
 	}
 	const payload = await createResponse.json();
-	await expect(page.getByRole("button", { name: "Collapse column" }).first()).toBeVisible({ timeout: 15000 });
+	await expect(page.getByRole("button", { name: "Collapse column" }).first()).toBeVisible({ timeout: 15_000 });
 	return payload.column.id;
 }
 
 export async function typeIntoColumn(page, columnIndex, lines) {
 	const editor = page.getByRole("textbox", { name: "Todo editor" }).nth(columnIndex);
-	await expect(editor).toHaveAttribute("contenteditable", "true", { timeout: 15000 });
+	await expect(editor).toHaveAttribute("contenteditable", "true", { timeout: 15_000 });
 	await editor.click();
 	for (let i = 0; i < lines.length; i++) {
 		let line = lines[i];
@@ -412,14 +414,17 @@ export async function typeIntoColumn(page, columnIndex, lines) {
 		if (line.length > 0) {
 			await page.keyboard.type(line, { delay: 4 });
 		}
-		if (i < lines.length - 1) await page.keyboard.press("Enter");
+		if (i < lines.length - 1) {await page.keyboard.press("Enter");}
 	}
-	await page.waitForTimeout(350);
 }
 
 export async function waitForSynced(page) {
-	// Wait briefly for WebSocket Yjs frames & IndexedDB outbox to flush cleanly.
-	await page.waitForTimeout(450);
+	const accountId = await page.evaluate(() => localStorage.getItem("todoflare-account"));
+	if (!accountId) {throw new Error("Sync requires a signed-in board");}
+	await expect.poll(async () => {
+		const snapshot = await getSyncStateSnapshot(page, accountId);
+		return snapshot && [snapshot.queueDepth, snapshot.yjsQueueDepth];
+	}).toEqual([0, 0]);
 }
 
 export async function settleUi(page, { hideToasts = false } = {}) {
@@ -427,11 +432,11 @@ export async function settleUi(page, { hideToasts = false } = {}) {
 		await page.addStyleTag({ content: "[data-sonner-toaster] { display: none !important; }" });
 	}
 	await page.evaluate(() => document.fonts?.ready);
-	await page.waitForTimeout(220);
+	await page.evaluate(() => Promise.allSettled(document.getAnimations().filter((animation) => animation.effect?.getComputedTiming().endTime !== Infinity).map((animation) => animation.finished)));
 }
 
 export async function blurFocus(page) {
 	await page.evaluate(() => {
-		if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+		document.activeElement?.blur?.();
 	});
 }

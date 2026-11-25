@@ -6,6 +6,7 @@ import {
 	releasePublicId,
 	resolvePublicId,
 } from "../public-id-registry";
+import { lifecycleOperationSchema } from "../lifecycle-journal";
 import type { LifecycleOperation } from "../lifecycle-journal";
 import {
 	parseAccountRecord,
@@ -68,7 +69,7 @@ export interface ReconcileLifecycleResult {
 	trashRecordsInvalid: number;
 }
 
-function operationAccountIds(operation: LifecycleOperation): string[] {
+function operationAccountIds(operation: LifecycleOperation): Array<string> {
 	if (operation.kind === "create") {
 		return [normalizeAccountId(operation.meta.ownerId)];
 	}
@@ -82,13 +83,13 @@ function operationAccountIds(operation: LifecycleOperation): string[] {
 async function listAll<TDurableObjectId>(
 	env: ReconcileLifecycleBindings<TDurableObjectId>,
 	prefix: string,
-): Promise<string[]> {
-	const keys: string[] = [];
+): Promise<Array<string>> {
+	const keys: Array<string> = [];
 	let cursor: string | undefined;
 	while (true) {
 		const page = await env.ACCOUNTS.list({ prefix, cursor, limit: 1000 });
 		keys.push(...page.keys.map((key) => key.name));
-		if (page.list_complete) return keys;
+		if (page.list_complete) {return keys;}
 		cursor = page.cursor;
 	}
 }
@@ -120,10 +121,10 @@ async function retryOperation<TDurableObjectId>(
 		accountId: operation.accountId,
 	};
 	let result;
-	if (operation.kind === "delete") result = await deleteColumn(common);
-	else if (operation.kind === "restore") result = await restoreColumn(common);
-	else if (operation.kind === "enable-public") result = await enablePublicColumn(common);
-	else if (operation.kind === "disable-public") result = await disablePublicColumn(common);
+	if (operation.kind === "delete") {result = await deleteColumn(common);}
+	else if (operation.kind === "restore") {result = await restoreColumn(common);}
+	else if (operation.kind === "enable-public") {result = await enablePublicColumn(common);}
+	else if (operation.kind === "disable-public") {result = await disablePublicColumn(common);}
 	else if (operation.kind === "share") {
 		result = await shareColumn({
 			...common,
@@ -169,12 +170,12 @@ export async function reconcileColumnLifecycle<TDurableObjectId>(
 	const loadTrash = async (rawAccountId: string) => {
 		const accountId = normalizeAccountId(rawAccountId);
 		const cached = trashByAccountId.get(accountId);
-		if (cached) return cached;
+		if (cached) {return cached;}
 		const parsedTrash = parseDeletedColumnRecords(
 			await records.get(`trash:${accountId}`),
 		);
 		trashByAccountId.set(accountId, parsedTrash);
-		if (parsedTrash.ok) return parsedTrash;
+		if (parsedTrash.ok) {return parsedTrash;}
 		blockedAccountIds.add(accountId);
 		result.invalidRecords += 1;
 		result.trashRecordsInvalid += 1;
@@ -193,17 +194,21 @@ export async function reconcileColumnLifecycle<TDurableObjectId>(
 
 	for (const key of await listAll(env, "lifecycle-operation:")) {
 		const raw = await env.ACCOUNTS.get(key);
-		if (!raw) continue;
+		if (!raw) {continue;}
 		result.operationsRetried += 1;
 		try {
-			const operation = JSON.parse(raw) as LifecycleOperation;
-			if (!operation.operationId || !operation.kind) throw new Error("invalid operation");
+			const operation = lifecycleOperationSchema.parse(JSON.parse(raw));
 			const operationTrash = await Promise.all(
 				operationAccountIds(operation).map(loadTrash),
 			);
 			if (operationTrash.some((trash) => !trash.ok)) {
 				result.operationsFailed += 1;
 				continue;
+			}
+			// Replay may change trash before throwing or returning. The projection scan
+			// must read the post-replay owner record even after a partial write.
+			if (operation.kind === "delete" || operation.kind === "restore") {
+				trashByAccountId.delete(normalizeAccountId(operation.accountId));
 			}
 			if (await retryOperation(env, operation)) {
 				await env.ACCOUNTS.delete(key);
@@ -218,7 +223,7 @@ export async function reconcileColumnLifecycle<TDurableObjectId>(
 
 	for (const key of await listAll(env, "column-registry:")) {
 		const raw = await env.ACCOUNTS.get(key);
-		if (!raw) continue;
+		if (!raw) {continue;}
 		let registryValue: unknown;
 		try {
 			registryValue = JSON.parse(raw) as unknown;
@@ -235,18 +240,18 @@ export async function reconcileColumnLifecycle<TDurableObjectId>(
 		let meta: ColumnMeta = parsedRegistry.value;
 		const ownerId = normalizeAccountId(meta.ownerId);
 		const parsedTrash = await loadTrash(ownerId);
-		if (!parsedTrash.ok) continue;
+		if (!parsedTrash.ok) {continue;}
 		const stub = env.COLUMN_ROOM.get(env.COLUMN_ROOM.idFromName(meta.id));
 		let metaResponse = await stub.fetch(new Request("http://do/meta"));
 		if (metaResponse.status === 404) {
 			const initResponse = await stub.fetch(
 				new Request("http://do/init", { method: "POST", body: JSON.stringify(meta) }),
 			);
-			if (!initResponse.ok) continue;
+			if (!initResponse.ok) {continue;}
 			result.columnsInitialized += 1;
 			metaResponse = await stub.fetch(new Request("http://do/meta"));
 		}
-		if (!metaResponse.ok) continue;
+		if (!metaResponse.ok) {continue;}
 		const parsedMeta = parseColumnMetaRecord(await metaResponse.json());
 		if (!parsedMeta.ok) {
 			result.invalidRecords += 1;
@@ -270,7 +275,7 @@ export async function reconcileColumnLifecycle<TDurableObjectId>(
 
 		for (const sharedAccountId of meta.sharedWith) {
 			const normalizedSharedAccountId = normalizeAccountId(sharedAccountId);
-			if (!(await loadTrash(normalizedSharedAccountId)).ok) continue;
+			if (!(await loadTrash(normalizedSharedAccountId)).ok) {continue;}
 			const sharedKey = `shared:${normalizedSharedAccountId}`;
 			const shared = parseSharedColumnIndex(await records.get(sharedKey));
 			if (shared.ok && !shared.value.includes(meta.id)) {
@@ -301,9 +306,9 @@ export async function reconcileColumnLifecycle<TDurableObjectId>(
 
 	for (const accountKey of accountKeys) {
 		const accountId = accountKey.slice("account:".length);
-		if (blockedAccountIds.has(accountId)) continue;
+		if (blockedAccountIds.has(accountId)) {continue;}
 		const accountRaw = await records.get(accountKey);
-		if (!accountRaw) continue;
+		if (!accountRaw) {continue;}
 		const account = parseAccountRecord(accountRaw);
 		if (!account.ok) {
 			result.invalidRecords += 1;
@@ -323,7 +328,7 @@ export async function reconcileColumnLifecycle<TDurableObjectId>(
 			} else if (response.status !== 404) {
 				continue;
 			}
-			if (!shouldRemove) continue;
+			if (!shouldRemove) {continue;}
 			await mutateAccountRecord(env, accountKey, {
 				kind: "account-remove-column",
 				columnId,
@@ -348,7 +353,7 @@ export async function reconcileColumnLifecycle<TDurableObjectId>(
 					meta.value.sharedWith.some(
 						(sharedAccountId) => normalizeAccountId(sharedAccountId) === accountId,
 					);
-			} else if (response.status !== 404) continue;
+			} else if (response.status !== 404) {continue;}
 			if (!stillShared) {
 				await mutateAccountRecord(env, sharedKey, {
 					kind: "shared-remove",
@@ -362,7 +367,7 @@ export async function reconcileColumnLifecycle<TDurableObjectId>(
 	for (const publicKey of await listAll(env, "public:")) {
 		const publicId = publicKey.slice("public:".length);
 		const projectedColumnId = await env.ACCOUNTS.get(publicKey);
-		if (!projectedColumnId) continue;
+		if (!projectedColumnId) {continue;}
 		const columnId = await resolvePublicId(env, publicId);
 		if (columnId === null) {
 			await env.ACCOUNTS.delete(publicKey);
@@ -374,9 +379,9 @@ export async function reconcileColumnLifecycle<TDurableObjectId>(
 		let matches = false;
 		if (response.ok) {
 			const meta = parseColumnMetaRecord(await response.json());
-			if (meta.ok && !(await loadTrash(meta.value.ownerId)).ok) continue;
+			if (meta.ok && !(await loadTrash(meta.value.ownerId)).ok) {continue;}
 			matches = meta.ok && meta.value.publicId === publicId;
-		} else if (response.status !== 404) continue;
+		} else if (response.status !== 404) {continue;}
 		if (!matches) {
 			await releasePublicId(env, publicId, columnId);
 			result.publicMappingsRemoved += 1;

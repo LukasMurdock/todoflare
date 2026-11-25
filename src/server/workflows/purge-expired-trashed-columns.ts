@@ -4,7 +4,8 @@ import {
 	parseColumnMetaRecord,
 	TRASH_RETENTION_MS,
 } from "../persistence-records";
-import { isReadOnlyMode, type ReadOnlyModeEnv } from "../read-only-mode";
+import { isReadOnlyMode } from '../read-only-mode';
+import type { ReadOnlyModeEnv } from '../read-only-mode';
 import { accountRecordStore, mutateAccountRecord } from "../account-record-store";
 
 interface AccountKey {
@@ -12,7 +13,7 @@ interface AccountKey {
 }
 
 interface AccountKeyPage {
-	keys: AccountKey[];
+	keys: Array<AccountKey>;
 	list_complete: boolean;
 	cursor?: string;
 }
@@ -63,10 +64,10 @@ export async function purgeExpiredTrashedColumns<TColumnRoomId>(
 	input: PurgeExpiredTrashedColumnsInput<TColumnRoomId>,
 ): Promise<PurgeExpiredTrashedColumnsResult> {
 	const { env } = input;
-	if (isReadOnlyMode(env)) return {
+	if (isReadOnlyMode(env)) {return {
 		accountsScanned: 0, trashRecordsInvalid: 0, columnsPurged: 0,
 		columnsFailed: 0, trashEntriesRemoved: 0,
-	};
+	};}
 	const records = accountRecordStore(env);
 	const now = input.now?.() ?? Date.now();
 	const retentionMs = input.retentionMs ?? TRASH_RETENTION_MS;
@@ -102,7 +103,7 @@ export async function purgeExpiredTrashedColumns<TColumnRoomId>(
 				continue;
 			}
 			const trash = parsedTrash.value;
-			if (trash.length === 0) continue;
+			if (trash.length === 0) {continue;}
 
 			for (const entry of trash) {
 				if (now - entry.deletedAt < retentionMs) {
@@ -142,7 +143,7 @@ export async function purgeExpiredTrashedColumns<TColumnRoomId>(
 							const current = await stub.fetch(new Request("http://do/meta"));
 							if (current.ok) {
 								const meta = parseColumnMetaRecord(await current.json());
-								if (meta.ok) await env.ACCOUNTS.put(`column-registry:${entry.columnId}`, JSON.stringify(meta.value));
+								if (meta.ok) {await env.ACCOUNTS.put(`column-registry:${entry.columnId}`, JSON.stringify(meta.value));}
 							}
 						}
 						columnsFailed += 1;
@@ -161,7 +162,7 @@ export async function purgeExpiredTrashedColumns<TColumnRoomId>(
 			}
 		}
 
-		if (page.list_complete) break;
+		if (page.list_complete) {break;}
 		cursor = page.cursor;
 	}
 

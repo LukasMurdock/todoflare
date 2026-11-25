@@ -7,7 +7,7 @@ export function StorageRecoveryBanner() {
 	const { accountId, browserStorageError, syncStateSummary, retryBrowserStorage, exportStorageRecoveryData } = useSyncContext();
 	const [busy, setBusy] = useState(false);
 	const blocked = browserStorageError !== null || (!!accountId && ["degraded", "memory-only"].includes(syncStateSummary.storageState));
-	if (!blocked) return null;
+	if (!blocked) {return null;}
 	const download = async () => {
 		const payload = await exportStorageRecoveryData();
 		const url = URL.createObjectURL(new Blob([JSON.stringify(payload)], { type: "application/json" }));

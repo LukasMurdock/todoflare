@@ -1,9 +1,8 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 const repositoryRoot = path.resolve(
-	path.dirname(fileURLToPath(import.meta.url)),
+	import.meta.dirname,
 	"..",
 );
 const sourceRoot = path.join(repositoryRoot, "src");
@@ -39,7 +38,7 @@ async function sourceFilesUnder(targetPath) {
 	const files = [];
 	for (const entry of await readdir(targetPath, { withFileTypes: true })) {
 		const entryPath = path.join(targetPath, entry.name);
-		if (entry.isDirectory()) files.push(...(await sourceFilesUnder(entryPath)));
+		if (entry.isDirectory()) {files.push(...(await sourceFilesUnder(entryPath)));}
 		if (entry.isFile() && sourceExtensions.includes(path.extname(entry.name))) {
 			files.push(entryPath);
 		}
@@ -75,7 +74,7 @@ function resolveSourceImport(importer, specifier, sourceFiles) {
 		...sourceExtensions.map((extension) => `${unresolved}${extension}`),
 		...sourceExtensions.map((extension) => path.join(unresolved, `index${extension}`)),
 	]) {
-		if (sourceFiles.has(candidate)) return candidate;
+		if (sourceFiles.has(candidate)) {return candidate;}
 	}
 	return null;
 }
@@ -88,13 +87,13 @@ async function findBoundaryViolations(entryFiles, allSourceFiles) {
 
 	while (pending.length > 0) {
 		const importer = pending.pop();
-		if (!importer || visited.has(importer)) continue;
+		if (!importer || visited.has(importer)) {continue;}
 		visited.add(importer);
 
 		const source = await readFile(importer, "utf8");
 		for (const specifier of importedSpecifiers(source)) {
 			const imported = resolveSourceImport(importer, specifier, sourceFiles);
-			if (!imported) continue;
+			if (!imported) {continue;}
 			if (isServerOnly(imported)) {
 				violations.push({ importer, imported });
 				continue;
